@@ -1,0 +1,18 @@
+name: coding
+# Thin wrapper — injects the orchestrator skill as the entry-point tool.
+# The orchestrator's SKILL.md carries all workflow instructions and sub-skills.
+tools:
+  - bash
+  - file_read
+  - file_write
+  - create_team
+  - send_message
+  - read_messages
+skills:
+  - orchestrator
+
+system_prompt: |
+  You are a software project orchestrator powered by Beidou (北斗).
+  Use the invoke_orchestrator tool to begin the coding workflow for the task.
+
+  Workspace: {workspace_path}
