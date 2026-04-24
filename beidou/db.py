@@ -75,6 +75,22 @@ CREATE INDEX IF NOT EXISTS idx_events_type    ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_ts      ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_agents_task    ON agents(task_id);
 CREATE INDEX IF NOT EXISTS idx_teams_task     ON teams(task_id);
+
+CREATE TABLE IF NOT EXISTS questions (
+    qid           TEXT PRIMARY KEY,
+    task_id       TEXT,
+    asker_agent_id TEXT,
+    prompt        TEXT,
+    context_hint  TEXT,
+    chain_json    TEXT,
+    state         TEXT DEFAULT 'pending',
+    created_at    REAL,
+    answered_at   REAL,
+    answer        TEXT,
+    FOREIGN KEY (task_id) REFERENCES tasks(task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
 """
 
 
@@ -247,6 +263,34 @@ def insert_event(
             """,
             (task_id, team_id, agent_id, event_type, tool_name, duration_ms,
              tokens_in, tokens_out, cost_usd, ts, extra),
+        )
+
+
+def insert_question(
+    qid: str,
+    task_id: str,
+    asker_agent_id: str,
+    prompt: str,
+    context_hint: str | None,
+    chain_json: str,
+    created_at: float,
+) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO questions
+              (qid, task_id, asker_agent_id, prompt, context_hint, chain_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (qid, task_id, asker_agent_id, prompt, context_hint, chain_json, created_at),
+        )
+
+
+def update_question_answered(qid: str, answer: str, answered_at: float) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE questions SET state='answered', answer=?, answered_at=? WHERE qid=?",
+            (answer, answered_at, qid),
         )
 
 

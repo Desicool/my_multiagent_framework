@@ -6,13 +6,17 @@ share it because the _kv chain resolves to the same object.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from beidou import db
+
 if TYPE_CHECKING:
     from beidou.context import AgentContext
+    from beidou.gateways.base import BaseGateway
 
 
 def _new_qid() -> str:
@@ -37,6 +41,10 @@ class QuestionBroker:
         self._pending: dict[str, Question] = {}
         self._agent_inbox: dict[str, list[str]] = {}
         self._terminal_lock = asyncio.Lock()
+        self._gateway: BaseGateway | None = None
+
+    def set_gateway(self, gateway: "BaseGateway") -> None:
+        self._gateway = gateway
 
     # ---- asker side -------------------------------------------------
 
@@ -55,8 +63,27 @@ class QuestionBroker:
             future=loop.create_future(),
         )
         self._pending[q.qid] = q
+        # Non-blocking audit log — do not let DB errors block agents
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: db.insert_question(
+                    qid=q.qid,
+                    task_id=ctx.get("task_id", ""),
+                    asker_agent_id=q.asker_agent_id,
+                    prompt=q.prompt,
+                    context_hint=q.context_hint,
+                    chain_json=json.dumps(q.chain),
+                    created_at=q.created_at,
+                )
+            )
+        except Exception:
+            pass
         if holder is None:
-            asyncio.create_task(self._surface_to_terminal(q, ctx))
+            if self._gateway is not None:
+                asyncio.create_task(self._gateway.surface_question(q, self))
+            else:
+                asyncio.create_task(self._surface_to_terminal(q, ctx))
         else:
             self._agent_inbox.setdefault(holder, []).append(q.qid)
 
@@ -98,6 +125,13 @@ class QuestionBroker:
         q.state = "answered"
         self._drop_from_inbox(q)
         q.future.set_result(text)
+        try:
+            asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: db.update_question_answered(qid=qid, answer=text, answered_at=time.time())
+            )
+        except Exception:
+            pass
         return {"ok": True}
 
     async def escalate(self, qid: str, by_ctx: "AgentContext", reason: str) -> dict:
@@ -110,7 +144,10 @@ class QuestionBroker:
         q.chain.append(new_holder or "USER")
         if new_holder is None:
             q.state = "at_user"
-            asyncio.create_task(self._surface_to_terminal(q, by_ctx))
+            if self._gateway is not None:
+                asyncio.create_task(self._gateway.surface_question(q, self))
+            else:
+                asyncio.create_task(self._surface_to_terminal(q, by_ctx))
         else:
             self._agent_inbox.setdefault(new_holder, []).append(qid)
         await self._emit(by_ctx, "question_escalated", qid=qid, by=by_ctx.agent_id,

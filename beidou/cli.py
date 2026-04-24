@@ -57,7 +57,17 @@ def init() -> None:
 @click.option("--base-url", default=None, help="Override Anthropic API base URL (also reads ANTHROPIC_BASE_URL env var).")
 @click.option("--max-question-wait", default=300, show_default=True, type=int,
               help="Seconds an agent's ask_user tool will wait for an answer before raising TimeoutError.")
-def run(task: str, model: str, template: str, base_url: str | None, max_question_wait: int) -> None:
+@click.option("--gateway", "-g", default="terminal", show_default=True,
+              help="Question gateway(s), comma-separated: terminal, web, tui")
+@click.option("--web-host", default="127.0.0.1", show_default=True,
+              help="Host for web gateway (only used with --gateway web).")
+@click.option("--web-port", default=7777, show_default=True, type=int,
+              help="Port for web gateway (only used with --gateway web).")
+@click.option("--open", "open_browser", is_flag=True, default=False,
+              help="Auto-open browser when using --gateway web.")
+def run(task: str, model: str, template: str, base_url: str | None,
+        max_question_wait: int, gateway: str, web_host: str, web_port: int,
+        open_browser: bool) -> None:
     """Run an agent on TASK."""
     _ensure_db()
 
@@ -66,11 +76,60 @@ def run(task: str, model: str, template: str, base_url: str | None, max_question
         sys.exit(1)
 
     asyncio.run(_run_task(task=task, model=model, template=template,
-                          base_url=base_url, max_question_wait=max_question_wait))
+                          base_url=base_url, max_question_wait=max_question_wait,
+                          gateway=gateway, web_host=web_host, web_port=web_port,
+                          open_browser=open_browser))
 
 
-async def _run_task(task: str, model: str, template: str, base_url: str | None = None,
-                    max_question_wait: int = 300) -> None:
+def _build_gateway(
+    gateway_spec: str,
+    broker: "QuestionBroker",
+    task_id: str,
+    web_host: str,
+    web_port: int,
+    open_browser: bool,
+    console: "Console",
+) -> "BaseGateway":
+    """Parse comma-separated gateway spec and build gateway instance(s)."""
+    from beidou.gateways.composite import CompositeGateway
+    from beidou.gateways.terminal import TerminalGateway
+
+    names = [n.strip().lower() for n in gateway_spec.split(",") if n.strip()]
+    gateways = []
+    for name in names:
+        if name == "terminal":
+            gateways.append(TerminalGateway(console=console))
+        elif name == "web":
+            from beidou.gateways.web import WebGateway
+            gateways.append(WebGateway(
+                broker=broker, task_id=task_id,
+                host=web_host, port=web_port,
+                auto_open=open_browser,
+            ))
+        elif name == "tui":
+            from beidou.gateways.tui import TUIGateway
+            gateways.append(TUIGateway(task_id=task_id))
+        else:
+            console.print(f"[yellow]Warning:[/yellow] unknown gateway '{name}', skipping.")
+
+    if not gateways:
+        return TerminalGateway(console=console)
+    if len(gateways) == 1:
+        return gateways[0]
+    return CompositeGateway(gateways)
+
+
+async def _run_task(
+    task: str,
+    model: str,
+    template: str,
+    base_url: str | None = None,
+    max_question_wait: int = 300,
+    gateway: str = "terminal",
+    web_host: str = "127.0.0.1",
+    web_port: int = 7777,
+    open_browser: bool = False,
+) -> None:
     from beidou.agent import Agent
     from beidou.context import AgentContext
     from beidou.db import complete_task, upsert_task
@@ -126,10 +185,14 @@ async def _run_task(task: str, model: str, template: str, base_url: str | None =
     ctx._kv["emitter"] = emitter
     ctx._kv["cwd"] = workspace_path
     ctx._kv["console"] = console
-    ctx._kv["question_broker"] = QuestionBroker()
+    broker = QuestionBroker()
+    ctx._kv["question_broker"] = broker
     ctx._kv["max_question_wait"] = max_question_wait
     if base_url:
         ctx._kv["base_url"] = base_url
+
+    gw = _build_gateway(gateway, broker, task_id, web_host, web_port, open_browser, console)
+    broker.set_gateway(gw)
 
     # Record task start
     upsert_task(task_id=task_id, description=task, model=model, template=template, started_at=time.time())
@@ -141,19 +204,27 @@ async def _run_task(task: str, model: str, template: str, base_url: str | None =
 
     agent = Agent(model=model, role="leader", ctx=ctx, system_prompt=system_prompt)
 
+    _has_web = "web" in gateway.lower()
+    await gw.start()
     try:
         result = await agent.run(task)
         complete_task(task_id=task_id, ended_at=time.time(), status="completed")
         await emitter.emit("task_completed", agent_id=ctx.agent_id, status="completed")
         console.rule("[green]Done[/green]")
         console.print(result)
+        console.print(f"\n[dim]task_id: {task_id} — run `beidou stats {task_id}` for details[/dim]")
+        if _has_web:
+            console.print("[dim]Web UI staying up — Ctrl+C to exit.[/dim]")
+            await asyncio.get_running_loop().create_future()  # blocks until Ctrl+C
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
     except Exception as exc:
         complete_task(task_id=task_id, ended_at=time.time(), status="failed")
         await emitter.emit("task_completed", agent_id=ctx.agent_id, status="failed", error=str(exc))
         Console(stderr=True).print(f"[red]Failed:[/red] {exc}")
         raise
-
-    console.print(f"\n[dim]task_id: {task_id} — run `beidou stats {task_id}` for details[/dim]")
+    finally:
+        await gw.stop()
 
 
 # ------------------------------------------------------------------ #
