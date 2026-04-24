@@ -47,6 +47,7 @@ def _build_tools(tool_names: list[str]):
     """Instantiate tools by name."""
     from beidou.tools.bash import ShellTool
     from beidou.tools.files import ReadFileTool, WriteFileTool
+    from beidou.tools.question_tools import AskUserTool, CheckQuestionsTool, AnswerQuestionTool, EscalateQuestionTool, AwaitTeamTool
     from beidou.tools.team_tools import CreateTeamTool, ReadMessagesTool, SendMessageTool
     from beidou.tools.web import WebFetchTool, WebSearchTool
 
@@ -59,6 +60,11 @@ def _build_tools(tool_names: list[str]):
         "create_team": CreateTeamTool,
         "send_message": SendMessageTool,
         "read_messages": ReadMessagesTool,
+        "ask_user": AskUserTool,
+        "check_questions": CheckQuestionsTool,
+        "answer_question": AnswerQuestionTool,
+        "escalate_question": EscalateQuestionTool,
+        "await_team": AwaitTeamTool,
     }
     return [registry[n]() for n in tool_names if n in registry]
 

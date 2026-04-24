@@ -55,7 +55,9 @@ def init() -> None:
 @click.option("--model", "-m", default="claude-sonnet-4-6", show_default=True, help="Anthropic model ID.")
 @click.option("--template", "-t", default="default", show_default=True, help="Agent template (default/coder/researcher).")
 @click.option("--base-url", default=None, help="Override Anthropic API base URL (also reads ANTHROPIC_BASE_URL env var).")
-def run(task: str, model: str, template: str, base_url: str | None) -> None:
+@click.option("--max-question-wait", default=300, show_default=True, type=int,
+              help="Seconds an agent's ask_user tool will wait for an answer before raising TimeoutError.")
+def run(task: str, model: str, template: str, base_url: str | None, max_question_wait: int) -> None:
     """Run an agent on TASK."""
     _ensure_db()
 
@@ -63,15 +65,20 @@ def run(task: str, model: str, template: str, base_url: str | None) -> None:
         console.print("[red]Error:[/red] ANTHROPIC_API_KEY not set.", file=sys.stderr)
         sys.exit(1)
 
-    asyncio.run(_run_task(task=task, model=model, template=template, base_url=base_url))
+    asyncio.run(_run_task(task=task, model=model, template=template,
+                          base_url=base_url, max_question_wait=max_question_wait))
 
 
-async def _run_task(task: str, model: str, template: str, base_url: str | None = None) -> None:
+async def _run_task(task: str, model: str, template: str, base_url: str | None = None,
+                    max_question_wait: int = 300) -> None:
     from beidou.agent import Agent
     from beidou.context import AgentContext
     from beidou.db import complete_task, upsert_task
     from beidou.events import EventEmitter
+    from beidou.inbox import QuestionBroker
+    from beidou.layers.inbox_layer import InboxLayer
     from beidou.layers.observability_layer import ObservabilityLayer
+    from beidou.layers.resilience_layer import ResilienceLayer
     from beidou.layers.tools_layer import ToolsLayer
     from beidou.layers.workspace_layer import WorkspaceLayer
     from beidou.team import _build_tools, _load_template
@@ -104,11 +111,23 @@ async def _run_task(task: str, model: str, template: str, base_url: str | None =
     )
     tools_layer = ToolsLayer(tools)
     workspace_layer = WorkspaceLayer(workspace_path)
+    resilience_layer = ResilienceLayer(fallback_model="claude-haiku-4-5-20251001")
+    inbox_layer = InboxLayer()
 
-    ctx = AgentContext.root(task_id=task_id, layers=[tools_layer, workspace_layer, obs_layer])
+    # Layer order: ResilienceLayer sits before ObservabilityLayer so observability
+    # only records final successful attempts (retry storms don't inflate metrics).
+    # InboxLayer is last so its on_llm_call nudge fires innermost — closest to the
+    # real request. All layers mounted on root only; member contexts inherit via _chain().
+    ctx = AgentContext.root(
+        task_id=task_id,
+        layers=[tools_layer, workspace_layer, resilience_layer, obs_layer, inbox_layer],
+    )
     ctx._kv["model"] = model
     ctx._kv["emitter"] = emitter
     ctx._kv["cwd"] = workspace_path
+    ctx._kv["console"] = console
+    ctx._kv["question_broker"] = QuestionBroker()
+    ctx._kv["max_question_wait"] = max_question_wait
     if base_url:
         ctx._kv["base_url"] = base_url
 

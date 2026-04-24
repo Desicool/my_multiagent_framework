@@ -10,6 +10,7 @@ allowed-tools:
   - file_read
   - file_write
   - web_search
+  - ask_user
 triggers:
   - clarify requirements
   - write requirements
@@ -24,8 +25,10 @@ Steps:
 2. Identify all functional requirements (what the system must do).
 3. Identify non-functional requirements (performance, reliability, compatibility, etc.).
 4. Write acceptance criteria — specific, testable conditions that define "done".
-5. If anything is ambiguous, reason through the most likely intent and document
-   your assumption explicitly under "Assumptions".
+5. If anything is ambiguous, call `ask_user(question, context)` and block for the reply.
+   - The question bubbles up to the team leader, who may answer or escalate to the human user.
+   - You receive the answer as a normal tool result.
+   - Only fall back to a documented Assumption (the current behavior) if `ask_user` raises TimeoutError — i.e., nobody responded.
 
 Write requirements.md to the workspace with these sections:
   # Requirements
