@@ -1,0 +1,844 @@
+"""Concrete Orchestrator implementing ``beidou.primitives.core.Orchestrator``.
+
+Owns the agent registry, team graph, per-agent inboxes, per-agent create_team
+locks, emission of observability events, and the resume-not-terminate
+recovery policy for contract violations.
+
+Every rule enforced here is load-bearing; see:
+
+* ``docs/orchestration.md`` — team graph, self-lead invariant, termination
+  cascade (leaf-first, root-last).
+* ``docs/agent-runtime.md`` — persistent-agent invariant; resume-not-terminate
+  on contract violations; N=3 escalation to leader (gateway for root).
+* ``docs/limits.md`` — every numeric boundary this file references.
+* ``docs/observability.md`` — event catalogue.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
+
+from beidou import sdk_agent
+from beidou.events import EventEmitter
+from beidou.primitives.core import (
+    CONTRACT_STRIKES,
+    INBOX_CAP,
+    Message,
+    Peer,
+    PrimitiveError,
+)
+from beidou.sdk_agent import RunResult, SpawnSpec
+from beidou.workspace import BEIDOU_DIR
+
+if TYPE_CHECKING:  # pragma: no cover
+    from beidou.gateways.base import BaseGateway
+
+
+# Sentinel "leader" for the root team. No actual agent by this id is
+# registered; it only serves as the ``leader_of("tm_root")`` answer so the
+# team graph is structurally uniform.
+USER_SENTINEL = "__user__"
+ROOT_TEAM_ID = "tm_root"
+
+# Limits.md #8: per-agent token ceiling.
+TOKEN_CEILING = 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# Records.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AgentRecord:
+    agent_id: str
+    task_id: str
+    team_id: str                      # team this agent is a MEMBER of
+    role: str
+    skill_name: str
+    model: Optional[str]
+    inbox: asyncio.Queue
+    create_team_lock: asyncio.Lock
+    last_status: str = "working"
+    last_status_detail: str = ""
+    contract_strikes: int = 0
+    run_task: Optional[asyncio.Task] = None
+    terminate_consumed: bool = False
+    total_tokens: int = 0
+
+
+@dataclass
+class TeamRecord:
+    team_id: str
+    name: str
+    task: str
+    leader_id: str                    # MUST equal caller_id of create_team
+    depth: int                        # 0 for root
+    member_ids: list[str] = field(default_factory=list)
+    rules: list[str] = field(default_factory=list)
+    parent_team_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator.
+# ---------------------------------------------------------------------------
+
+
+class Orchestrator:
+    """Concrete orchestrator driving the multi-agent system.
+
+    Instances are single-event-loop. No thread-safety guarantees beyond what
+    asyncio provides; every public method either runs synchronously on the
+    loop or is an ``async`` coroutine.
+    """
+
+    def __init__(
+        self,
+        task_id: str,
+        emitter: Optional[EventEmitter] = None,
+        skill_root: Optional[Path] = None,
+        gateway: "BaseGateway | None" = None,
+        *,
+        default_model: Optional[str] = None,
+    ) -> None:
+        self.task_id = task_id
+        self.emitter = emitter if emitter is not None else EventEmitter(task_id)
+        self.skill_root = Path(skill_root) if skill_root is not None else Path.cwd()
+        self.gateway = gateway
+        self._default_model = default_model
+
+        self._agents: dict[str, AgentRecord] = {}
+        self._teams: dict[str, TeamRecord] = {}
+        self._root_id: Optional[str] = None
+        self._root_terminated: bool = False
+
+        # Background emitter tasks — keep refs so they're not GC'd mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
+
+        # Lazily-created per-agent create_team locks.
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    # ------------------------------------------------------------------
+    # Protocol: registry lookups
+    # ------------------------------------------------------------------
+
+    def agent_exists(self, agent_id: str) -> bool:
+        return agent_id in self._agents
+
+    def agent_task(self, agent_id: str) -> str:
+        return self._agents[agent_id].task_id
+
+    def agent_team(self, agent_id: str) -> str:
+        return self._agents[agent_id].team_id
+
+    def leader_of(self, team_id: str) -> str:
+        return self._teams[team_id].leader_id
+
+    def teams_led_by(self, agent_id: str) -> list[str]:
+        return [tid for tid, t in self._teams.items() if t.leader_id == agent_id]
+
+    def team_depth(self, team_id: str) -> int:
+        return self._teams[team_id].depth
+
+    def team_members(self, team_id: str) -> list[str]:
+        return list(self._teams[team_id].member_ids)
+
+    def peer_snapshot(self, agent_id: str, scope: str) -> list[Peer]:
+        if agent_id not in self._agents:
+            return []
+        me = self._agents[agent_id]
+        out: list[Peer] = []
+
+        def _peer(aid: str) -> Peer:
+            a = self._agents[aid]
+            return Peer(
+                agent_id=aid,
+                role=a.role,
+                team_id=a.team_id,
+                status=a.last_status,
+                is_leader_of=self.teams_led_by(aid),
+            )
+
+        if scope == "team":
+            for mid in self.team_members(me.team_id):
+                if mid == agent_id or mid not in self._agents:
+                    continue
+                out.append(_peer(mid))
+        elif scope == "children":
+            seen: set[str] = set()
+            for tid in self.teams_led_by(agent_id):
+                for mid in self.team_members(tid):
+                    if mid in seen or mid not in self._agents:
+                        continue
+                    seen.add(mid)
+                    out.append(_peer(mid))
+        elif scope == "all":
+            for aid, a in self._agents.items():
+                if aid == agent_id or a.task_id != me.task_id:
+                    continue
+                out.append(_peer(aid))
+        return out
+
+    # ------------------------------------------------------------------
+    # Protocol: inbox
+    # ------------------------------------------------------------------
+
+    async def inbox_put(self, recipient: str, msg: Message) -> None:
+        """Enqueue ``msg`` onto ``recipient``'s inbox.
+
+        Auto-bypasses the cap when the sender is Beidou itself (``from_id ==
+        "beidou"``), which covers terminate sentinels — those must not be
+        lost to a full inbox. All other senders get ``inbox_full`` when at
+        the cap.
+        """
+        if recipient not in self._agents:
+            raise PrimitiveError("unknown_recipient", f"no such agent: {recipient}", to=recipient)
+        rec = self._agents[recipient]
+        if msg.from_id != "beidou" and rec.inbox.qsize() >= INBOX_CAP:
+            raise PrimitiveError(
+                "inbox_full",
+                f"{recipient}'s inbox is at cap ({INBOX_CAP})",
+                to=recipient,
+                cap=INBOX_CAP,
+            )
+        rec.inbox.put_nowait(msg)
+
+    async def inbox_drain(self, agent_id: str) -> list[Message]:
+        q = self._agents[agent_id].inbox
+        out: list[Message] = []
+        while not q.empty():
+            out.append(q.get_nowait())
+        return out
+
+    async def inbox_get_one(
+        self,
+        agent_id: str,
+        from_filter: Optional[str],
+        timeout: float,
+    ) -> Optional[Message]:
+        rec = self._agents[agent_id]
+        q = rec.inbox
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+            if from_filter is not None and msg.from_id != from_filter:
+                # Drop non-matching; keep waiting (matches FakeOrchestrator
+                # semantics and the tool-surface spec for ``from`` filter).
+                continue
+            # MUST flip BEFORE returning so sdk_agent's post-loop
+            # was_terminated() sees the correct state.
+            if msg.kind == "terminate":
+                rec.terminate_consumed = True
+            return msg
+
+    def inbox_size(self, agent_id: str) -> int:
+        return self._agents[agent_id].inbox.qsize()
+
+    # ------------------------------------------------------------------
+    # Protocol: team spawn
+    # ------------------------------------------------------------------
+
+    async def spawn_team(
+        self,
+        leader_id: str,
+        name: str,
+        task: str,
+        roles: list[dict],
+        rules: list[str],
+    ) -> dict:
+        """Create a sub-team and launch SDK runs for each member.
+
+        Called from ``create_team`` primitive after fan-out / depth / lock
+        checks pass. Self-lead invariant: ``leader_id`` comes in as the
+        caller's id from the primitive; we record it verbatim.
+        """
+        if leader_id not in self._agents:
+            raise PrimitiveError("unknown_agent", f"no such leader: {leader_id}")
+
+        parent_team_id = self.agent_team(leader_id)
+        new_depth = self.team_depth(parent_team_id) + 1
+
+        team_id = f"tm_{uuid.uuid4().hex[:8]}"
+        members_out: list[dict] = []
+        new_records: list[tuple[AgentRecord, SpawnSpec]] = []
+
+        # Pre-validate all templates before allocating ids; surface
+        # unknown_template without half-spawning.
+        for r in roles:
+            tmpl = r.get("template")
+            if not tmpl:
+                raise PrimitiveError("unknown_template", "role missing 'template'", role=r)
+            try:
+                from beidou.skills.loader import load_skill, SkillError
+                load_skill(self.skill_root, tmpl)
+            except SkillError as exc:
+                raise PrimitiveError(
+                    "unknown_template",
+                    f"cannot resolve skill template {tmpl!r}: {exc}",
+                    template=tmpl,
+                )
+            except Exception:
+                # Loader itself blew up for some non-SkillError reason — let
+                # it propagate; it's not a primitive-visible condition.
+                raise
+
+        # Workspace for the new team.
+        workspace_path = BEIDOU_DIR / "workspaces" / self.task_id / team_id
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        task_id = self.agent_task(leader_id)
+        for r in roles:
+            agent_id = f"ag_{uuid.uuid4().hex[:8]}"
+            role_name = r.get("role", "member")
+            role_desc = r.get("description", "")
+            model = r.get("model") or self._default_model
+
+            rec = AgentRecord(
+                agent_id=agent_id,
+                task_id=task_id,
+                team_id=team_id,
+                role=role_name,
+                skill_name=r["template"],
+                model=model,
+                inbox=asyncio.Queue(),
+                create_team_lock=asyncio.Lock(),
+            )
+            self._agents[agent_id] = rec
+            members_out.append({"agent_id": agent_id, "role": role_name})
+
+            spec = SpawnSpec(
+                caller_id=agent_id,
+                skill_name=r["template"],
+                skill_root=self.skill_root,
+                task=task,
+                model=model,
+                template_vars={
+                    "role": role_name,
+                    "role_description": role_desc,
+                    "team_name": name,
+                    "workspace_path": str(workspace_path),
+                },
+            )
+            new_records.append((rec, spec))
+
+        self._teams[team_id] = TeamRecord(
+            team_id=team_id,
+            name=name,
+            task=task,
+            leader_id=leader_id,
+            depth=new_depth,
+            member_ids=[m["agent_id"] for m in members_out],
+            rules=list(rules),
+            parent_team_id=parent_team_id,
+        )
+
+        self.emit_event(
+            "team_created",
+            {
+                "team_id": team_id,
+                "name": name,
+                "leader_id": leader_id,
+                "parent_team_id": parent_team_id,
+                "depth": new_depth,
+                "members": members_out,
+                "ts": time.time(),
+            },
+        )
+
+        # Launch runs AFTER team registry is populated so any early LLM call
+        # from a member sees the right topology.
+        for rec, spec in new_records:
+            rec.run_task = asyncio.create_task(
+                self._run_agent_with_policy(rec, spec),
+                name=f"agent-{rec.agent_id}",
+            )
+
+        return {"team_id": team_id, "members": members_out}
+
+    async def create_team_lock(self, agent_id: str) -> asyncio.Lock:
+        lock = self._locks.get(agent_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[agent_id] = lock
+        return lock
+
+    # ------------------------------------------------------------------
+    # Protocol: observability / gateway
+    # ------------------------------------------------------------------
+
+    def emit_event(self, name: str, payload: dict) -> None:
+        """Schedule an async emit to the underlying EventEmitter.
+
+        Also intercepts ``turn.usage`` to accumulate per-agent tokens and
+        trigger the limits.md #8 ceiling recommendation.
+        """
+        if name == "turn.usage":
+            self._observe_turn_usage(payload)
+
+        # Pull out the standard keys the EventEmitter expects positionally.
+        kwargs = dict(payload)
+        agent_id = (
+            kwargs.pop("agent_id", None)
+            or kwargs.pop("caller_id", None)
+            or ""
+        )
+        team_id = kwargs.pop("team_id", None)
+        if not team_id and agent_id in self._agents:
+            team_id = self._agents[agent_id].team_id
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop — best-effort synchronous write via the JSONL path.
+            # Happens in unit tests that call emit_event without a loop.
+            self._emit_sync_fallback(name, agent_id, team_id, kwargs)
+            return
+
+        task = loop.create_task(self.emitter.emit(name, agent_id, team_id, **kwargs))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _emit_sync_fallback(
+        self,
+        name: str,
+        agent_id: str,
+        team_id: Optional[str],
+        kwargs: dict,
+    ) -> None:
+        import json
+        try:
+            payload = {
+                "ts": time.time(),
+                "event": name,
+                "task_id": self.task_id,
+                "agent_id": agent_id,
+                "team_id": team_id,
+                **kwargs,
+            }
+            with self.emitter._path.open("a") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception:
+            pass
+
+    def _observe_turn_usage(self, payload: dict) -> None:
+        caller_id = payload.get("caller_id") or payload.get("agent_id")
+        if not caller_id or caller_id not in self._agents:
+            return
+        rec = self._agents[caller_id]
+        in_tok = int(payload.get("input_tokens") or 0)
+        out_tok = int(payload.get("output_tokens") or 0)
+        cache_c = int(payload.get("cache_creation_input_tokens") or 0)
+        cache_r = int(payload.get("cache_read_input_tokens") or 0)
+        rec.total_tokens += in_tok + out_tok + cache_c + cache_r
+
+        if rec.total_tokens < TOKEN_CEILING:
+            return
+
+        # Root agent has no leader to recommend to; escalate via gateway /
+        # dedicated event for the CLI to pick up.
+        if rec.agent_id == self._root_id:
+            # Fire exactly once per run: strip the flag via a marker.
+            if not getattr(rec, "_token_ceiling_fired", False):
+                rec._token_ceiling_fired = True  # type: ignore[attr-defined]
+                # Emit only — don't recurse via emit_event (we're called
+                # from inside it).
+                self._schedule_emit(
+                    "root_token_ceiling_reached",
+                    rec.agent_id,
+                    rec.team_id,
+                    {"total_tokens": rec.total_tokens, "ts": time.time()},
+                )
+            return
+
+        if getattr(rec, "_token_ceiling_fired", False):
+            return
+        rec._token_ceiling_fired = True  # type: ignore[attr-defined]
+        leader_id = self.leader_of(rec.team_id)
+        msg = Message(
+            from_id="beidou",
+            content=(
+                f"agent {rec.agent_id} exceeded token ceiling "
+                f"({rec.total_tokens} >= {TOKEN_CEILING}). "
+                f"Consider terminate_child({rec.agent_id})."
+            ),
+            ts=time.time(),
+            message_id=str(uuid.uuid4()),
+            kind="user",
+        )
+        # Schedule on the loop without blocking emit_event's caller.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        t = loop.create_task(self.inbox_put(leader_id, msg))
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+
+    def _schedule_emit(
+        self,
+        name: str,
+        agent_id: str,
+        team_id: Optional[str],
+        kwargs: dict,
+    ) -> None:
+        """Emit without re-entering ``emit_event`` (avoids recursion)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._emit_sync_fallback(name, agent_id, team_id, kwargs)
+            return
+        task = loop.create_task(self.emitter.emit(name, agent_id, team_id, **kwargs))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def gateway_ask_user(
+        self,
+        caller_id: str,
+        question: str,
+        context: Optional[str],
+    ) -> str:
+        if self.gateway is None:
+            raise PrimitiveError("gateway_unavailable", "no human gateway registered")
+        # BaseGateway's surface_question wants a Question + broker; that
+        # plumbing lives in QuestionBroker. The orchestrator-level gateway
+        # hook here is the simpler "ask one thing, block for answer" shape
+        # that the primitive expects. Implementations that only expose the
+        # broker-style surface should adapt in their own wrapper; we call an
+        # optional ``ask`` coroutine when present.
+        ask = getattr(self.gateway, "ask", None)
+        if ask is None:
+            raise PrimitiveError("gateway_unavailable", "gateway has no ask() method")
+        return await ask(caller_id, question, context)
+
+    def is_gateway_available(self) -> bool:
+        return self.gateway is not None and hasattr(self.gateway, "ask")
+
+    def record_status(
+        self,
+        caller_id: str,
+        state: str,
+        detail: Optional[str],
+    ) -> None:
+        rec = self._agents.get(caller_id)
+        if rec is not None:
+            rec.last_status = state
+            rec.last_status_detail = detail or ""
+        # Liveness signal as a data-only event; leader observes via
+        # list_peers. See orchestration.md "Liveness checks".
+        if state == "done" and rec is not None:
+            team = self._teams.get(rec.team_id)
+            all_done = bool(
+                team
+                and all(
+                    self._agents[mid].last_status == "done"
+                    for mid in team.member_ids
+                    if mid in self._agents
+                )
+            )
+            self._schedule_emit(
+                "liveness_check",
+                caller_id,
+                rec.team_id,
+                {"all_done": all_done, "ts": time.time()},
+            )
+
+    def was_terminated(self, caller_id: str) -> bool:
+        rec = self._agents.get(caller_id)
+        if rec is None:
+            return False
+        return rec.terminate_consumed
+
+    # ------------------------------------------------------------------
+    # Resume-not-terminate policy.
+    # ------------------------------------------------------------------
+
+    async def _run_agent_with_policy(
+        self,
+        rec: AgentRecord,
+        spec: SpawnSpec,
+    ) -> RunResult:
+        """Drive one agent's SDK loop through ``sdk_agent.run_agent``.
+
+        On contract violation (run ends without terminate), increments
+        ``contract_strikes`` and resumes with a nudge. After ``CONTRACT_STRIKES``
+        consecutive violations, escalates to the agent's parent leader via
+        ``send_message`` (for root: emits ``root_contract_escalation`` and, if
+        available, asks the user gateway). Resets the strike counter only on
+        a clean terminated exit.
+        """
+        current_spec = spec
+        last_result: Optional[RunResult] = None
+        while True:
+            # Looked up lazily on every iteration so tests can monkeypatch
+            # ``beidou.sdk_agent.run_agent``.
+            result = await sdk_agent.run_agent(self, current_spec)
+            last_result = result
+
+            if result.terminated:
+                # Per agent-runtime.md #4, strikes count "consecutive"
+                # violations; a clean terminated exit breaks the chain, but
+                # since this is the terminal state of the run we simply
+                # leave the counter alone -- no downstream reader cares.
+                self.emit_event(
+                    "agent_exited",
+                    {
+                        "caller_id": rec.agent_id,
+                        "strikes": rec.contract_strikes,
+                        "terminated": True,
+                        "ts": time.time(),
+                    },
+                )
+                return result
+
+            rec.contract_strikes += 1
+            self.emit_event(
+                "contract_violation",
+                {
+                    "caller_id": rec.agent_id,
+                    "strikes": rec.contract_strikes,
+                    "stop_reason": result.stop_reason,
+                    "action": (
+                        "escalated_to_user"
+                        if rec.agent_id == self._root_id and rec.contract_strikes >= CONTRACT_STRIKES
+                        else "escalated_to_leader"
+                        if rec.contract_strikes >= CONTRACT_STRIKES
+                        else "resumed"
+                    ),
+                    "ts": time.time(),
+                },
+            )
+
+            if rec.contract_strikes >= CONTRACT_STRIKES:
+                await self._escalate_contract_violation(rec)
+                self.emit_event(
+                    "agent_exited",
+                    {
+                        "caller_id": rec.agent_id,
+                        "strikes": rec.contract_strikes,
+                        "terminated": False,
+                        "ts": time.time(),
+                    },
+                )
+                return result
+
+            # Resume with a nudge; keep skill_name / model / etc. intact.
+            current_spec = replace(
+                current_spec,
+                task=(
+                    "[beidou] You ended your turn without a tool call but "
+                    "have not been terminated. Call "
+                    "mcp__beidou__wait_for_message (timeout=60) and continue "
+                    "waiting."
+                ),
+            )
+
+    async def _escalate_contract_violation(self, rec: AgentRecord) -> None:
+        """Post a recommendation to the agent's team leader.
+
+        For the root agent, whose "leader" is the user sentinel, escalate
+        via the human gateway if available; otherwise emit a dedicated
+        event the CLI can observe.
+        """
+        if rec.agent_id == self._root_id:
+            self._schedule_emit(
+                "root_contract_escalation",
+                rec.agent_id,
+                rec.team_id,
+                {"strikes": rec.contract_strikes, "ts": time.time()},
+            )
+            if self.is_gateway_available():
+                try:
+                    await self.gateway_ask_user(
+                        rec.agent_id,
+                        (
+                            f"Root agent {rec.agent_id} has violated the "
+                            f"no-self-exit contract {rec.contract_strikes} times. "
+                            f"Continue, or terminate the root?"
+                        ),
+                        None,
+                    )
+                except Exception:
+                    # Best-effort; escalation event already logged.
+                    pass
+            return
+
+        leader_id = self.leader_of(rec.team_id)
+        msg = Message(
+            from_id="beidou",
+            content=(
+                f"agent {rec.agent_id} has violated the no-self-exit "
+                f"contract {rec.contract_strikes} times. Consider "
+                f"terminate_child({rec.agent_id})."
+            ),
+            ts=time.time(),
+            message_id=str(uuid.uuid4()),
+            kind="user",
+        )
+        try:
+            await self.inbox_put(leader_id, msg)
+        except PrimitiveError:
+            # Leader's inbox full or unknown — best effort.
+            pass
+
+    # ------------------------------------------------------------------
+    # High-level entry points.
+    # ------------------------------------------------------------------
+
+    async def run_root(
+        self,
+        root_skill: str,
+        root_task: str,
+        *,
+        model: Optional[str] = None,
+    ) -> RunResult:
+        """Spawn the root agent and block until it exits.
+
+        The root agent can only be terminated by Beidou itself (on user
+        signal) via :meth:`terminate_root`.
+        """
+        if self._root_id is not None:
+            raise RuntimeError("run_root already invoked on this orchestrator")
+
+        effective_model = model or self._default_model
+
+        # Root team.
+        root_workspace = BEIDOU_DIR / "workspaces" / self.task_id / ROOT_TEAM_ID
+        root_workspace.mkdir(parents=True, exist_ok=True)
+
+        root_agent_id = f"ag_{uuid.uuid4().hex[:8]}"
+        self._teams[ROOT_TEAM_ID] = TeamRecord(
+            team_id=ROOT_TEAM_ID,
+            name="root",
+            task=root_task,
+            leader_id=USER_SENTINEL,
+            depth=0,
+            member_ids=[root_agent_id],
+            rules=[],
+            parent_team_id=None,
+        )
+        rec = AgentRecord(
+            agent_id=root_agent_id,
+            task_id=self.task_id,
+            team_id=ROOT_TEAM_ID,
+            role="root",
+            skill_name=root_skill,
+            model=effective_model,
+            inbox=asyncio.Queue(),
+            create_team_lock=asyncio.Lock(),
+        )
+        self._agents[root_agent_id] = rec
+        self._root_id = root_agent_id
+
+        spec = SpawnSpec(
+            caller_id=root_agent_id,
+            skill_name=root_skill,
+            skill_root=self.skill_root,
+            task=root_task,
+            model=effective_model,
+            template_vars={
+                "role": "root",
+                "role_description": root_task,
+                "team_name": "root",
+                "workspace_path": str(root_workspace),
+            },
+        )
+
+        rec.run_task = asyncio.create_task(
+            self._run_agent_with_policy(rec, spec),
+            name=f"agent-{root_agent_id}",
+        )
+
+        return await rec.run_task
+
+    async def terminate_root(self) -> None:
+        """Post a terminate sentinel to the root agent's inbox.
+
+        The cascade to every descendant is the root agent's responsibility
+        (see ``docs/orchestration.md`` "Termination cascade"). We do NOT
+        await the root task here — :meth:`shutdown` does.
+        """
+        if self._root_id is None:
+            return
+        if self._root_terminated:
+            return
+        self._root_terminated = True
+        sentinel = Message(
+            from_id="beidou",
+            content="__terminate__",
+            ts=time.time(),
+            message_id=str(uuid.uuid4()),
+            kind="terminate",
+        )
+        # bypass_cap semantics: from_id=="beidou" is the convention.
+        await self.inbox_put(self._root_id, sentinel)
+        self.emit_event(
+            "terminate_posted",
+            {
+                "caller_id": "beidou",
+                "agent_id": self._root_id,
+                "message_id": sentinel.message_id,
+                "ts": sentinel.ts,
+            },
+        )
+
+    async def shutdown(self, *, grace_seconds: float = 30.0) -> None:
+        """Graceful teardown.
+
+        Posts a terminate sentinel to the root (if not already done), waits
+        up to ``grace_seconds`` for the cascade to unwind, then cancels any
+        stragglers. Finally drains the background emitter tasks.
+        """
+        await self.terminate_root()
+
+        if self._root_id is not None:
+            rec = self._agents.get(self._root_id)
+            if rec is not None and rec.run_task is not None:
+                try:
+                    await asyncio.wait_for(rec.run_task, timeout=grace_seconds)
+                except asyncio.TimeoutError:
+                    rec.run_task.cancel()
+                    try:
+                        await rec.run_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+        # Cancel any other run tasks still in flight (e.g. leaf agents whose
+        # leaders never ack'd them). Best-effort.
+        pending = [
+            r.run_task for r in self._agents.values()
+            if r.run_task is not None and not r.run_task.done()
+        ]
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # Drain the background emitter tasks.
+        if self._bg_tasks:
+            try:
+                await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
+            except Exception:
+                pass
+
+
+__all__ = [
+    "Orchestrator",
+    "AgentRecord",
+    "TeamRecord",
+    "ROOT_TEAM_ID",
+    "USER_SENTINEL",
+    "TOKEN_CEILING",
+]

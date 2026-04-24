@@ -1,0 +1,411 @@
+"""MCP adapter for Beidou's eight agent primitives.
+
+Each primitive in :mod:`beidou.primitives.core` is exposed to a single
+``claude-agent-sdk`` agent as an in-process MCP tool under the ``beidou``
+server. The agent-visible names are (see ``docs/tool-surface.md``):
+
+* ``mcp__beidou__send_message``     -- A2A enqueue.
+* ``mcp__beidou__read_messages``    -- Non-blocking inbox drain.
+* ``mcp__beidou__wait_for_message`` -- Bounded blocking inbox read.
+* ``mcp__beidou__list_peers``       -- Peer snapshot (team/children/all).
+* ``mcp__beidou__ask_user``         -- Human gateway question.
+* ``mcp__beidou__report_status``    -- State update + observability.
+* ``mcp__beidou__create_team``      -- Spawn a sub-team; caller becomes leader.
+* ``mcp__beidou__terminate_child``  -- Post a terminate sentinel to a child.
+
+Per ``docs/tool-surface.md``: ``caller_id`` is baked into the per-spawn MCP
+server via closure -- the model NEVER supplies it, and every primitive runs
+through a uniform error-translation + observability wrapper (``_wrap``).
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any, Callable
+
+from claude_agent_sdk import create_sdk_mcp_server, tool
+
+from .core import (
+    Orchestrator,
+    PrimitiveError,
+    ask_user,
+    create_team,
+    list_peers,
+    read_messages,
+    report_status,
+    send_message,
+    terminate_child,
+    wait_for_message,
+)
+
+# Max characters of a JSON-serialised arg value kept in observability events.
+# Anything longer is replaced with a "<redacted: N chars>" placeholder so
+# large messages / task descriptions don't bloat the event log.
+_ARG_REDACT_THRESHOLD = 512
+
+
+def _json(obj: Any) -> str:
+    """Stable JSON encoding used for tool result content and error payloads."""
+    return json.dumps(obj, default=str, ensure_ascii=False)
+
+
+def _redact_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Shallow copy of args, replacing large string values with a placeholder."""
+    out: dict[str, Any] = {}
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > _ARG_REDACT_THRESHOLD:
+            out[k] = f"<redacted: {len(v)} chars>"
+        elif isinstance(v, (list, dict)):
+            encoded = _json(v)
+            if len(encoded) > _ARG_REDACT_THRESHOLD:
+                out[k] = f"<redacted: {len(encoded)} chars>"
+            else:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
+def build_mcp_server_for(orch: Orchestrator, caller_id: str):
+    """Build a per-spawn in-process MCP server bound to a single agent.
+
+    The returned value is an ``McpSdkServerConfig`` suitable for:
+
+    .. code-block:: python
+
+        options = ClaudeAgentOptions(
+            mcp_servers={"beidou": build_mcp_server_for(orch, caller_id)},
+            allowed_tools=[
+                "mcp__beidou__send_message",
+                "mcp__beidou__read_messages",
+                "mcp__beidou__wait_for_message",
+                "mcp__beidou__list_peers",
+                "mcp__beidou__ask_user",
+                "mcp__beidou__report_status",
+                "mcp__beidou__create_team",
+                "mcp__beidou__terminate_child",
+            ],
+            ...,
+        )
+
+    ``caller_id`` is captured by closure and never read from tool input.
+    Every call is observed via ``orch.emit_event("tool_called", {...})`` with
+    tool name, caller id, duration_ms, redacted input args, and -- on failure
+    -- ``error_code`` (and ``exception`` type for unexpected errors).
+
+    Errors are translated into structured tool results the model can reason
+    about rather than raised exceptions: ``PrimitiveError`` becomes an
+    ``is_error=True`` result carrying ``{error, message, details}``; any
+    unexpected exception becomes a generic ``internal_error`` result.
+    """
+
+    async def _wrap(
+        tool_name: str,
+        fn: Callable[..., Any],
+        raw_args: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        t0 = time.monotonic()
+        try:
+            result = await fn(**kwargs)
+        except PrimitiveError as e:
+            dur_ms = (time.monotonic() - t0) * 1000
+            orch.emit_event(
+                "tool_called",
+                {
+                    "caller_id": caller_id,
+                    "tool": tool_name,
+                    "args": _redact_args(raw_args),
+                    "duration_ms": dur_ms,
+                    "is_error": True,
+                    "error_code": e.code,
+                },
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": _json(
+                            {
+                                "error": e.code,
+                                "message": e.message,
+                                "details": e.details,
+                            }
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+        except Exception as e:
+            dur_ms = (time.monotonic() - t0) * 1000
+            orch.emit_event(
+                "tool_called",
+                {
+                    "caller_id": caller_id,
+                    "tool": tool_name,
+                    "args": _redact_args(raw_args),
+                    "duration_ms": dur_ms,
+                    "is_error": True,
+                    "error_code": "internal_error",
+                    "exception": type(e).__name__,
+                },
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": _json(
+                            {"error": "internal_error", "message": str(e)}
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+        else:
+            dur_ms = (time.monotonic() - t0) * 1000
+            orch.emit_event(
+                "tool_called",
+                {
+                    "caller_id": caller_id,
+                    "tool": tool_name,
+                    "args": _redact_args(raw_args),
+                    "duration_ms": dur_ms,
+                    "is_error": False,
+                },
+            )
+            return {
+                "content": [{"type": "text", "text": _json(result)}],
+            }
+
+    # ------------------------------------------------------------------
+    # Tool definitions. Schemas mirror ``docs/tool-surface.md`` field by
+    # field. Tools with optional fields use explicit JSON Schema (with an
+    # explicit ``required`` list) because the dict-style shorthand the SDK
+    # accepts marks every listed field as required.
+    # ------------------------------------------------------------------
+
+    @tool(
+        "send_message",
+        "Post a message to another agent's inbox. The only agent-to-agent "
+        "primitive. Same-task only; inbox cap enforced by Beidou.",
+        {"to": str, "content": str},
+    )
+    async def _send_message(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "send_message",
+            send_message,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+            to=args["to"],
+            content=args["content"],
+        )
+
+    @tool(
+        "read_messages",
+        "Atomic non-blocking drain of your inbox. Returns the current batch "
+        "of messages and empties the inbox.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    )
+    async def _read_messages(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "read_messages",
+            read_messages,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+        )
+
+    @tool(
+        "wait_for_message",
+        "Block until a message arrives or the timeout fires. Optionally "
+        "filter by sender agent_id. Timeout must be within Beidou's ceiling.",
+        {
+            "type": "object",
+            "properties": {
+                "timeout": {
+                    "type": "number",
+                    "description": "Max seconds to block (validated against limits.md).",
+                },
+                "from": {
+                    "type": "string",
+                    "description": "If set, only return when a message from this sender arrives.",
+                },
+            },
+            "required": ["timeout"],
+        },
+    )
+    async def _wait_for_message(args: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "orch": orch,
+            "caller_id": caller_id,
+            "timeout": args["timeout"],
+        }
+        # Tool schema field is "from" (collides with Python keyword), but the
+        # core primitive takes ``from_``. Translate here; omit when absent so
+        # the default (None) applies.
+        if "from" in args and args["from"] is not None:
+            kwargs["from_"] = args["from"]
+        return await _wrap(
+            "wait_for_message", wait_for_message, args, **kwargs
+        )
+
+    @tool(
+        "list_peers",
+        "List peers in the task graph. scope='team' (default, direct "
+        "teammates), 'children' (direct reports of teams you lead), or 'all' "
+        "(entire task graph).",
+        {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["team", "children", "all"],
+                    "description": "Scope of the peer snapshot.",
+                },
+            },
+            "required": [],
+        },
+    )
+    async def _list_peers(args: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"orch": orch, "caller_id": caller_id}
+        if "scope" in args and args["scope"] is not None:
+            kwargs["scope"] = args["scope"]
+        return await _wrap("list_peers", list_peers, args, **kwargs)
+
+    @tool(
+        "ask_user",
+        "Route a question to Beidou's human gateway. Blocks until the user "
+        "answers. Returns a structured error if no gateway is available or "
+        "the user declines.",
+        {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask the user.",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional background to accompany the question.",
+                },
+            },
+            "required": ["question"],
+        },
+    )
+    async def _ask_user(args: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "orch": orch,
+            "caller_id": caller_id,
+            "question": args["question"],
+        }
+        if "context" in args and args["context"] is not None:
+            kwargs["context"] = args["context"]
+        return await _wrap("ask_user", ask_user, args, **kwargs)
+
+    @tool(
+        "report_status",
+        "Report your current state (working|idle|blocked|done) with an "
+        "optional free-text detail. 'done' triggers parent liveness "
+        "re-evaluation.",
+        {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "enum": ["working", "idle", "blocked", "done"],
+                    "description": "Current agent state.",
+                },
+                "detail": {
+                    "type": "string",
+                    "description": "Free-text summary (required in practice when state='done').",
+                },
+            },
+            "required": ["state"],
+        },
+    )
+    async def _report_status(args: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "orch": orch,
+            "caller_id": caller_id,
+            "state": args["state"],
+        }
+        if "detail" in args and args["detail"] is not None:
+            kwargs["detail"] = args["detail"]
+        return await _wrap("report_status", report_status, args, **kwargs)
+
+    @tool(
+        "create_team",
+        "Spawn a sub-team. You become its leader by construction. 'roles' is "
+        "a list of {role, template, model?, description} dicts -- one per "
+        "member. Beidou rejects any leader_id override.",
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Human-readable team name."},
+                "task": {"type": "string", "description": "Task description."},
+                "roles": {
+                    "type": "array",
+                    "description": "One object per member with role, template, optional model, and description.",
+                    "items": {"type": "object"},
+                },
+                "rules": {
+                    "type": "array",
+                    "description": "Optional coordination rules visible to each member.",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["name", "task", "roles"],
+        },
+    )
+    async def _create_team(args: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "orch": orch,
+            "caller_id": caller_id,
+            "name": args["name"],
+            "task": args["task"],
+            "roles": args["roles"],
+        }
+        if "rules" in args and args["rules"] is not None:
+            kwargs["rules"] = args["rules"]
+        return await _wrap("create_team", create_team, args, **kwargs)
+
+    @tool(
+        "terminate_child",
+        "Post a terminate sentinel to a child agent's inbox. Only valid if "
+        "you lead the team that contains the target -- crossing team "
+        "boundaries is rejected even for ancestor leaders.",
+        {"agent_id": str},
+    )
+    async def _terminate_child(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "terminate_child",
+            terminate_child,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+            agent_id=args["agent_id"],
+        )
+
+    return create_sdk_mcp_server(
+        name="beidou",
+        version="1.0.0",
+        tools=[
+            _send_message,
+            _read_messages,
+            _wait_for_message,
+            _list_peers,
+            _ask_user,
+            _report_status,
+            _create_team,
+            _terminate_child,
+        ],
+    )
+
+
+__all__ = ["build_mcp_server_for"]
