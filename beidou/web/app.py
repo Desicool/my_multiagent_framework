@@ -9,6 +9,11 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+
+class AnswerBody(BaseModel):
+    answer: str
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -80,7 +85,7 @@ def _build_team_tree(teams: list[dict], agents: list[dict]) -> list[dict]:
     return [synthetic_root]
 
 
-def create_app() -> FastAPI:
+def create_app(broker=None, task_id=None) -> FastAPI:
     from beidou import db
 
     app = FastAPI(title="Beidou Web")
@@ -178,6 +183,42 @@ def create_app() -> FastAPI:
                     await aclose()
                 except Exception:
                     pass
+
+    @app.get("/api/questions/pending")
+    async def api_questions_pending():
+        b = broker  # captured from create_app args
+        if b is None:
+            raise HTTPException(status_code=503, detail="no active gateway")
+        questions = [
+            {
+                "qid": q.qid,
+                "asker_agent_id": q.asker_agent_id,
+                "prompt": q.prompt,
+                "context_hint": q.context_hint,
+                "chain": q.chain,
+                "created_at": q.created_at,
+            }
+            for q in list(b._pending.values())
+            if q.state == "at_user" and not q.future.done()
+        ]
+        return {"questions": questions}
+
+    @app.post("/api/questions/{qid}/answer")
+    async def api_questions_answer(qid: str, body: AnswerBody):
+        b = broker  # captured from create_app args
+        if b is None:
+            raise HTTPException(status_code=503, detail="no active gateway")
+        q = b._pending.get(qid)
+        if q is None:
+            raise HTTPException(status_code=404, detail="unknown_qid")
+        if q.future.done():
+            raise HTTPException(status_code=409, detail="already_answered")
+        # Questions in at_user state bypass broker.answer() (which checks for "pending" state)
+        # Set result directly on the future, then clean up
+        q.state = "answered"
+        b._pending.pop(qid, None)
+        q.future.set_result(body.answer)
+        return {"ok": True}
 
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 

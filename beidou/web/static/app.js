@@ -1,8 +1,5 @@
 // Beidou web UI — Alpine.js single-page app.
 // Route/store/WS logic; templates rendered as strings for Alpine's x-html.
-import { Copy, Pause, Play, ChevronDown, ChevronRight, createIcons }
-  from "https://esm.sh/lucide@0.344.0";
-const LUCIDE = { Copy, Pause, Play, ChevronDown, ChevronRight };
 
 const ESC_MAP = { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ESC_MAP[c]);
@@ -79,6 +76,12 @@ document.addEventListener("alpine:init", () => {
     drawerRight: false,
     timelineInstance: null,
 
+    // Questions
+    pendingQuestions: [],
+    activeQuestion: null,
+    questionAnswer: "",
+    questionPollId: null,
+
     // ----- lifecycle -----
     init() {
       window.addEventListener("hashchange", () => this.onRoute());
@@ -115,6 +118,7 @@ document.addEventListener("alpine:init", () => {
       if (this.wsPollTimer) { clearInterval(this.wsPollTimer); this.wsPollTimer = null; }
       if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
       if (this.timelineInstance) { try { this.timelineInstance.destroy(); } catch {} this.timelineInstance = null; }
+      if (this.questionPollId) { clearInterval(this.questionPollId); this.questionPollId = null; }
       this.wsAttempts = 0;
     },
 
@@ -173,6 +177,8 @@ document.addEventListener("alpine:init", () => {
       this.resetTaskStore();
       await this.loadTaskSnapshot(id);
       this.openWS(id);
+      await this.fetchPendingQuestions();
+      this.questionPollId = setInterval(() => this.fetchPendingQuestions(), 5000);
       // After HTML renders, try to draw timeline
       queueMicrotask(() => this.$nextTick(() => this.drawTimeline()));
     },
@@ -317,6 +323,15 @@ document.addEventListener("alpine:init", () => {
       } else if (e.event === "task_completed" && this.task) {
         this.task.status = "done";
         this.task.ended_at = e.ts;
+      } else if (e.event === "question_asked") {
+        this.fetchPendingQuestions();
+      } else if (e.event === "question_answered" || e.event === "question_timeout") {
+        const qid = e.qid;
+        this.pendingQuestions = this.pendingQuestions.filter(q => q.qid !== qid);
+        if (this.activeQuestion && this.activeQuestion.qid === qid) {
+          this.activeQuestion = null;
+          this.questionAnswer = "";
+        }
       }
       if (aid) {
         this.flashMap[aid] = Date.now() / 1000;
@@ -342,6 +357,33 @@ document.addEventListener("alpine:init", () => {
       for (const e of this.pausedBuffer.reverse()) this.events.unshift(e);
       this.pausedBuffer = [];
       if (this.events.length > 500) this.events.length = 500;
+    },
+    async fetchPendingQuestions() {
+      try {
+        const r = await fetch("/api/questions/pending");
+        if (!r.ok) return;
+        const j = await r.json();
+        this.pendingQuestions = j.questions || [];
+        if (this.activeQuestion) {
+          // Dismiss if already answered
+          const still = this.pendingQuestions.find(q => q.qid === this.activeQuestion.qid);
+          if (!still) { this.activeQuestion = null; this.questionAnswer = ""; }
+        }
+      } catch {}
+    },
+    async submitAnswer() {
+      if (!this.activeQuestion || !this.questionAnswer.trim()) return;
+      const qid = this.activeQuestion.qid;
+      try {
+        await fetch(`/api/questions/${encodeURIComponent(qid)}/answer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answer: this.questionAnswer }),
+        });
+        this.pendingQuestions = this.pendingQuestions.filter(q => q.qid !== qid);
+        this.activeQuestion = null;
+        this.questionAnswer = "";
+      } catch {}
     },
     rebuildTeamTree() {
       const byParent = {};
@@ -412,6 +454,13 @@ document.addEventListener("alpine:init", () => {
       const s = this.stats || {};
       const elapsed = elapsedStr(t.started_at, t.ended_at);
 
+      const questionBadge = this.pendingQuestions.length > 0
+        ? `<button class="btn" style="background: #7c3aed; color: white;"
+             onclick="window._beidouOpenQuestion()">
+             ❓ ${this.pendingQuestions.length} question${this.pendingQuestions.length !== 1 ? 's' : ''}
+           </button>`
+        : "";
+
       const header = `
         <div class="panel p-3 mb-3">
           <div class="flex items-start justify-between gap-4">
@@ -420,6 +469,7 @@ document.addEventListener("alpine:init", () => {
                 <span class="dot ${statusCls}" aria-hidden="true"></span>
                 <span class="mono text-[12px] fg-0">${esc(t.task_id)}</span>
                 <button class="btn" @click="copy(task && task.task_id || '')" aria-label="Copy task id">Copy task_id</button>
+                ${questionBadge}
               </div>
               <p class="fg-0 text-[13px]" style="margin:0;">${esc(t.description || "")}</p>
             </div>
@@ -742,12 +792,12 @@ document.addEventListener("alpine:init", () => {
   }));
 });
 
-// Hydrate Lucide icons on any [data-lucide] after each render. Not strictly
-// required — most iconography is unicode — but fulfils the ESM import contract
-// and lets `<i data-lucide="copy">` appear anywhere in the future.
-const hydrateIcons = () => {
-  try { createIcons({ icons: LUCIDE }); } catch {}
+// Alpine v3 compatible helper for x-html onclick contexts where Alpine directives can't be used.
+window._beidouOpenQuestion = function () {
+  const el = document.querySelector("[x-data]");
+  if (!el) return;
+  const data = window.Alpine ? window.Alpine.$data(el) : null;
+  if (data && data.pendingQuestions && data.pendingQuestions.length > 0) {
+    data.activeQuestion = data.pendingQuestions[0];
+  }
 };
-const mo = new MutationObserver(() => hydrateIcons());
-mo.observe(document.documentElement, { subtree: true, childList: true });
-hydrateIcons();

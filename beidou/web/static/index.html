@@ -5,20 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Beidou</title>
 
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" />
-  <link rel="stylesheet"
-        href="https://unpkg.com/vis-timeline@7/styles/vis-timeline-graph2d.min.css" />
+  <link rel="stylesheet" href="/vis-timeline.min.css" />
   <link rel="stylesheet" href="/styles.css" />
 
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/tailwindcss.js"></script>
   <script>
     tailwind.config = { corePlugins: { preflight: false } };
   </script>
-  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-  <script defer src="https://unpkg.com/vis-timeline@7/standalone/umd/vis-timeline-graph2d.min.js"></script>
+  <!-- app.js must execute before Alpine so Alpine.data("app") is registered before alpine:init fires -->
+  <script defer src="/app.js"></script>
+  <script defer src="/alpinejs.min.js"></script>
+  <script defer src="/vis-timeline.min.js"></script>
 </head>
 
 <body class="bg-0 fg-0">
@@ -74,9 +71,42 @@
         </section>
       </template>
     </main>
+  <!-- Question modal -->
+  <template x-if="activeQuestion">
+    <div class="fixed inset-0 z-50 flex items-center justify-center"
+         style="background: rgba(0,0,0,0.7);">
+      <div class="panel mono" style="width: 560px; max-width: 95vw; padding: 24px;">
+        <div class="fg-2 text-[11px] mb-1">
+          Question from <span x-text="activeQuestion.asker_agent_id" class="fg-1"></span>
+          <span class="fg-2" x-show="activeQuestion.chain && activeQuestion.chain.length > 1">
+            — chain: <span x-text="(activeQuestion.chain || []).join(' → ')"></span>
+          </span>
+        </div>
+        <p class="fg-0 mb-3 text-[13px]" x-text="activeQuestion.prompt"></p>
+        <p class="fg-2 text-[11px] mb-3" x-show="activeQuestion.context_hint"
+           x-text="'context: ' + activeQuestion.context_hint"></p>
+        <textarea class="mono text-[12px] w-full rounded"
+                  style="background: var(--bg-1); border: 1px solid var(--border); padding: 8px; color: var(--fg-0); resize: vertical;"
+                  rows="4"
+                  x-model="questionAnswer"
+                  placeholder="Type your answer…"
+                  @keydown.meta.enter="submitAnswer()"
+                  @keydown.ctrl.enter="submitAnswer()"></textarea>
+        <div class="flex gap-2 mt-3">
+          <button class="btn" @click="submitAnswer()"
+                  style="background: #7c3aed; color: white;">
+            Submit answer
+          </button>
+          <button class="btn" @click="activeQuestion = null; questionAnswer = ''">
+            Dismiss
+          </button>
+        </div>
+        <div class="fg-2 text-[10px] mt-2">Cmd+Enter or Ctrl+Enter to submit</div>
+      </div>
+    </div>
+  </template>
   </div>
 
   <style>[x-cloak] { display: none !important; }</style>
-  <script type="module" src="/app.js"></script>
 </body>
 </html>
