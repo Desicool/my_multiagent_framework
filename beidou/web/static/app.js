@@ -487,20 +487,8 @@ document.addEventListener("alpine:init", () => {
           </div>
         </div>`;
 
-      const timeline = `
-        <div class="panel mb-3">
-          <button class="w-full flex items-center justify-between px-3 py-2 text-[11px] mono fg-1"
-                  @click="timelineOpen = !timelineOpen; $nextTick(() => drawTimeline())"
-                  :aria-expanded="timelineOpen">
-            <span>Timeline</span>
-            <span x-text="timelineOpen ? '▾' : '▸'"></span>
-          </button>
-          <div x-show="timelineOpen" id="beidou-timeline" style="height: 120px;"></div>
-        </div>`;
-
       return `
         ${header}
-        ${timeline}
         <div class="flex gap-3" style="align-items: flex-start;">
           <aside class="pane-left panel" :class="{ 'drawer-open': drawerLeft }"
                  style="width: 260px; flex: none; max-height: 70vh; overflow: auto;">

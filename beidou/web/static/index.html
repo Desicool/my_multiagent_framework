@@ -54,6 +54,17 @@
         <section x-html="renderHome()"></section>
       </template>
 
+      <!-- Persistent timeline mount — lives outside x-html so vis.js survives re-renders -->
+      <section class="panel mb-3" x-show="routeName === 'task' && task" x-cloak>
+        <button class="w-full flex items-center justify-between px-3 py-2 text-[11px] mono fg-1"
+                @click="timelineOpen = !timelineOpen; $nextTick(() => drawTimeline())"
+                :aria-expanded="timelineOpen">
+          <span>Timeline</span>
+          <span x-text="timelineOpen ? '▾' : '▸'"></span>
+        </button>
+        <div x-show="timelineOpen" id="beidou-timeline" style="height: 120px;"></div>
+      </section>
+
       <!-- Task detail -->
       <template x-if="routeName === 'task'">
         <section x-html="renderTask()"></section>
