@@ -1,6 +1,6 @@
 ---
 name: test_engineer
-version: 1.0.0
+version: 1.1.0
 description: |
   Tests the implementation. Covers black-box tests (public interfaces only,
   no peeking at implementation), pressure tests (concurrent or load scenarios),
@@ -11,6 +11,10 @@ allowed-tools:
   - bash
   - file_read
   - file_write
+  - send_message
+  - read_messages
+  - wait_for_message
+  - report_status
 triggers:
   - test the code
   - write tests
@@ -72,3 +76,18 @@ Write test_report.md with:
   ...
 
   ## Overall: PASS / FAIL
+
+When your report is written, call `report_status(state="done", detail="test_report.md written")`,
+then call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment or termination.
+
+## Persistent-agent lifecycle — MANDATORY
+
+1. **Never end your turn without a tool call.** If you would otherwise emit an end_turn
+   with no tool call, call `wait_for_message(timeout=300)` instead.
+2. **When you have no pending work**, call `wait_for_message(timeout=300)`. Re-call on
+   timeout. Stay alive.
+3. **When work is done**, call `report_status(state="done", detail=<summary>)`, then
+   call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment.
+4. **When you receive a terminate sentinel** (wait_for_message returns content `__terminate__`
+   from `beidou`): write a one-line final acknowledgment and end your turn. This is the
+   ONE allowed end_turn path. (You do not lead teams, so no cascade step is required.)

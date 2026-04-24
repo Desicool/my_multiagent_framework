@@ -10,9 +10,12 @@ import uuid
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
+
+load_dotenv()
 
 console = Console()
 
@@ -72,7 +75,7 @@ def run(task: str, model: str, template: str, base_url: str | None,
     _ensure_db()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        console.print("[red]Error:[/red] ANTHROPIC_API_KEY not set.", file=sys.stderr)
+        Console(stderr=True).print("[red]Error:[/red] ANTHROPIC_API_KEY not set.")
         sys.exit(1)
 
     asyncio.run(_run_task(task=task, model=model, template=template,
@@ -119,6 +122,85 @@ def _build_gateway(
     return CompositeGateway(gateways)
 
 
+class _GatewayAdapter:
+    """Bridges :class:`~beidou.gateways.base.BaseGateway` to the orchestrator's
+    ``gateway_ask_user(caller_id, question, context) -> str`` contract.
+
+    The orchestrator calls ``await adapter.ask(caller_id, question, context)``.
+    We construct a :class:`~beidou.inbox.Question` with no holder (goes directly
+    to the user), register it in the broker so gateways can answer via
+    ``broker.answer(qid, text)``, surface it via the underlying gateway, and
+    block on the future.
+
+    NOTE: This path bypasses ``QuestionBroker.ask()``'s ``db.insert_question``
+    call, so ``ask_user`` questions are NOT persisted in the questions table.
+    This is acceptable for the current cutover pass; a follow-up should either
+    inline the DB write here or refactor ``QuestionBroker`` to expose a
+    context-free ask method.
+    """
+
+    def __init__(
+        self,
+        gateway: "BaseGateway",
+        broker: "QuestionBroker",
+        timeout: int = 300,
+    ) -> None:
+        self._gw = gateway
+        self._broker = broker
+        self._timeout = timeout
+
+    async def ask(self, caller_id: str, question: str, context: str | None) -> str:
+        import asyncio as _asyncio
+        from beidou.inbox import Question, _new_qid
+
+        loop = _asyncio.get_running_loop()
+        q = Question(
+            qid=_new_qid(),
+            asker_agent_id=caller_id,
+            current_holder_agent_id=None,
+            chain=[caller_id, "USER"],
+            prompt=question,
+            context_hint=context,
+            state="at_user",
+            future=loop.create_future(),
+        )
+        self._broker._pending[q.qid] = q
+        # Surface the question to the human via the registered gateway.
+        await self._gw.surface_question(q, self._broker)
+        try:
+            return await _asyncio.wait_for(q.future, timeout=self._timeout)
+        except _asyncio.TimeoutError:
+            q.state = "timed_out"
+            raise
+        finally:
+            self._broker._pending.pop(q.qid, None)
+
+
+# Legacy --template values that no longer have a SKILL.md.  The approved plan
+# keeps skills at beidou/skills/<domain>/<name>/SKILL.md; old YAML template
+# names that never mapped to a SKILL.md fall back to 'orchestrator'.
+_LEGACY_TEMPLATE_FALLBACK: frozenset[str] = frozenset(
+    {"default", "coder", "coding", "researcher"}
+)
+
+
+def _resolve_skill_name(template: str) -> str:
+    """Map the legacy --template flag value to a skill name.
+
+    If the user passed a legacy template name (default / coder / coding /
+    researcher) that has no SKILL.md, warn and fall back to 'orchestrator'.
+    Otherwise pass the value through as-is — it may be a valid skill name.
+    """
+    import sys as _sys
+    if template in _LEGACY_TEMPLATE_FALLBACK:
+        console.print(
+            f"[yellow]Warning:[/yellow] --template {template!r} is a legacy YAML template name "
+            f"with no SKILL.md; falling back to skill 'orchestrator'."
+        )
+        return "orchestrator"
+    return template
+
+
 async def _run_task(
     task: str,
     model: str,
@@ -130,97 +212,73 @@ async def _run_task(
     web_port: int = 7777,
     open_browser: bool = False,
 ) -> None:
-    from beidou.agent import Agent
-    from beidou.context import AgentContext
+    import sys as _sys
     from beidou.db import complete_task, upsert_task
     from beidou.events import EventEmitter
     from beidou.inbox import QuestionBroker
-    from beidou.layers.inbox_layer import InboxLayer
-    from beidou.layers.observability_layer import ObservabilityLayer
-    from beidou.layers.resilience_layer import ResilienceLayer
-    from beidou.layers.tools_layer import ToolsLayer
-    from beidou.layers.workspace_layer import WorkspaceLayer
-    from beidou.team import _build_tools, _load_template
+    from beidou.orchestrator import Orchestrator
 
     task_id = f"tsk_{uuid.uuid4().hex[:8]}"
     emitter = EventEmitter(task_id)
 
-    # Root agent workspace is wherever beidou was invoked
-    workspace_path = Path.cwd()
+    # Skill root: the beidou/skills/ directory shipped with the package.
+    # Mirrors _bundled_skills_dir() in beidou/skills/loader.py (PyInstaller-aware).
+    if getattr(_sys, "frozen", False):
+        skill_root = Path(_sys._MEIPASS) / "beidou" / "skills"  # type: ignore[attr-defined]
+    else:
+        skill_root = Path(__file__).parent / "skills"
 
-    # Load template (may include pre-built SkillTool instances)
-    tmpl = _load_template(template)
-    tools = _build_tools(tmpl.get("tools", [])) + list(tmpl.get("_skill_tools") or [])
+    # Resolve --template to a skill name, emitting a deprecation warning for
+    # legacy YAML template names that have no SKILL.md.
+    skill_name = _resolve_skill_name(template)
 
-    system_prompt = tmpl.get("system_prompt", "").format(
-        role="leader",
-        role_description="Initial agent for this task",
-        team_name="root",
-        workspace_path=str(workspace_path),
-    )
-
-    obs_layer = ObservabilityLayer(
-        emitter,
-        model=model,
-        role="leader",
-        template=template,
-        tools=tmpl.get("tools", []),
-        skills=tmpl.get("_skill_names") or [],
-        system_prompt=system_prompt,
-    )
-    tools_layer = ToolsLayer(tools)
-    workspace_layer = WorkspaceLayer(workspace_path)
-    resilience_layer = ResilienceLayer(fallback_model="claude-haiku-4-5-20251001")
-    inbox_layer = InboxLayer()
-
-    # Layer order: ResilienceLayer sits before ObservabilityLayer so observability
-    # only records final successful attempts (retry storms don't inflate metrics).
-    # InboxLayer is last so its on_llm_call nudge fires innermost — closest to the
-    # real request. All layers mounted on root only; member contexts inherit via _chain().
-    ctx = AgentContext.root(
-        task_id=task_id,
-        layers=[tools_layer, workspace_layer, resilience_layer, obs_layer, inbox_layer],
-    )
-    ctx._kv["model"] = model
-    ctx._kv["emitter"] = emitter
-    ctx._kv["cwd"] = workspace_path
-    ctx._kv["console"] = console
+    # Gateway + broker setup (unchanged from previous code).
     broker = QuestionBroker()
-    ctx._kv["question_broker"] = broker
-    ctx._kv["max_question_wait"] = max_question_wait
-    if base_url:
-        ctx._kv["base_url"] = base_url
-
     gw = _build_gateway(gateway, broker, task_id, web_host, web_port, open_browser, console)
     broker.set_gateway(gw)
+    gateway_adapter = _GatewayAdapter(gw, broker, timeout=max_question_wait)
 
-    # Record task start
+    orch = Orchestrator(
+        task_id=task_id,
+        emitter=emitter,
+        skill_root=skill_root,
+        gateway=gateway_adapter,
+        default_model=model,
+    )
+
+    # Record task start.  agent_id is a placeholder here because the
+    # orchestrator has not yet assigned the root agent id.  task_completed
+    # and agent_started/agent_completed events emitted by the orchestrator
+    # use the real agent id (orch._root_id), so they will correlate correctly
+    # in the events table.
     upsert_task(task_id=task_id, description=task, model=model, template=template, started_at=time.time())
-    await emitter.emit("task_started", agent_id=ctx.agent_id, model=model, template=template, task=task)
+    await emitter.emit("task_started", agent_id="", model=model, template=template, task=task)
 
     console.rule(f"[bold cyan]Beidou[/bold cyan] task [yellow]{task_id}[/yellow]")
-    console.print(f"[dim]model:[/dim] {model}  [dim]template:[/dim] {template}")
+    console.print(f"[dim]model:[/dim] {model}  [dim]skill:[/dim] {skill_name}")
     console.print(f"[bold]Task:[/bold] {task}\n")
-
-    agent = Agent(model=model, role="leader", ctx=ctx, system_prompt=system_prompt)
 
     _has_web = "web" in gateway.lower()
     await gw.start()
     try:
-        result = await agent.run(task)
+        result = await orch.run_root(root_skill=skill_name, root_task=task, model=model)
+        # Use the real root agent id for the task_completed event so it correlates
+        # with agent_started / agent_completed events in the observability log.
+        root_id = orch._root_id or ""
         complete_task(task_id=task_id, ended_at=time.time(), status="completed")
-        await emitter.emit("task_completed", agent_id=ctx.agent_id, status="completed")
+        await emitter.emit("task_completed", agent_id=root_id, status="completed")
         console.rule("[green]Done[/green]")
-        console.print(result)
+        console.print(result.final_text)
         console.print(f"\n[dim]task_id: {task_id} — run `beidou stats {task_id}` for details[/dim]")
         if _has_web:
             console.print("[dim]Web UI staying up — Ctrl+C to exit.[/dim]")
             await asyncio.get_running_loop().create_future()  # blocks until Ctrl+C
     except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
+        await orch.shutdown()
     except Exception as exc:
+        root_id = orch._root_id or ""
         complete_task(task_id=task_id, ended_at=time.time(), status="failed")
-        await emitter.emit("task_completed", agent_id=ctx.agent_id, status="failed", error=str(exc))
+        await emitter.emit("task_completed", agent_id=root_id, status="failed", error=str(exc))
         Console(stderr=True).print(f"[red]Failed:[/red] {exc}")
         raise
     finally:

@@ -6,6 +6,17 @@ Autonomous multi-agent CLI system. Agents create teams; teams run in parallel; e
 
 - **Always use the venv** at `.venv/`. Run `source .venv/bin/activate` before any Python/beidou commands.
 - **Ask before any functional change.** Do not modify behaviour, APIs, or data schemas without explicit approval. Bug fixes and doc updates are fine; anything that changes how the system works requires confirmation first.
+- Before any non-trivial edit, open `docs/README.md`; any boundary change requires user approval (see `docs/limits.md`).
+
+## Specs first
+
+Before any non-trivial edit, open `docs/README.md` first and follow its pointers to the affected specs. Name which specs you read in chat.
+
+**Approval rule:** If a proposed change would modify a line in `docs/limits.md`, or change a contract in any other spec, stop and ask the user for approval via `AskUserQuestion` before writing code.
+
+**Cohesion rule:** Behaviour changes must land with a same-commit update to the relevant `docs/*.md`. A diff that changes behaviour without touching the specs fails review by definition.
+
+**Exemption:** Bug fixes that preserve every documented boundary and contract proceed without approval.
 
 ## Install
 
@@ -31,58 +42,40 @@ beidou stats <task_id>
 
 ```
 beidou/
-  context.py          # AgentContext — Go-style linked parent chain + interceptor layers
-  agent.py            # Agent: (model, role, ctx) + Anthropic tool-use loop
-  team.py             # Team: asyncio.TaskGroup parallel members, recursive sub-teams
-  workspace.py        # ~/.beidou/workspaces/{task_id}/{team_id}/ helpers
-  tools/              # BaseTool ABC + bash, file_read/write, web_search/fetch, team tools
-  layers/             # ContextLayer impls: ToolsLayer, WorkspaceLayer, ObservabilityLayer
+  orchestrator.py     # Concrete Orchestrator: registry, team graph, inboxes, contract-violation recovery, root-only Beidou termination
+  sdk_agent.py        # Thin wrapper around claude_agent_sdk.query(...); drains message iterator; emits events
+  primitives/
+    core.py           # Pure-Python impls of the 8 agent tools
+    mcp.py            # build_mcp_server_for(orch, caller_id) via create_sdk_mcp_server
+  skills/
+    loader.py         # SKILL.md → ClaudeAgentOptions (name-mapping: Beidou primitives → mcp__beidou__*; legacy classic names → SDK built-ins)
   events.py           # EventEmitter: JSONL (~/.beidou/events/{task_id}.jsonl) + SQLite upsert
   db.py               # SQLite: tasks, teams, agents, events tables
-  templates/          # YAML: default, coder, researcher
+  workspace.py        # ~/.beidou/workspaces/{task_id}/{team_id}/ helpers
+  gateways/           # Human gateway: TerminalGateway / WebGateway / TUIGateway / CompositeGateway
+  templates/          # YAML with tools: list + system_prompt:, used by legacy CLI --template flag (resolves to a skill name)
+  context.py          # Deprecated; kept only for legacy tool files that still import it; no longer on the hot path
+  layers/             # Deprecated; kept only for legacy tool files that still import them; no longer on the hot path
   cli.py              # Click CLI
 ```
 
 ## Key concepts
 
-**AgentContext** is the central abstraction — a linked parent chain where each level adds
-`ContextLayer` instances. Layers intercept `on_llm_call`, `on_tool_call`, `on_agent_start`,
-`on_agent_stop`. Observability is just a layer; no special-casing in agent.py.
+**Persistent-agent contract:** agents never self-exit. Completion is a state (`report_status(state="done")`), not an exit. Termination authority is strictly leader→member; Beidou terminates only the root agent on user signal. See `docs/agent-runtime.md`.
 
-```python
-ctx = AgentContext.root(task_id="tsk_abc", layers=[ToolsLayer(tools), ObservabilityLayer(emitter)])
-ctx._kv["model"] = model
-ctx._kv["emitter"] = emitter
-child_ctx = ctx.child(WorkspaceLayer(path), ObservabilityLayer(emitter))  # for sub-agents
-```
-
-**Team creation** happens via `CreateTeamTool`. The calling agent's context becomes the parent;
-child contexts inherit `task_id`, `model`, and `emitter` via the `_kv` chain. Members run in
-`asyncio.TaskGroup` (parallel).
+**Team creation** happens via the `create_team` primitive. Beidou injects `leader_id = caller_id` (self-lead invariant), so the calling agent always leads the team it creates. Recursion depth is capped — see `docs/limits.md` for the exact value.
 
 **Observability** data lives in two places:
 - `~/.beidou/events/{task_id}.jsonl` — raw append-only event log
 - `~/.beidou/stats.db` — SQLite aggregated stats (query with Grafana or CLI)
 
+Events flow from the SDK message stream through the orchestrator. `turn.usage` is emitted per unique `message_id`; `run.cost` is terminal. See `docs/observability.md` for the full schema.
+
 ## Templates
 
-`beidou/templates/*.yaml` — defines `tools` list and `system_prompt` for each agent type.
-The system prompt supports `{role}`, `{role_description}`, `{team_name}`, `{workspace_path}`.
+`beidou/templates/*.yaml` — legacy but still valid. Defines `tools:` list and `system_prompt` for each agent type. The `--template` CLI flag resolves to a skill name; the four legacy names (`default`, `coder`, `coding`, `researcher`) fall back to `orchestrator`. The system prompt supports `{role}`, `{role_description}`, `{team_name}`, `{workspace_path}`.
 
-Add new templates by dropping a YAML file in `beidou/templates/` — no code changes needed.
-
-## Adding a custom ContextLayer
-
-```python
-from beidou.context import BaseLayer
-
-class RateLimitLayer(BaseLayer):
-    async def on_llm_call(self, ctx, req, next):
-        await self._check_budget(ctx)
-        return await next(req)
-
-ctx = root_ctx.child(RateLimitLayer(budget=10.0))
-```
+To extend the system, add a skill under `beidou/skills/` or a primitive in `beidou/primitives/core.py`. The old layer-hook protocol is no longer on the hot path and should not be extended.
 
 ## Data stores
 

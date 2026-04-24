@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-version: 1.0.0
+version: 1.1.0
 description: |
   Completes software coding tasks end-to-end. Runs five sequential phases:
   requirements clarification → architecture design → implementation → testing
@@ -12,6 +12,13 @@ allowed-tools:
   - file_read
   - file_write
   - create_team
+  - send_message
+  - read_messages
+  - wait_for_message
+  - list_peers
+  - report_status
+  - terminate_child
+  - ask_user
 skills:
   - product_manager
   - software_architect
@@ -47,8 +54,11 @@ PHASE 3 — IMPLEMENTATION
      description: "<task What field>"}
     ... one per task
   ])
+  After spawning, use wait_for_message to collect completion reports from each member.
+  Each junior_engineer will send_message with status and call report_status(state="done").
   Gate: for every task-{n} in tasks.md, verify artifacts/task-{n}/DONE.md exists.
   If any DONE.md is missing, re-run that task's implementation.
+  When all members are done, call terminate_child for each member.
 
 PHASE 4 — TESTING & DEPLOYMENT (parallel)
   Call create_team("qa-deploy", roles=[
@@ -57,6 +67,8 @@ PHASE 4 — TESTING & DEPLOYMENT (parallel)
     {role: "deployer", template: "deployment_engineer",
      description: "Write deployment plan. Write deploy.md."}
   ])
+  Use wait_for_message to collect completion reports from each member.
+  When both members are done, call terminate_child for each.
   Gate: read test_report.md and deploy.md — both must exist.
 
 PHASE 5 — SIGN-OFF
@@ -64,12 +76,28 @@ PHASE 5 — SIGN-OFF
   Gate: read qa_report.md.
 
 DELIVERY GATE
-  If qa_report.md contains "APPROVED": summarise all deliverables and stop.
+  If qa_report.md contains "APPROVED":
+    Call report_status(state="done", detail=<summary of all deliverables>).
+    Then call wait_for_message — stay alive for re-assignment.
   If qa_report.md contains "REJECTED":
     - Read the rejection reasons.
     - If test failures: re-run Phase 3 (fix implementation) then Phase 4 and 5.
     - If missing requirements: re-run Phase 2 onward.
     - Re-run Phase 5 after each fix cycle.
   Loop until APPROVED. Never declare the task complete without APPROVED qa_report.md.
+
+## Persistent-agent lifecycle — MANDATORY
+
+1. **Never end your turn without a tool call.** If you would otherwise emit an end_turn
+   with no tool call, call `wait_for_message(timeout=300)` instead.
+2. **When you have no pending work**, call `wait_for_message(timeout=300)`. Re-call on
+   timeout. Stay alive.
+3. **When work is done**, call `report_status(state="done", detail=<summary>)`, then
+   call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment.
+4. **When you receive a terminate sentinel** (wait_for_message returns a message with
+   content `__terminate__` from `beidou`): for EVERY team you lead, call
+   `terminate_child(agent_id)` on EVERY member of that team, wait for each member's final
+   acknowledgment via `wait_for_message`. Then write a one-line final acknowledgment and
+   end your turn. This is the ONE allowed end_turn path.
 
 Workspace: {workspace_path}
