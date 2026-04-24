@@ -30,10 +30,23 @@ def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
 
 
 class ObservabilityLayer(BaseLayer):
-    def __init__(self, emitter: "EventEmitter", model: str = "", role: str = "member") -> None:
+    def __init__(
+        self,
+        emitter: "EventEmitter",
+        model: str = "",
+        role: str = "member",
+        template: str | None = None,
+        tools: list[str] | None = None,
+        skills: list[str] | None = None,
+        system_prompt: str | None = None,
+    ) -> None:
         self._emitter = emitter
         self._model = model
         self._role = role
+        self._template = template
+        self._tools = list(tools) if tools else []
+        self._skills = list(skills) if skills else []
+        self._system_prompt = system_prompt
 
     def provides_tools(self):
         return []
@@ -45,6 +58,10 @@ class ObservabilityLayer(BaseLayer):
             team_id=ctx.team_id,
             model=self._model,
             role=self._role,
+            template=self._template,
+            tools=self._tools,
+            skills=self._skills,
+            system_prompt=self._system_prompt,
         )
 
     async def on_agent_stop(self, ctx: "AgentContext", result: str = "") -> None:

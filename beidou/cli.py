@@ -86,7 +86,22 @@ async def _run_task(task: str, model: str, template: str, base_url: str | None =
     tmpl = _load_template(template)
     tools = _build_tools(tmpl.get("tools", [])) + list(tmpl.get("_skill_tools") or [])
 
-    obs_layer = ObservabilityLayer(emitter, model=model, role="leader")
+    system_prompt = tmpl.get("system_prompt", "").format(
+        role="leader",
+        role_description="Initial agent for this task",
+        team_name="root",
+        workspace_path=str(workspace_path),
+    )
+
+    obs_layer = ObservabilityLayer(
+        emitter,
+        model=model,
+        role="leader",
+        template=template,
+        tools=tmpl.get("tools", []),
+        skills=tmpl.get("_skill_names") or [],
+        system_prompt=system_prompt,
+    )
     tools_layer = ToolsLayer(tools)
     workspace_layer = WorkspaceLayer(workspace_path)
 
@@ -96,13 +111,6 @@ async def _run_task(task: str, model: str, template: str, base_url: str | None =
     ctx._kv["cwd"] = workspace_path
     if base_url:
         ctx._kv["base_url"] = base_url
-
-    system_prompt = tmpl.get("system_prompt", "").format(
-        role="leader",
-        role_description="Initial agent for this task",
-        team_name="root",
-        workspace_path=str(workspace_path),
-    )
 
     # Record task start
     upsert_task(task_id=task_id, description=task, model=model, template=template, started_at=time.time())
@@ -325,6 +333,26 @@ def _tail_events(task_id: str, as_json: bool) -> None:
         console.print(f"[red]No event log for task:[/red] {task_id}")
     except KeyboardInterrupt:
         pass
+
+
+# ------------------------------------------------------------------ #
+# serve                                                                #
+# ------------------------------------------------------------------ #
+
+@main.command()
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind (use 0.0.0.0 to expose on LAN).")
+@click.option("--port", default=7777, show_default=True, help="Port to bind.")
+def serve(host: str, port: int) -> None:
+    """Run the Beidou web UI (dashboard + live agent view)."""
+    _ensure_db()
+    import uvicorn
+    from beidou.web.app import create_app
+
+    if host not in ("127.0.0.1", "localhost"):
+        console.print(f"[yellow]Warning:[/yellow] binding {host}:{port} — web UI has no auth; do not expose to untrusted networks.")
+
+    console.print(f"[bold cyan]Beidou web UI[/bold cyan] → http://{host}:{port}")
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 
 
 # ------------------------------------------------------------------ #

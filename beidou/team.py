@@ -35,6 +35,9 @@ def _load_template(template_name: str) -> dict:
             all_skills = load_skills()
             skill_tools = skills_as_tools(skill_names, all_skills)
             data["_skill_tools"] = skill_tools
+            data["_skill_names"] = skill_names
+        else:
+            data["_skill_names"] = []
         return data
     except Exception:
         return {"name": template_name, "tools": ["bash", "file_read", "file_write"], "system_prompt": "You are a helpful agent."}
@@ -142,18 +145,18 @@ class Team:
 
         tools = _build_tools(tmpl.get("tools", [])) + list(tmpl.get("_skill_tools") or [])
 
-        layers = [ToolsLayer(tools), WorkspaceLayer(workspace_path)]
-        if emitter:
-            layers.append(ObservabilityLayer(emitter, model=model, role=role))
-
-        member_ctx = self.parent_ctx.child(*layers, team_id=self.team_id)
-
         system_prompt = tmpl.get("system_prompt", "").format(
             role=role,
             role_description=role_def.get("description", ""),
             team_name=self.team_name,
             workspace_path=str(workspace_path),
         )
+
+        layers = [ToolsLayer(tools), WorkspaceLayer(workspace_path)]
+        if emitter:
+            layers.append(ObservabilityLayer(emitter, model=model, role=role, template=template_name, tools=tmpl.get("tools", []), skills=tmpl.get("_skill_names") or [], system_prompt=system_prompt))
+
+        member_ctx = self.parent_ctx.child(*layers, team_id=self.team_id)
 
         agent = Agent(model=model, role=role, ctx=member_ctx, system_prompt=system_prompt)
         member_task = f"{role_def['description']}\n\nTeam: {self.team_name}\nWorkspace: {workspace_path}\n\nFull objective: {self.task}"

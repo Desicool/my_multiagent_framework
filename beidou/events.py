@@ -56,6 +56,10 @@ class EventEmitter:
                 model=p.get("model", ""),
                 role=p.get("role", "member"),
                 started_at=ts,
+                template=p.get("template"),
+                tools_json=json.dumps(p.get("tools")) if p.get("tools") is not None else None,
+                skills_json=json.dumps(p.get("skills")) if p.get("skills") is not None else None,
+                system_prompt=p.get("system_prompt"),
             )
         elif event == "agent_completed":
             db.complete_agent(agent_id=agent_id, ended_at=ts)

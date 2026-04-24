@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS agents (
     cost_usd     REAL DEFAULT 0,
     tokens_in    INTEGER DEFAULT 0,
     tokens_out   INTEGER DEFAULT 0,
+    template        TEXT,
+    tools_json      TEXT,
+    skills_json     TEXT,
+    system_prompt   TEXT,
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 );
 
@@ -78,7 +82,22 @@ def init_db() -> None:
     BEIDOU_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(_SCHEMA)
+    _migrate_agents_columns(conn)
     conn.close()
+
+
+def _migrate_agents_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent ALTER TABLE for pre-existing DBs that lack the new agent columns."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+    for col, decl in (
+        ("template", "TEXT"),
+        ("tools_json", "TEXT"),
+        ("skills_json", "TEXT"),
+        ("system_prompt", "TEXT"),
+    ):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {decl}")
+    conn.commit()
 
 
 def _connect() -> sqlite3.Connection:
@@ -143,14 +162,21 @@ def upsert_agent(
     model: str,
     role: str,
     started_at: float,
+    template: str | None = None,
+    tools_json: str | None = None,
+    skills_json: str | None = None,
+    system_prompt: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO agents (agent_id, task_id, team_id, model, role, started_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO agents
+              (agent_id, task_id, team_id, model, role, started_at,
+               template, tools_json, skills_json, system_prompt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (agent_id, task_id, team_id, model, role, started_at),
+            (agent_id, task_id, team_id, model, role, started_at,
+             template, tools_json, skills_json, system_prompt),
         )
 
 
@@ -294,6 +320,37 @@ def get_events(
             f"SELECT * FROM events {where} ORDER BY ts DESC LIMIT ?", params
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_agent(agent_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM agents WHERE agent_id=?", (agent_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_last_event_per_agent(task_id: str) -> dict[str, dict]:
+    """Return {agent_id: latest_event_row} for every agent in the task.
+
+    One query: a correlated subquery that picks the max ts per agent.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT e.*
+            FROM events e
+            JOIN (
+                SELECT agent_id, MAX(ts) AS max_ts
+                FROM events
+                WHERE task_id = ?
+                GROUP BY agent_id
+            ) latest
+              ON e.agent_id = latest.agent_id
+             AND e.ts       = latest.max_ts
+            WHERE e.task_id = ?
+            """,
+            (task_id, task_id),
+        ).fetchall()
+    return {r["agent_id"]: dict(r) for r in rows if r["agent_id"]}
 
 
 def get_stats(task_id: str) -> dict:

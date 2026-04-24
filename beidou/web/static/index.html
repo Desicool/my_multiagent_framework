@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Beidou</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  <link rel="stylesheet"
+        href="https://unpkg.com/vis-timeline@7/styles/vis-timeline-graph2d.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { corePlugins: { preflight: false } };
+  </script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script defer src="https://unpkg.com/vis-timeline@7/standalone/umd/vis-timeline-graph2d.min.js"></script>
+</head>
+
+<body class="bg-0 fg-0">
+  <div x-data="app" x-init="init()" x-cloak>
+    <!-- Top bar -->
+    <header class="sticky top-0 z-30 flex items-center justify-between px-4 py-2"
+            style="background: var(--bg-0); border-bottom: 1px solid var(--border);">
+      <div class="flex items-center gap-3">
+        <a href="#/" class="mono font-semibold text-sm brand" aria-label="Beidou home">北斗 Beidou</a>
+        <nav class="flex items-center gap-1 text-[11px] fg-2 mono" x-show="breadcrumb.length">
+          <template x-for="(crumb, i) in breadcrumb" :key="i">
+            <span class="flex items-center gap-1">
+              <span class="fg-2">/</span>
+              <a :href="crumb.href" class="fg-1 hover:fg-0" x-text="crumb.label"></a>
+            </span>
+          </template>
+        </nav>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="drawer-toggles" x-show="routeName === 'task'">
+          <button class="btn" @click="drawerLeft = !drawerLeft" aria-label="Toggle team tree">◧ Teams</button>
+          <button class="btn" @click="drawerRight = !drawerRight" aria-label="Toggle event stream">Events ◨</button>
+        </span>
+        <span class="flex items-center gap-1 text-[11px] fg-1 mono" aria-live="polite">
+          <span class="dot"
+                :class="liveOK ? 'running pulse' : 'failed'"
+                aria-hidden="true"></span>
+          <span x-text="liveOK ? 'live' : 'offline'"></span>
+        </span>
+      </div>
+    </header>
+
+    <main class="px-4 py-4">
+      <!-- Dashboard -->
+      <template x-if="routeName === 'home'">
+        <section x-html="renderHome()"></section>
+      </template>
+
+      <!-- Task detail -->
+      <template x-if="routeName === 'task'">
+        <section x-html="renderTask()"></section>
+      </template>
+
+      <!-- Agent detail -->
+      <template x-if="routeName === 'agent'">
+        <section x-html="renderAgent()"></section>
+      </template>
+
+      <!-- 404 / unknown -->
+      <template x-if="routeName === 'unknown'">
+        <section class="panel p-4 fg-1">
+          <p>Unknown route. <a class="fg-0 underline" href="#/">Go home.</a></p>
+        </section>
+      </template>
+    </main>
+  </div>
+
+  <style>[x-cloak] { display: none !important; }</style>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
