@@ -53,13 +53,28 @@ class Agent:
                         try:
                             result = await self.ctx.invoke_tool(block.name, block.input)
                         except Exception as exc:
-                            result = {"error": str(exc)}
+                            # Last-chance safety net — ResilienceLayer should normally
+                            # catch this, but we never want an uncaught tool exception
+                            # to kill the agent loop.
+                            result = {
+                                "__tool_error__": True,
+                                "message": f"uncaught: {type(exc).__name__}: {exc}",
+                            }
+
+                        is_error = isinstance(result, dict) and result.get("__tool_error__") is True
+                        if is_error:
+                            content = result.get("message", "tool error")
+                        elif isinstance(result, str):
+                            content = result
+                        else:
+                            content = json.dumps(result)
 
                         tool_results.append(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": json.dumps(result) if not isinstance(result, str) else result,
+                                "content": content,
+                                "is_error": is_error,
                             }
                         )
                     messages.append({"role": "user", "content": tool_results})
@@ -70,6 +85,15 @@ class Agent:
                             final_text = block.text
                     break
         finally:
+            # Await any non-blocking teams this agent spawned that were never
+            # collected via await_team. Prevents orphaned asyncio.Tasks.
+            running_teams = self.ctx._kv.get("running_teams") or {}
+            if running_teams:
+                import asyncio as _asyncio
+                pending = [t for t in running_teams.values() if not t.done()]
+                if pending:
+                    await _asyncio.gather(*pending, return_exceptions=True)
+                running_teams.clear()
             await self.ctx.invoke_lifecycle("on_agent_stop", result=final_text)
 
         return final_text

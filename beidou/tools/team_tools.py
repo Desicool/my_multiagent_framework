@@ -64,6 +64,8 @@ class CreateTeamTool(BaseTool):
         rules: str | None = None,
         **_: Any,
     ) -> dict:
+        import asyncio as _asyncio
+
         # Import here to avoid circular imports at module load time
         from beidou.team import Team
 
@@ -74,8 +76,20 @@ class CreateTeamTool(BaseTool):
             rules=rules,
             parent_ctx=ctx,
         )
-        result = await team.run()
-        return {"team_id": team.team_id, "team_name": team_name, "result": result}
+
+        # Non-blocking: spawn team.run() as a background task and return immediately.
+        # The calling agent continues its loop and can answer inbox questions from
+        # members while the team runs. It collects the result later via await_team.
+        task_obj = _asyncio.create_task(team.run(), name=f"team:{team.team_id}")
+        running = ctx._kv.setdefault("running_teams", {})
+        running[team.team_id] = task_obj
+
+        return {
+            "team_id": team.team_id,
+            "team_name": team_name,
+            "status": "running",
+            "hint": "Use await_team(team_id) when ready to collect the result.",
+        }
 
 
 class SendMessageTool(BaseTool):
