@@ -18,6 +18,9 @@ class AnswerBody(BaseModel):
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
+# Path to the JSONL event directory — used for the questions endpoint.
+_EVENTS_DIR = Path.home() / ".beidou" / "events"
+
 
 def _live_agent_count(task_id: str) -> int:
     from beidou.db import DB_PATH
@@ -47,46 +50,29 @@ def _parse_json_col(val: Any) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
-def _build_team_tree(teams: list[dict], agents: list[dict]) -> list[dict]:
-    """Build a nested tree of teams + their agents. Synthesize a 'root' node
-    holding task-level (team_id==None) agents so the frontend has a single root."""
-    children_by_parent: dict[str | None, list[dict]] = {}
-    for t in teams:
-        children_by_parent.setdefault(t.get("parent_team_id"), []).append(t)
-
-    agents_by_team: dict[str | None, list[str]] = {}
-    for a in agents:
-        agents_by_team.setdefault(a.get("team_id"), []).append(a["agent_id"])
-
-    def walk(team_id: str | None) -> list[dict]:
-        nodes = []
-        for t in children_by_parent.get(team_id, []):
-            node = {
-                **t,
-                "children": walk(t["team_id"]),
-                "agents": agents_by_team.get(t["team_id"], []),
-            }
-            nodes.append(node)
-        return nodes
-
-    top_teams = walk(None)
-    root_agents = agents_by_team.get(None, [])
-    synthetic_root = {
-        "team_id": None,
-        "task_id": agents[0]["task_id"] if agents else None,
-        "parent_team_id": None,
-        "name": "root",
-        "leader_agent_id": None,
-        "workspace_path": None,
-        "created_at": None,
-        "children": top_teams,
-        "agents": root_agents,
-    }
-    return [synthetic_root]
+def _read_jsonl_events(path: Path) -> list[dict]:
+    """Read all events from a JSONL file; returns [] if absent or unreadable."""
+    events: list[dict] = []
+    if not path.exists():
+        return events
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return events
 
 
-def create_app(broker=None, task_id=None) -> FastAPI:
+def create_app(broker=None, task_id=None) -> "FastAPI":
     from beidou import db
+    from beidou.web.tail import current_cursor
 
     app = FastAPI(title="Beidou Web")
 
@@ -110,57 +96,68 @@ def create_app(broker=None, task_id=None) -> FastAPI:
         task = db.get_task(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="task not found")
+        # Flat team list — root team is the one where parent_team_id is null.
+        # The client builds the tree; the server does not synthesize a root node.
         teams = db.get_teams(task_id)
         agents_raw = db.get_agents(task_id=task_id)
-        last_event = db.get_last_event_per_agent(task_id)
-        agents = []
-        for a in agents_raw:
-            aid = a["agent_id"]
-            enriched = {
+        agents = [
+            {
                 **a,
                 "status": _agent_status(a),
-                "current_activity": last_event.get(aid),
+                "tools": _parse_json_col(a.get("tools_json")),
+                "skills": _parse_json_col(a.get("skills_json")),
             }
-            agents.append(enriched)
-        tree = _build_team_tree(teams, agents_raw)
+            for a in agents_raw
+        ]
+        # cursor = wall-clock ts of the last event currently in JSONL.
+        # If the file doesn't exist yet, cursor = 0.0.
+        cursor = current_cursor(task_id)
         return {
             "task": task,
             "teams": teams,
-            "team_tree": tree,
             "agents": agents,
             "stats": db.get_stats(task_id),
-            "last_event_per_agent": last_event,
-            "snapshot_ts": time.time(),
+            "cursor": cursor,
         }
+
+    @app.get("/api/tasks/{task_id}/events")
+    async def api_task_events(
+        task_id: str, since: float = 0.0, limit: int = 200
+    ) -> dict:
+        """Fallback polling endpoint.
+
+        Returns events with ``ts > since`` (strict greater-than — *since* is the
+        last cursor the client already applied).  Also returns the new cursor so
+        the client can advance its resume point.
+        """
+        path = _EVENTS_DIR / f"{task_id}.jsonl"
+        all_events = _read_jsonl_events(path)
+        # Strict greater-than filter.
+        filtered = [e for e in all_events if (e.get("ts") or 0.0) > since]
+        # Sort ascending by ts, then apply limit.
+        filtered.sort(key=lambda e: e.get("ts") or 0.0)
+        if len(filtered) > limit:
+            filtered = filtered[-limit:]
+        cursor = max((e.get("ts") or 0.0 for e in filtered), default=since)
+        return {"events": filtered, "cursor": cursor}
 
     @app.get("/api/agents/{agent_id}")
     async def api_agent(agent_id: str) -> dict:
+        """Thin wrapper — returns agent metadata; events come from the task stream."""
         agent = db.get_agent(agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail="agent not found")
-        events = db.get_events(agent_id=agent_id, limit=200)
-        events_asc = list(reversed(events))
         enriched = {
             **agent,
             "status": _agent_status(agent),
             "tools": _parse_json_col(agent.get("tools_json")),
             "skills": _parse_json_col(agent.get("skills_json")),
         }
-        return {"agent": enriched, "events": events_asc}
-
-    @app.get("/api/tasks/{task_id}/events")
-    async def api_task_events(
-        task_id: str, since: float | None = None, limit: int = 200
-    ) -> dict:
-        events = db.get_events(task_id=task_id, limit=limit)
-        if since is not None:
-            events = [e for e in events if (e.get("ts") or 0) > since]
-        events_asc = sorted(events, key=lambda e: e.get("ts") or 0)
-        return {"events": events_asc}
+        return {"agent": enriched, "events": []}
 
     @app.websocket("/ws/tasks/{task_id}")
     async def ws_task(ws: WebSocket, task_id: str) -> None:
-        from beidou.web.tail import tail_events
+        from beidou.web.tail import current_cursor, tail_events
 
         await ws.accept()
         since_param = ws.query_params.get("since")
@@ -170,10 +167,33 @@ def create_app(broker=None, task_id=None) -> FastAPI:
                 since_ts = float(since_param)
             except ValueError:
                 since_ts = None
+
+        # Snapshot the replay boundary BEFORE starting the generator so we know
+        # when the replay phase ends and the live phase begins.
+        replay_boundary = current_cursor(task_id) if since_ts is not None else None
+
         gen = tail_events(task_id, since_ts)
+        resumed_sent = (since_ts is None)  # live-only mode: no replay, skip marker
         try:
             async for evt in gen:
-                await ws.send_json(evt)
+                evt_ts = evt.get("ts") or 0.0
+
+                # Wrap event in the cursor-protocol envelope.
+                await ws.send_json({
+                    "type": "event",
+                    "event": evt,
+                    "cursor": evt_ts,
+                })
+
+                # Once we've delivered all replay events (ts <= replay_boundary),
+                # send the "resumed" marker so the client knows it's caught up.
+                if not resumed_sent and replay_boundary is not None and evt_ts > replay_boundary:
+                    await ws.send_json({
+                        "type": "resumed",
+                        "cursor": replay_boundary,
+                    })
+                    resumed_sent = True
+
         except WebSocketDisconnect:
             pass
         finally:
@@ -186,21 +206,47 @@ def create_app(broker=None, task_id=None) -> FastAPI:
 
     @app.get("/api/questions/pending")
     async def api_questions_pending():
+        """Return questions that are still awaiting a user answer.
+
+        The broker's _pending dict is the canonical in-flight handle (needed to
+        resolve the future).  We cross-reference with JSONL to filter out
+        questions that appear answered in the event log but whose future hasn't
+        been resolved yet (race window).  Questions with no broker entry are
+        orphaned (agent died) and are NOT returned.
+        """
         b = broker  # captured from create_app args
         if b is None:
             raise HTTPException(status_code=503, detail="no active gateway")
-        questions = [
-            {
+
+        # Build a set of qids that have a matching question_answered event in
+        # any live task's JSONL so we can suppress already-answered questions.
+        answered_qids: set[str] = set()
+        try:
+            for jsonl_path in _EVENTS_DIR.glob("*.jsonl"):
+                for evt in _read_jsonl_events(jsonl_path):
+                    if evt.get("type") == "question_answered":
+                        qid = evt.get("qid")
+                        if qid:
+                            answered_qids.add(qid)
+        except OSError:
+            pass  # best-effort; broker state is still valid
+
+        questions = []
+        for q in list(b._pending.values()):
+            if q.state != "at_user":
+                continue
+            if q.future.done():
+                continue
+            if q.qid in answered_qids:
+                continue
+            questions.append({
                 "qid": q.qid,
                 "asker_agent_id": q.asker_agent_id,
                 "prompt": q.prompt,
                 "context_hint": q.context_hint,
                 "chain": q.chain,
                 "created_at": q.created_at,
-            }
-            for q in list(b._pending.values())
-            if q.state == "at_user" and not q.future.done()
-        ]
+            })
         return {"questions": questions}
 
     @app.post("/api/questions/{qid}/answer")
@@ -213,8 +259,8 @@ def create_app(broker=None, task_id=None) -> FastAPI:
             raise HTTPException(status_code=404, detail="unknown_qid")
         if q.future.done():
             raise HTTPException(status_code=409, detail="already_answered")
-        # Questions in at_user state bypass broker.answer() (which checks for "pending" state)
-        # Set result directly on the future, then clean up
+        # Questions in at_user state bypass broker.answer() (which checks for
+        # "pending" state).  Set result directly on the future, then clean up.
         q.state = "answered"
         b._pending.pop(qid, None)
         q.future.set_result(body.answer)
