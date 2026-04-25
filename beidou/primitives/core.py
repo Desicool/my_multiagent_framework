@@ -405,8 +405,8 @@ async def create_team(
         )
     await lock.acquire()
     try:
-        # The orchestrator owns template resolution. Propagate
-        # unknown_template as-is if it raises PrimitiveError; everything
+        # The orchestrator owns skill resolution. Propagate
+        # unknown_skill as-is if it raises PrimitiveError; everything
         # else bubbles.
         result = await orch.spawn_team(
             leader_id=caller_id,

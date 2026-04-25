@@ -43,14 +43,14 @@ Create a review team to stress-test SPEC_DRAFT.md:
   create_team("spec-review", roles=[
     {
       role: "test_advisor",
-      template: "test_engineer",
+      skill: "test_engineer",
       description: "Read SPEC_DRAFT.md. Identify testability gaps, missing interface
                     contracts, ambiguous behaviour, and edge cases not covered.
                     Write TEST_CONCERNS.md in the workspace."
     },
     {
       role: "deploy_advisor",
-      template: "deployment_engineer",
+      skill: "deployment_engineer",
       description: "Read SPEC_DRAFT.md. Identify infrastructure risks, missing
                     configuration surface, scalability limits, and environment concerns.
                     Write DEPLOY_CONCERNS.md in the workspace."
@@ -77,8 +77,24 @@ Use this format for each task:
 Aim for tasks that a junior engineer can complete in a single agent loop without
 coordinating with other tasks. If tasks have dependencies, list them under Inputs.
 
-When SPEC.md and tasks.md are written, call `report_status(state="done", detail="SPEC.md and tasks.md written")`,
+When SPEC.md and tasks.md are written, follow the Completion handoff sequence below,
 then call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment or termination.
+
+## Completion handoff
+
+When you have finished your task and are ready to mark yourself done:
+
+1. **First**, emit a final assistant message that summarizes what you
+   accomplished. Be specific — list the files you wrote, the conclusions
+   you reached, the next-step pointers your leader needs. Beidou's runtime
+   forwards exactly that text to your leader as the completion report.
+   An empty or terse final message means an empty handoff. There is no
+   second chance.
+2. **Then** call `mcp__beidou__report_status(state="done", detail=<short status>)`.
+
+`send_message` is for mid-task progress updates only. It is NOT the
+completion mechanism — do not use it as a substitute for the final
+summary message above.
 
 ## Persistent-agent lifecycle — MANDATORY
 
@@ -86,8 +102,8 @@ then call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment o
    with no tool call, call `wait_for_message(timeout=300)` instead.
 2. **When you have no pending work**, call `wait_for_message(timeout=300)`. Re-call on
    timeout. Stay alive.
-3. **When work is done**, call `report_status(state="done", detail=<summary>)`, then
-   call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment.
+3. **When work is done**, follow the Completion handoff sequence above, then call
+   `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment.
 4. **When you receive a terminate sentinel** (wait_for_message returns content `__terminate__`
    from `beidou`): for EVERY team you lead, call `terminate_child(agent_id)` on EVERY member,
    wait for each member's final acknowledgment via `wait_for_message`. Then write a one-line

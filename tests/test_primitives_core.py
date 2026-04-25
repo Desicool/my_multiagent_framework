@@ -490,8 +490,8 @@ def test_create_team_happy_path():
 
     async def body():
         roles = [
-            {"role": "coder", "template": "junior_engineer", "description": "x"},
-            {"role": "tester", "template": "junior_engineer", "description": "y"},
+            {"role": "coder", "skill": "junior_engineer", "description": "x"},
+            {"role": "tester", "skill": "junior_engineer", "description": "y"},
         ]
         out = await create_team(o, caller_id="R", name="impl", task="build", roles=roles)
         assert "team_id" in out
@@ -506,7 +506,7 @@ def test_create_team_fanout_exceeded():
     o = _build()
 
     async def body():
-        roles = [{"role": f"r{i}", "template": "t"} for i in range(FAN_OUT_CAP + 1)]
+        roles = [{"role": f"r{i}", "skill": "t"} for i in range(FAN_OUT_CAP + 1)]
         with pytest.raises(PrimitiveError) as ei:
             await create_team(o, caller_id="R", name="big", task="x", roles=roles)
         assert ei.value.code == "fanout_exceeded"
@@ -527,7 +527,7 @@ def test_create_team_depth_exceeded():
                 caller_id="L",
                 name="child",
                 task="x",
-                roles=[{"role": "r", "template": "t"}],
+                roles=[{"role": "r", "skill": "t"}],
             )
         assert ei.value.code == "depth_exceeded"
 
@@ -550,7 +550,7 @@ def test_create_team_concurrent_rejected():
     o.spawn_team = slow_spawn  # type: ignore[assignment]
 
     async def body():
-        roles = [{"role": "r", "template": "t"}]
+        roles = [{"role": "r", "skill": "t"}]
         first = asyncio.create_task(
             create_team(o, caller_id="R", name="t1", task="x", roles=roles)
         )

@@ -31,7 +31,7 @@ beidou init
 
 ```bash
 beidou run --model claude-opus-4-7 "Build a REST API with auth and tests"
-beidou run --model claude-haiku-4-5-20251001 --template coder "Write a Python parser"
+beidou run --model claude-haiku-4-5-20251001 --skill orchestrator "Write a Python parser"
 beidou status [task_id]
 beidou teams <task_id>
 beidou events --follow --task <task_id>
@@ -71,9 +71,9 @@ beidou/
 
 Events flow from the SDK message stream through the orchestrator. `turn.usage` is emitted per unique `message_id`; `run.cost` is terminal. See `docs/observability.md` for the full schema.
 
-## Templates
+## Skills
 
-`beidou/templates/*.yaml` — legacy but still valid. Defines `tools:` list and `system_prompt` for each agent type. The `--template` CLI flag resolves to a skill name; the four legacy names (`default`, `coder`, `coding`, `researcher`) fall back to `orchestrator`. The system prompt supports `{role}`, `{role_description}`, `{team_name}`, `{workspace_path}`.
+Pass a skill name to `--skill` (e.g. `--skill orchestrator`). Skills live under `beidou/skills/<domain>/<name>/SKILL.md`. The `--template` flag is deprecated — it forwards the value as a skill name with a warning. The system prompt supports `{role}`, `{role_description}`, `{team_name}`, `{workspace_path}` substitutions defined in each SKILL.md body.
 
 To extend the system, add a skill under `beidou/skills/` or a primitive in `beidou/primitives/core.py`. The old layer-hook protocol is no longer on the hot path and should not be extended.
 

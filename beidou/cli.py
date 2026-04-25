@@ -56,7 +56,8 @@ def init() -> None:
 @main.command()
 @click.argument("task")
 @click.option("--model", "-m", default="claude-sonnet-4-6", show_default=True, help="Anthropic model ID.")
-@click.option("--template", "-t", default="default", show_default=True, help="Agent template (default/coder/researcher).")
+@click.option("--skill", "-s", default="orchestrator", show_default=True, help="Agent skill name (e.g. orchestrator).")
+@click.option("--template", "-t", default=None, hidden=True, help="Deprecated alias for --skill. Use --skill instead.")
 @click.option("--base-url", default=None, help="Override Anthropic API base URL (also reads ANTHROPIC_BASE_URL env var).")
 @click.option("--max-question-wait", default=300, show_default=True, type=int,
               help="Seconds an agent's ask_user tool will wait for an answer before raising TimeoutError.")
@@ -68,7 +69,7 @@ def init() -> None:
               help="Port for web gateway (only used with --gateway web).")
 @click.option("--open", "open_browser", is_flag=True, default=False,
               help="Auto-open browser when using --gateway web.")
-def run(task: str, model: str, template: str, base_url: str | None,
+def run(task: str, model: str, skill: str, template: str | None, base_url: str | None,
         max_question_wait: int, gateway: str, web_host: str, web_port: int,
         open_browser: bool) -> None:
     """Run an agent on TASK."""
@@ -78,7 +79,15 @@ def run(task: str, model: str, template: str, base_url: str | None,
         Console(stderr=True).print("[red]Error:[/red] ANTHROPIC_API_KEY not set.")
         sys.exit(1)
 
-    asyncio.run(_run_task(task=task, model=model, template=template,
+    # Deprecated --template alias: warn and forward to --skill.
+    if template is not None:
+        console.print(
+            f"[yellow]Warning:[/yellow] --template is deprecated; use --skill instead. "
+            f"Forwarding {template!r} as the skill name."
+        )
+        skill = template
+
+    asyncio.run(_run_task(task=task, model=model, skill=skill,
                           base_url=base_url, max_question_wait=max_question_wait,
                           gateway=gateway, web_host=web_host, web_port=web_port,
                           open_browser=open_browser))
@@ -176,35 +185,10 @@ class _GatewayAdapter:
             self._broker._pending.pop(q.qid, None)
 
 
-# Legacy --template values that no longer have a SKILL.md.  The approved plan
-# keeps skills at beidou/skills/<domain>/<name>/SKILL.md; old YAML template
-# names that never mapped to a SKILL.md fall back to 'orchestrator'.
-_LEGACY_TEMPLATE_FALLBACK: frozenset[str] = frozenset(
-    {"default", "coder", "coding", "researcher"}
-)
-
-
-def _resolve_skill_name(template: str) -> str:
-    """Map the legacy --template flag value to a skill name.
-
-    If the user passed a legacy template name (default / coder / coding /
-    researcher) that has no SKILL.md, warn and fall back to 'orchestrator'.
-    Otherwise pass the value through as-is — it may be a valid skill name.
-    """
-    import sys as _sys
-    if template in _LEGACY_TEMPLATE_FALLBACK:
-        console.print(
-            f"[yellow]Warning:[/yellow] --template {template!r} is a legacy YAML template name "
-            f"with no SKILL.md; falling back to skill 'orchestrator'."
-        )
-        return "orchestrator"
-    return template
-
-
 async def _run_task(
     task: str,
     model: str,
-    template: str,
+    skill: str,
     base_url: str | None = None,
     max_question_wait: int = 300,
     gateway: str = "terminal",
@@ -228,11 +212,7 @@ async def _run_task(
     else:
         skill_root = Path(__file__).parent / "skills"
 
-    # Resolve --template to a skill name, emitting a deprecation warning for
-    # legacy YAML template names that have no SKILL.md.
-    skill_name = _resolve_skill_name(template)
-
-    # Gateway + broker setup (unchanged from previous code).
+    # Gateway + broker setup.
     broker = QuestionBroker()
     gw = _build_gateway(gateway, broker, task_id, web_host, web_port, open_browser, console)
     broker.set_gateway(gw)
@@ -251,17 +231,17 @@ async def _run_task(
     # and agent_started/agent_completed events emitted by the orchestrator
     # use the real agent id (orch._root_id), so they will correlate correctly
     # in the events table.
-    upsert_task(task_id=task_id, description=task, model=model, template=template, started_at=time.time())
-    await emitter.emit("task_started", agent_id="", model=model, template=template, task=task)
+    upsert_task(task_id=task_id, description=task, model=model, skill=skill, started_at=time.time())
+    await emitter.emit("task_started", agent_id="", model=model, skill=skill, task=task)
 
     console.rule(f"[bold cyan]Beidou[/bold cyan] task [yellow]{task_id}[/yellow]")
-    console.print(f"[dim]model:[/dim] {model}  [dim]skill:[/dim] {skill_name}")
+    console.print(f"[dim]model:[/dim] {model}  [dim]skill:[/dim] {skill}")
     console.print(f"[bold]Task:[/bold] {task}\n")
 
     _has_web = "web" in gateway.lower()
     await gw.start()
     try:
-        result = await orch.run_root(root_skill=skill_name, root_task=task, model=model)
+        result = await orch.run_root(root_skill=skill, root_task=task, model=model)
         # Use the real root agent id for the task_completed event so it correlates
         # with agent_started / agent_completed events in the observability log.
         root_id = orch._root_id or ""
@@ -311,7 +291,7 @@ def status(task_id: str | None) -> None:
         table = Table(title="Recent Tasks", show_header=True)
         table.add_column("task_id", style="yellow")
         table.add_column("model")
-        table.add_column("template")
+        table.add_column("skill")
         table.add_column("status")
         table.add_column("cost_usd", justify="right")
         table.add_column("tokens", justify="right")
@@ -321,7 +301,7 @@ def status(task_id: str | None) -> None:
             table.add_row(
                 t["task_id"][:16],
                 (t["model"] or "?").replace("claude-", ""),
-                t["template"] or "?",
+                t.get("skill") or t.get("template") or "?",
                 f"[{status_style}]{t['status']}[/{status_style}]",
                 f"${t['total_cost_usd']:.4f}" if t["total_cost_usd"] else "$0.0000",
                 str(t["total_tokens"] or 0),
@@ -335,7 +315,7 @@ def _print_task_detail(task: dict) -> None:
 
     console.rule(f"Task [yellow]{task['task_id']}[/yellow]")
     console.print(f"[bold]Description:[/bold] {task['description']}")
-    console.print(f"[bold]Model:[/bold] {task['model']}  [bold]Template:[/bold] {task['template']}")
+    console.print(f"[bold]Model:[/bold] {task['model']}  [bold]Skill:[/bold] {task.get('skill') or task.get('template') or '?'}")
     console.print(f"[bold]Status:[/bold] {task['status']}")
     console.print(f"[bold]Cost:[/bold] ${task['total_cost_usd']:.4f}  [bold]Tokens:[/bold] {task['total_tokens']}")
 

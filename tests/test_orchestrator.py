@@ -169,8 +169,8 @@ def test_spawn_team_sets_leader_depth_and_members(tmp_path, monkeypatch):
             name="impl",
             task="build",
             roles=[
-                {"role": "coder", "template": "fake", "description": "code"},
-                {"role": "tester", "template": "fake", "description": "test"},
+                {"role": "coder", "skill": "fake", "description": "code"},
+                {"role": "tester", "skill": "fake", "description": "test"},
             ],
             rules=["rule1"],
         )
@@ -194,7 +194,7 @@ def test_spawn_team_sets_leader_depth_and_members(tmp_path, monkeypatch):
     run(body())
 
 
-def test_spawn_team_unknown_template_raises(tmp_path, monkeypatch):
+def test_spawn_team_unknown_skill_raises(tmp_path, monkeypatch):
     o, _ = _make_orchestrator(tmp_path)
     _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
     _seed_agent(o, "R", ROOT_TEAM_ID)
@@ -212,10 +212,10 @@ def test_spawn_team_unknown_template_raises(tmp_path, monkeypatch):
                 leader_id="R",
                 name="impl",
                 task="x",
-                roles=[{"role": "r", "template": "nope"}],
+                roles=[{"role": "r", "skill": "nope"}],
                 rules=[],
             )
-        assert ei.value.code == "unknown_template"
+        assert ei.value.code == "unknown_skill"
 
     run(body())
 
@@ -367,8 +367,8 @@ def test_cascade_leader_terminates_members_then_exits(tmp_path, monkeypatch):
             name="impl",
             task="do",
             roles=[
-                {"role": "m1", "template": "fake"},
-                {"role": "m2", "template": "fake"},
+                {"role": "m1", "skill": "fake"},
+                {"role": "m2", "skill": "fake"},
             ],
             rules=[],
         )

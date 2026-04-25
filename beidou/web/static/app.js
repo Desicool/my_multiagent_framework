@@ -127,7 +127,7 @@ function reduce(state, ev) {
           team_id:       ev.team_id || null,
           role:          ev.role || "agent",
           model:         ev.model || null,
-          template:      ev.template || null,
+          skill:         ev.skill || null,
           system_prompt: ev.system_prompt || null,
           tools:         ev.tools || [],
           skills:        ev.skills || [],
@@ -913,7 +913,7 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
         </div>
         <div class="grid gap-1 mono text-xs mb-3" style="grid-template-columns:90px 1fr;">
           <span class="fg-2">Model</span><span class="fg-1">${esc(a.model||"—")}</span>
-          <span class="fg-2">Template</span><span class="fg-1">${esc(a.template||"—")}</span>
+          <span class="fg-2">Skill</span><span class="fg-1">${esc(a.skill||"—")}</span>
           <span class="fg-2">Task</span>
           <span>${a.task_id ? `<a class="fg-0 underline" href="#/tasks/${esc(a.task_id)}">${esc(a.task_id)}</a>` : "—"}</span>
           <span class="fg-2">Status</span><span class="fg-1">${esc(status)}</span>

@@ -366,8 +366,8 @@ def test_create_team_happy_path():
                 "name": "impl",
                 "task": "build",
                 "roles": [
-                    {"role": "coder", "template": "junior_engineer", "description": "x"},
-                    {"role": "tester", "template": "junior_engineer", "description": "y"},
+                    {"role": "coder", "skill": "junior_engineer", "description": "x"},
+                    {"role": "tester", "skill": "junior_engineer", "description": "y"},
                 ],
             },
         )
@@ -385,7 +385,7 @@ def test_create_team_fanout_exceeded_is_structured_error():
     cfg = build_mcp_server_for(o, caller_id="R")
 
     async def body():
-        roles = [{"role": f"r{i}", "template": "t"} for i in range(FAN_OUT_CAP + 1)]
+        roles = [{"role": f"r{i}", "skill": "t"} for i in range(FAN_OUT_CAP + 1)]
         result = await _call(
             cfg, "create_team", {"name": "big", "task": "x", "roles": roles}
         )

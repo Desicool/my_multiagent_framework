@@ -82,7 +82,7 @@ def _start_server_with_question(port: int):
         task_id="tsk_btest",
         description="Browser e2e test task",
         model="test",
-        template="default",
+        skill="orchestrator",
         started_at=time.time(),
     )
 

@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_id       TEXT PRIMARY KEY,
     description   TEXT,
     model         TEXT,
-    template      TEXT,
+    skill         TEXT,
     started_at    REAL,
     ended_at      REAL,
     status        TEXT DEFAULT 'running',
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS agents (
     cost_usd     REAL DEFAULT 0,
     tokens_in    INTEGER DEFAULT 0,
     tokens_out   INTEGER DEFAULT 0,
-    template        TEXT,
+    skill           TEXT,
     tools_json      TEXT,
     skills_json     TEXT,
     system_prompt   TEXT,
@@ -102,10 +102,24 @@ def init_db() -> None:
 
 
 def _migrate_agents_columns(conn: sqlite3.Connection) -> None:
-    """Idempotent ALTER TABLE for pre-existing DBs that lack the new agent columns."""
+    """Idempotent ALTER TABLE for pre-existing DBs that lack the new agent columns.
+
+    Also handles renaming the old 'template' column to 'skill' in both
+    the tasks and agents tables for DBs created before this rename.
+    """
+    # Rename tasks.template -> tasks.skill if the old column exists.
+    tasks_cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "template" in tasks_cols and "skill" not in tasks_cols:
+        conn.execute("ALTER TABLE tasks RENAME COLUMN template TO skill")
+
+    # Rename agents.template -> agents.skill if the old column exists.
     existing = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+    if "template" in existing and "skill" not in existing:
+        conn.execute("ALTER TABLE agents RENAME COLUMN template TO skill")
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+
     for col, decl in (
-        ("template", "TEXT"),
+        ("skill", "TEXT"),
         ("tools_json", "TEXT"),
         ("skills_json", "TEXT"),
         ("system_prompt", "TEXT"),
@@ -129,16 +143,16 @@ def upsert_task(
     task_id: str,
     description: str,
     model: str,
-    template: str,
+    skill: str,
     started_at: float,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO tasks (task_id, description, model, template, started_at)
+            INSERT OR IGNORE INTO tasks (task_id, description, model, skill, started_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (task_id, description, model, template, started_at),
+            (task_id, description, model, skill, started_at),
         )
 
 
@@ -177,7 +191,7 @@ def upsert_agent(
     model: str,
     role: str,
     started_at: float,
-    template: str | None = None,
+    skill: str | None = None,
     tools_json: str | None = None,
     skills_json: str | None = None,
     system_prompt: str | None = None,
@@ -187,11 +201,11 @@ def upsert_agent(
             """
             INSERT OR IGNORE INTO agents
               (agent_id, task_id, team_id, model, role, started_at,
-               template, tools_json, skills_json, system_prompt)
+               skill, tools_json, skills_json, system_prompt)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (agent_id, task_id, team_id, model, role, started_at,
-             template, tools_json, skills_json, system_prompt),
+             skill, tools_json, skills_json, system_prompt),
         )
 
 

@@ -181,7 +181,7 @@ construction.
 |---|---|---|---|
 | `name` | string | yes | Human-readable team name. |
 | `task` | string | yes | Task description propagated to each member. |
-| `roles` | list[object] | yes | One per member. Each has `role` (string), `template` (skill name, e.g. `junior_engineer`), `model` (optional string), `description` (string). |
+| `roles` | list[object] | yes | One per member. Each has `role` (string), `skill` (skill name, e.g. `junior_engineer`), `model` (optional string), `description` (string). |
 | `rules` | list[string] | no | Coordination rules visible to each member. |
 
 **Output schema**
@@ -194,7 +194,7 @@ construction.
 - `depth_exceeded`: caller's team is already at max recursion depth.
 - `leader_override_attempted`: the call included a `leader_id` field in the
   input. (Beidou's validator rejects before spawn.)
-- `unknown_template`: a `roles[i].template` does not resolve to a loadable
+- `unknown_skill`: a `roles[i].skill` does not resolve to a loadable
   SKILL.md.
 - `concurrent_create_team`: caller already has an in-flight `create_team`
   (serialization lock).

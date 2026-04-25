@@ -119,7 +119,7 @@ Termination is still leader-driven.
 ## Topology walkthrough (verification case)
 
 ```
-root (R, template=orchestrator)
+root (R, skill=orchestrator)
   leads team "impl"
     member A (junior_engineer)
       leads team "spike"

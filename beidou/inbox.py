@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 from beidou import db
 
 if TYPE_CHECKING:
-    from beidou.context import AgentContext
     from beidou.gateways.base import BaseGateway
 
 
@@ -48,7 +47,7 @@ class QuestionBroker:
 
     # ---- asker side -------------------------------------------------
 
-    async def ask(self, ctx: "AgentContext", prompt: str, context_hint: str | None = None) -> str:
+    async def ask(self, ctx: Any, prompt: str, context_hint: str | None = None) -> str:
         """Called from AskUserTool. Returns the human/leader answer or raises TimeoutError."""
         holder = ctx.parent.agent_id if ctx.parent is not None else None
         loop = asyncio.get_running_loop()
@@ -134,7 +133,7 @@ class QuestionBroker:
             pass
         return {"ok": True}
 
-    async def escalate(self, qid: str, by_ctx: "AgentContext", reason: str) -> dict:
+    async def escalate(self, qid: str, by_ctx: Any, reason: str) -> dict:
         q = self._pending.get(qid)
         if q is None or q.state != "pending":
             return {"ok": False, "reason": "stale"}
@@ -161,7 +160,7 @@ class QuestionBroker:
             if q.qid in lst:
                 lst.remove(q.qid)
 
-    async def _surface_to_terminal(self, q: Question, ctx: "AgentContext") -> None:
+    async def _surface_to_terminal(self, q: Question, ctx: Any) -> None:
         # Serialize terminal I/O so concurrent escalations don't interleave on stdin.
         async with self._terminal_lock:
             if q.future.done():
@@ -189,7 +188,7 @@ class QuestionBroker:
             if not q.future.done():
                 q.future.set_result(answer)
 
-    async def _emit(self, ctx: "AgentContext", event: str, **kwargs: Any) -> None:
+    async def _emit(self, ctx: Any, event: str, **kwargs: Any) -> None:
         emitter = ctx.get("emitter")
         if emitter is not None:
             try:

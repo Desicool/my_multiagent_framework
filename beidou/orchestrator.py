@@ -272,20 +272,20 @@ class Orchestrator:
         members_out: list[dict] = []
         new_records: list[tuple[AgentRecord, SpawnSpec]] = []
 
-        # Pre-validate all templates before allocating ids; surface
-        # unknown_template without half-spawning.
+        # Pre-validate all skills before allocating ids; surface
+        # unknown_skill without half-spawning.
         for r in roles:
-            tmpl = r.get("template")
-            if not tmpl:
-                raise PrimitiveError("unknown_template", "role missing 'template'", role=r)
+            skill = r.get("skill") or r.get("template")  # accept deprecated "template" key
+            if not skill:
+                raise PrimitiveError("unknown_skill", "role missing 'skill'", role=r)
             try:
                 from beidou.skills.loader import load_skill, SkillError
-                load_skill(self.skill_root, tmpl)
+                load_skill(self.skill_root, skill)
             except SkillError as exc:
                 raise PrimitiveError(
-                    "unknown_template",
-                    f"cannot resolve skill template {tmpl!r}: {exc}",
-                    template=tmpl,
+                    "unknown_skill",
+                    f"cannot resolve skill {skill!r}: {exc}",
+                    skill=skill,
                 )
             except Exception:
                 # Loader itself blew up for some non-SkillError reason — let
@@ -302,13 +302,14 @@ class Orchestrator:
             role_name = r.get("role", "member")
             role_desc = r.get("description", "")
             model = r.get("model") or self._default_model
+            skill_name = r.get("skill") or r.get("template", "")  # accept deprecated "template" key
 
             rec = AgentRecord(
                 agent_id=agent_id,
                 task_id=task_id,
                 team_id=team_id,
                 role=role_name,
-                skill_name=r["template"],
+                skill_name=skill_name,
                 model=model,
                 inbox=asyncio.Queue(),
                 create_team_lock=asyncio.Lock(),
@@ -318,7 +319,7 @@ class Orchestrator:
 
             spec = SpawnSpec(
                 caller_id=agent_id,
-                skill_name=r["template"],
+                skill_name=skill_name,
                 skill_root=self.skill_root,
                 task=task,
                 model=model,
@@ -328,6 +329,7 @@ class Orchestrator:
                     "team_name": name,
                     "workspace_path": str(workspace_path),
                 },
+                cwd=str(workspace_path),
             )
             new_records.append((rec, spec))
 
@@ -763,6 +765,7 @@ class Orchestrator:
                 "team_name": "root",
                 "workspace_path": str(root_workspace),
             },
+            cwd=str(root_workspace),
         )
 
         rec.run_task = asyncio.create_task(

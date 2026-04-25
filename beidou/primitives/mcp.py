@@ -305,7 +305,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
     @tool(
         "create_team",
         "Spawn a sub-team. You become its leader by construction. 'roles' is "
-        "a list of {role, template, model?, description} dicts -- one per "
+        "a list of {role, skill, model?, description} dicts -- one per "
         "member. Beidou rejects any leader_id override.",
         {
             "type": "object",
@@ -314,7 +314,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                 "task": {"type": "string", "description": "Task description."},
                 "roles": {
                     "type": "array",
-                    "description": "One object per member with role, template, optional model, and description.",
+                    "description": "One object per member with role, skill, optional model, and description.",
                     "items": {"type": "object"},
                 },
                 "rules": {

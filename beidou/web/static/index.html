@@ -95,7 +95,7 @@
             </div>
             <div class="flex items-center gap-2 flex-wrap">
               <span class="chip mono" x-text="(stateTask().model||'—').slice(0,20)"></span>
-              <span class="chip mono" x-text="stateTask().template || 'default'"></span>
+              <span class="chip mono" x-text="stateTask().skill || stateTask().template || 'default'"></span>
               <span class="mono text-xs fg-2 num" x-text="taskElapsed()"></span>
               <span class="chip chip-emerald mono num" x-text="fmtMoney(totalCost())"></span>
               <template x-if="pendingQuestions.length > 0">
