@@ -21,10 +21,9 @@ console = Console()
 
 
 def _ensure_db() -> None:
-    from beidou.db import DB_PATH, init_db
+    from beidou.db import init_db
 
-    if not DB_PATH.exists():
-        init_db()
+    init_db()
 
 
 # ------------------------------------------------------------------ #
