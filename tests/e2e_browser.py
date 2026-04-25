@@ -243,9 +243,9 @@ def test_task_detail() -> None:
                 wait_until="networkidle",
             )
 
-            # Wait for at least one .panel (task header) or .card (agent card).
+            # Wait for at least one .panel (task header bar is the first panel).
             try:
-                page.wait_for_selector(".card, .panel", timeout=10000)
+                page.wait_for_selector(".panel", timeout=10000)
                 section_ok = True
             except Exception:
                 section_ok = False
@@ -272,13 +272,31 @@ def test_task_detail() -> None:
                 crumb_text = ""
             record("task_id in page breadcrumb", crumb_ok, repr(crumb_text))
 
-            # Agent cards or at minimum a .panel with task content rendered.
-            card_count = page.locator(".card").count()
+            # Three-pane layout: check that all three panes are present.
             panel_count = page.locator(".panel").count()
+            pane_center = page.locator(".pane-center").count()
             record(
-                "agent section rendered",
-                section_ok and (card_count >= 1 or panel_count >= 2),
-                f"cards={card_count} panels={panel_count}",
+                "three-pane layout rendered",
+                section_ok and panel_count >= 1 and pane_center >= 1,
+                f"panels={panel_count} pane-center={pane_center}",
+            )
+
+            # Center pane (Team Tree) must be mounted and not show literal
+            # "None" or "synthetic" as the root node text.
+            try:
+                center_text = page.locator(".pane-center").inner_text(timeout=5000)
+                tree_ok = (
+                    center_text is not None
+                    and "None" not in center_text
+                    and "synthetic" not in center_text
+                )
+            except Exception:
+                center_text = ""
+                tree_ok = False
+            record(
+                "center pane: no synthetic/None root node",
+                pane_center >= 1 and tree_ok,
+                repr(center_text[:80]) if not tree_ok else "",
             )
 
             browser.close()
@@ -318,6 +336,7 @@ def test_question_modal() -> None:
 
             # ── badge ──────────────────────────────────────────────────────
             # fetchPendingQuestions() runs on startTask → should show ❓ badge.
+            # The badge is the task-header button: ❓ <span>1</span>
             badge = page.locator("button:has-text('❓')")
             try:
                 badge.wait_for(timeout=10000)
@@ -326,36 +345,38 @@ def test_question_modal() -> None:
                 badge_ok = False
 
             badge_text = badge.inner_text() if badge_ok else ""
+            # Badge shows the count as text inside a child span — the full text
+            # is "❓ 1" (emoji + space + count) — just check the ❓ is present.
             record(
                 "question badge appeared (1 question)",
-                badge_ok and "1 question" in badge_text,
+                badge_ok and "❓" in badge_text,
                 repr(badge_text),
             )
 
             if not badge_ok:
-                # No badge — modal tests can't proceed.
-                record("modal opened with correct prompt", False, "badge never appeared")
+                # No badge — signal-pane tests can't proceed.
+                record("questions pane shows correct prompt", False, "badge never appeared")
                 record("answer submitted successfully", False, "badge never appeared")
                 record('future resolved with answer "PostgreSQL"', False, "badge never appeared")
                 record("badge disappeared after submit", False, "badge never appeared")
                 browser.close()
                 return
 
-            # ── open modal ────────────────────────────────────────────────
+            # ── open questions pane via badge ─────────────────────────────
+            # Clicking the badge sets rightTab = 'questions' in Alpine.
             badge.click()
 
-            # The modal is rendered by Alpine's x-if="activeQuestion".
-            # Wait for the textarea inside it.
+            # Wait for the textarea in the questions pane.
             try:
                 page.wait_for_selector("textarea", timeout=6000)
-                modal_ok = True
+                pane_ok = True
             except Exception:
-                modal_ok = False
+                pane_ok = False
 
-            # Check prompt text inside the modal.
-            if modal_ok:
+            # Check prompt text is rendered inside the questions pane.
+            if pane_ok:
                 try:
-                    prompt_el = page.locator("p.fg-0.mb-3")
+                    prompt_el = page.locator("p.fg-0.mb-2, p.text-sm.fg-0").first
                     prompt_text = prompt_el.inner_text(timeout=3000)
                     prompt_ok = "Which database should we use" in prompt_text
                 except Exception:
@@ -366,21 +387,22 @@ def test_question_modal() -> None:
                 prompt_text = ""
 
             record(
-                "modal opened with correct prompt",
-                modal_ok and prompt_ok,
+                "questions pane shows correct prompt",
+                pane_ok and prompt_ok,
                 repr(prompt_text) if not prompt_ok else "",
             )
 
-            if not modal_ok:
-                record("answer submitted successfully", False, "modal did not open")
-                record('future resolved with answer "PostgreSQL"', False, "modal did not open")
-                record("badge disappeared after submit", False, "modal did not open")
+            if not pane_ok:
+                record("answer submitted successfully", False, "questions pane did not open")
+                record('future resolved with answer "PostgreSQL"', False, "questions pane did not open")
+                record("badge disappeared after submit", False, "questions pane did not open")
                 browser.close()
                 return
 
             # ── fill and submit ───────────────────────────────────────────
             page.locator("textarea").fill("PostgreSQL")
-            page.locator("button:has-text('Submit answer')").click()
+            # New UI uses "Answer" button, not "Submit answer".
+            page.locator("button:has-text('Answer')").last.click()
 
             # Wait for modal to disappear (x-if removes it from DOM).
             try:

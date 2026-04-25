@@ -9,6 +9,11 @@ The ``FakeOrchestrator`` is imported from ``tests.test_primitives_core`` --
 exactly the same in-memory duck-typed Orchestrator the core primitive
 tests use, so the MCP layer sits on top of the same path that production
 code would.
+
+NOTE: ``tool_called`` / ``tool_result`` event contracts are now asserted in
+``tests/test_sdk_agent.py`` at the drain-loop level. The MCP wrapper no
+longer emits those events (by design -- see ``docs/observability.md`` and
+``beidou/sdk_agent.py``).
 """
 
 from __future__ import annotations
@@ -56,14 +61,6 @@ def _text_payload(call_result) -> Any:
     # MCP TextContent has .type and .text attributes.
     assert first.type == "text", f"expected text content, got {first.type}"
     return json.loads(first.text)
-
-
-def _last_tool_event(orch: FakeOrchestrator) -> dict:
-    """Return the payload of the most recent ``tool_called`` event."""
-    for name, payload in reversed(orch.events):
-        if name == "tool_called":
-            return payload
-    raise AssertionError("no tool_called event emitted")
 
 
 def run(coro) -> object:
@@ -116,13 +113,6 @@ def test_send_message_happy_path():
         assert isinstance(payload["message_id"], str)
         assert o.inbox_size("B") == 1
 
-        ev = _last_tool_event(o)
-        assert ev["tool"] == "send_message"
-        assert ev["caller_id"] == "A"
-        assert ev["is_error"] is False
-        assert isinstance(ev["duration_ms"], float)
-        assert ev["duration_ms"] >= 0
-
     run(body())
 
 
@@ -136,11 +126,6 @@ def test_send_message_unknown_recipient_is_structured_error():
         payload = _text_payload(result)
         assert payload["error"] == "unknown_recipient"
         assert "ghost" in payload["message"]
-
-        ev = _last_tool_event(o)
-        assert ev["tool"] == "send_message"
-        assert ev["is_error"] is True
-        assert ev["error_code"] == "unknown_recipient"
 
     run(body())
 
@@ -159,10 +144,6 @@ def test_read_messages_empty_inbox():
         assert result.isError in (False, None)
         payload = _text_payload(result)
         assert payload == {"messages": []}
-
-        ev = _last_tool_event(o)
-        assert ev["tool"] == "read_messages"
-        assert ev["is_error"] is False
 
     run(body())
 
@@ -260,9 +241,6 @@ def test_wait_for_message_over_ceiling_is_structured_error():
         assert result.isError is True
         payload = _text_payload(result)
         assert payload["error"] == "timeout_over_ceiling"
-
-        ev = _last_tool_event(o)
-        assert ev["error_code"] == "timeout_over_ceiling"
 
     run(body())
 
@@ -477,40 +455,40 @@ def test_caller_id_cannot_be_overridden_by_tool_input():
         assert len(msgs) == 1
         assert msgs[0].from_id == "A"
 
-        ev = _last_tool_event(o)
-        assert ev["caller_id"] == "A"
-
     run(body())
 
 
-def test_tool_event_records_duration_and_args():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="A")
+def test_redact_args_large_string():
+    """Direct unit test of _redact_args() as a pure function.
 
-    async def body():
-        await _call(cfg, "send_message", {"to": "B", "content": "hi"})
-        ev = _last_tool_event(o)
-        assert ev["tool"] == "send_message"
-        assert ev["is_error"] is False
-        assert "duration_ms" in ev and ev["duration_ms"] >= 0.0
-        assert ev["args"]["to"] == "B"
-        assert ev["args"]["content"] == "hi"
+    Tool-event observability (duration, error flags, etc.) is asserted at the
+    drain-loop level in ``tests/test_sdk_agent.py``.
+    """
+    from beidou.primitives.mcp import _redact_args
 
-    run(body())
+    big = "x" * 2000
+    result = _redact_args({"to": "B", "content": big})
+    # Large string is redacted.
+    assert result["content"].startswith("<redacted: ")
+    assert "2000 chars" in result["content"]
+    # Small arg passes through unchanged.
+    assert result["to"] == "B"
 
 
-def test_large_string_arg_is_redacted_in_event():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="A")
+def test_redact_args_large_dict():
+    """Large nested dicts are redacted by JSON-encoded length."""
+    from beidou.primitives.mcp import _redact_args
 
-    async def body():
-        big = "x" * 2000
-        await _call(cfg, "send_message", {"to": "B", "content": big})
-        ev = _last_tool_event(o)
-        # Large content should be redacted.
-        assert ev["args"]["content"].startswith("<redacted: ")
-        assert "2000 chars" in ev["args"]["content"]
-        # Small arg passes through unchanged.
-        assert ev["args"]["to"] == "B"
+    big_list = ["x" * 100] * 20  # > 512 chars when JSON-encoded
+    result = _redact_args({"items": big_list, "name": "short"})
+    assert result["items"].startswith("<redacted: ")
+    assert result["name"] == "short"
 
-    run(body())
+
+def test_redact_args_small_values_pass_through():
+    """Values under the threshold are returned unchanged."""
+    from beidou.primitives.mcp import _redact_args
+
+    args = {"to": "B", "content": "hello world", "count": 42}
+    result = _redact_args(args)
+    assert result == args
