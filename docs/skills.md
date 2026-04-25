@@ -41,7 +41,8 @@ Before being passed to the SDK, the loader substitutes these tokens:
 | `{role}` | The agent's role name in its team (from `create_team(roles=...)`). |
 | `{role_description}` | The `description` supplied for this role at spawn time. |
 | `{team_name}` | The name of the team the agent was spawned into. |
-| `{workspace_path}` | Absolute path of the team's workspace directory. |
+| `{workspace_path}` | Absolute path of the team's workspace directory. For the root agent, this is the synthetic root team's directory `{project}/.beidou/tasks/{task_id}/teams/tm_root/`, used for orchestrator-internal storage (inbox files, artifacts). The root agent's cwd is the project workspace, not this path. |
+| `{project_workspace_path}` | Absolute path of the project workspace (user-supplied via `beidou run --workspace`). Same on every agent in the task; used by agents to read/write cross-team shared files via absolute paths. |
 
 Substitution is literal string replace on `{key}` -> value. Missing keys
 leave the token untouched (a warning is logged, not an error).
@@ -84,8 +85,8 @@ build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str
 ```
 
 Assembles the four-section system prompt. Substitution of `{role}`,
-`{role_description}`, `{team_name}`, `{workspace_path}` happens here, in
-memory only, never on disk.
+`{role_description}`, `{team_name}`, `{workspace_path}`, `{project_workspace_path}`
+happens here, in memory only, never on disk.
 
 #### System prompt structure (section order locked)
 
@@ -102,6 +103,7 @@ skill block), while per-agent identity (IDENTITY block) comes after.
 [IDENTITY]
 You are {role} in team {team_name}.
 Workspace: {workspace_path}.
+Project workspace: {project_workspace_path}.
 Leader: {leader_id}.
 
 [PERSISTENT-AGENT CONTRACT]

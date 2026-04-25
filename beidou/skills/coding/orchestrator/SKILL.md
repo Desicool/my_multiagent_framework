@@ -119,3 +119,4 @@ After your last tool call returns, simply stop emitting tool calls and end your 
 **Do NOT pre-emptively wrap up your session.** Don't say goodbye, don't summarize "I'm done now" as a final message — just end the turn. The runtime decides when your session truly ends (via a terminate sentinel, which you will never see — it's intercepted by the runtime and cascades to your team automatically).
 
 Workspace: {workspace_path}
+Project workspace: {project_workspace_path}

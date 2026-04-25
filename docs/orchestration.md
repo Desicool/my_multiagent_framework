@@ -9,7 +9,10 @@
   - a **potential leader** of any sub-team it creates via `create_team`.
 - The root agent is a member of a synthetic "root team" of size 1; Beidou
   records itself as the degenerate leader of that root team (sole purpose:
-  root-agent termination authority on user signal).
+  root-agent termination authority on user signal). The root team's workspace
+  directory (`{project}/.beidou/tasks/{task_id}/teams/tm_root/`) is created for
+  inbox files and artifacts, but the root agent's cwd is the project workspace
+  itself. This is the only case where agent cwd differs from team workspace.
 
 ## Self-lead invariant
 
@@ -36,7 +39,7 @@ Beidou maintains an in-memory registry keyed by `team_id`:
 | `members` | List of `{agent_id, role, status}`. |
 | `parent_team_id` | The team the leader is a member of. `None` for root. |
 | `depth` | 0 for root. Validated against `limits.md` recursion cap on each `create_team`. |
-| `workspace` | Team workspace path (`~/.beidou/workspaces/{task_id}/{team_id}/`). |
+| `workspace` | Team workspace path (`{project}/.beidou/tasks/{task_id}/teams/{team_id}/`). For the synthetic root team, `team_id = tm_root`. |
 
 The registry is append-mostly: members are removed only on terminate-ack.
 
