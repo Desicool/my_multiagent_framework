@@ -1,8 +1,14 @@
-"""SQLite aggregated stats — written in real-time by ObservabilityLayer."""
+"""SQLite aggregated stats — written in real-time by ObservabilityLayer.
+
+SQLite is an aggregated cache only. JSONL (~/.beidou/events/{task_id}.jsonl) is
+the authoritative event log. There is no per-event table here. Consumers that
+need raw event history should tail the JSONL file directly.
+"""
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 BEIDOU_DIR = Path.home() / ".beidou"
 DB_PATH = BEIDOU_DIR / "stats.db"
@@ -23,13 +29,14 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE TABLE IF NOT EXISTS teams (
-    team_id          TEXT PRIMARY KEY,
-    task_id          TEXT,
+    team_id          TEXT NOT NULL,
+    task_id          TEXT NOT NULL,
     parent_team_id   TEXT,
     name             TEXT,
     leader_agent_id  TEXT,
     workspace_path   TEXT,
     created_at       REAL,
+    PRIMARY KEY (team_id, task_id),
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 );
 
@@ -53,26 +60,6 @@ CREATE TABLE IF NOT EXISTS agents (
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 );
 
-CREATE TABLE IF NOT EXISTS events (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id      TEXT,
-    team_id      TEXT,
-    agent_id     TEXT,
-    event_type   TEXT,
-    tool_name    TEXT,
-    duration_ms  REAL,
-    tokens_in    INTEGER,
-    tokens_out   INTEGER,
-    cost_usd     REAL,
-    ts           REAL,
-    extra        TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_task    ON events(task_id);
-CREATE INDEX IF NOT EXISTS idx_events_team    ON events(team_id);
-CREATE INDEX IF NOT EXISTS idx_events_agent   ON events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_events_type    ON events(event_type);
-CREATE INDEX IF NOT EXISTS idx_events_ts      ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_agents_task    ON agents(task_id);
 CREATE INDEX IF NOT EXISTS idx_teams_task     ON teams(task_id);
 
@@ -93,10 +80,22 @@ CREATE TABLE IF NOT EXISTS questions (
 CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
 """
 
+# Migration: executed once at init_db() to clean up retired tables or tables
+# whose schema has changed.  The teams table is dropped here so that existing
+# single-PK DBs are replaced by the composite-PK version on first upgrade.
+# SQLite is an aggregated cache (see docs/observability.md), so this is safe.
+_MIGRATIONS = """
+DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS teams;
+"""
+
 
 def init_db() -> None:
     BEIDOU_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # Drop the old per-event table before applying the current schema so that
+    # any existing stats.db is cleaned up on first upgrade.
+    conn.executescript(_MIGRATIONS)
     conn.executescript(_SCHEMA)
     _migrate_agents_columns(conn)
     conn.close()
@@ -240,32 +239,6 @@ def increment_agent_stats(
             )
 
 
-def insert_event(
-    task_id: str,
-    team_id: str | None,
-    agent_id: str,
-    event_type: str,
-    ts: float,
-    tool_name: str | None = None,
-    duration_ms: float | None = None,
-    tokens_in: int | None = None,
-    tokens_out: int | None = None,
-    cost_usd: float | None = None,
-    extra: str | None = None,
-) -> None:
-    with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO events
-              (task_id, team_id, agent_id, event_type, tool_name, duration_ms,
-               tokens_in, tokens_out, cost_usd, ts, extra)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, team_id, agent_id, event_type, tool_name, duration_ms,
-             tokens_in, tokens_out, cost_usd, ts, extra),
-        )
-
-
 def insert_question(
     qid: str,
     task_id: str,
@@ -346,24 +319,18 @@ def get_events(
     agent_id: str | None = None,
     limit: int = 100,
 ) -> list[dict]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if task_id:
-        clauses.append("task_id=?")
-        params.append(task_id)
-    if team_id:
-        clauses.append("team_id=?")
-        params.append(team_id)
-    if agent_id:
-        clauses.append("agent_id=?")
-        params.append(agent_id)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    params.append(limit)
-    with _connect() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM events {where} ORDER BY ts DESC LIMIT ?", params
-        ).fetchall()
-    return [dict(r) for r in rows]
+    """Stub — always returns [].
+
+    The events table has been removed as part of the sink-demotion refactor
+    (see docs/observability.md). Raw event history lives in JSONL:
+        ~/.beidou/events/{task_id}.jsonl
+
+    A future subagent will rewrite the web backend to tail JSONL directly via
+    beidou/web/tail.py. Until then, callers of this function receive an empty
+    list rather than crashing on a missing table.
+    """
+    _ = (task_id, team_id, agent_id, limit)  # suppress unused-arg warnings
+    return []
 
 
 def get_agent(agent_id: str) -> dict | None:
@@ -373,31 +340,23 @@ def get_agent(agent_id: str) -> dict | None:
 
 
 def get_last_event_per_agent(task_id: str) -> dict[str, dict]:
-    """Return {agent_id: latest_event_row} for every agent in the task.
+    """Stub — always returns {}.
 
-    One query: a correlated subquery that picks the max ts per agent.
+    Previously queried the now-dropped events table. A future subagent will
+    reimplement this by reducing the JSONL stream for the task.
+    See docs/observability.md for the JSONL schema.
     """
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT e.*
-            FROM events e
-            JOIN (
-                SELECT agent_id, MAX(ts) AS max_ts
-                FROM events
-                WHERE task_id = ?
-                GROUP BY agent_id
-            ) latest
-              ON e.agent_id = latest.agent_id
-             AND e.ts       = latest.max_ts
-            WHERE e.task_id = ?
-            """,
-            (task_id, task_id),
-        ).fetchall()
-    return {r["agent_id"]: dict(r) for r in rows if r["agent_id"]}
+    _ = task_id  # suppress unused-arg warning
+    return {}
 
 
 def get_stats(task_id: str) -> dict:
+    """Return aggregated stats from the tasks/teams/agents rollup tables.
+
+    top_tools is now always [] — it previously queried the now-dropped events
+    table. A future subagent will reimplement per-tool counts by reducing
+    tool_result events from the JSONL stream.
+    """
     with _connect() as conn:
         task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         teams = conn.execute(
@@ -407,23 +366,15 @@ def get_stats(task_id: str) -> dict:
             "SELECT COUNT(*) as cnt, SUM(tool_calls) as tc, SUM(llm_calls) as lc FROM agents WHERE task_id=?",
             (task_id,),
         ).fetchone()
-        top_tools = conn.execute(
-            """
-            SELECT tool_name, COUNT(*) as cnt, SUM(duration_ms) as total_ms
-            FROM events
-            WHERE task_id=? AND event_type='tool_called' AND tool_name IS NOT NULL
-            GROUP BY tool_name ORDER BY cnt DESC LIMIT 10
-            """,
-            (task_id,),
-        ).fetchall()
     return {
         "task": dict(task) if task else {},
         "team_count": teams["cnt"] if teams else 0,
         "agent_count": agents["cnt"] if agents else 0,
         "total_tool_calls": agents["tc"] or 0 if agents else 0,
         "total_llm_calls": agents["lc"] or 0 if agents else 0,
-        "top_tools": [dict(r) for r in top_tools],
+        # top_tools is empty until the web backend reads JSONL directly.
+        # See docs/observability.md for the tool_result event schema.
+        "top_tools": [],
     }
 
 
-from typing import Any  # noqa: E402 — placed after usage to satisfy F821

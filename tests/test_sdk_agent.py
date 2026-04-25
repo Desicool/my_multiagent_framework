@@ -172,12 +172,23 @@ class ResultMessage:
         self.model_usage = model_usage or {}
 
 
+@dataclass
+class ToolResultBlock:
+    """Named to match the real SDK block class (drain loop dispatches by __name__)."""
+    tool_use_id: str
+    is_error: bool = False
+    content: list = field(default_factory=list)
+
+
 class SystemMessage:
     """Shape-compatible sentinel; drain loop ignores these."""
 
 
 class UserMessage:
-    """Shape-compatible sentinel; drain loop ignores these."""
+    """Carries tool-result echoes from the SDK (drain loop reads .content)."""
+
+    def __init__(self, content: list = None) -> None:
+        self.content = content or []
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +494,130 @@ def test_mechanical_exception_emits_agent_error_and_reraises(tmp_path, monkeypat
         )
 
     assert any(n == "agent_error" for n, _ in orch.events)
+
+
+# ---------------------------------------------------------------------------
+# tool_called / tool_result pairing tests.
+# ---------------------------------------------------------------------------
+
+
+def test_tool_called_and_result_events_paired(tmp_path, monkeypatch):
+    """ToolUseBlock yields tool_called; matching ToolResultBlock yields tool_result.
+
+    Verifies:
+    - tool_called emitted with tool_use_id, message_id, name, input, caller_id.
+    - tool_result emitted with tool_use_id, duration_ms (int >=0), is_error (bool).
+    - tool_use_id matches between the two events.
+    """
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_tool")
+
+    messages = [
+        AssistantMessage(
+            content=[
+                ToolUseBlock(
+                    name="mcp__beidou__report_status",
+                    input={"state": "done"},
+                    id="toolu_abc123",
+                ),
+            ],
+            message_id="msg_tool",
+            usage={"input_tokens": 5, "output_tokens": 2},
+            stop_reason="tool_use",
+        ),
+        UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id="toolu_abc123",
+                    is_error=False,
+                ),
+            ],
+        ),
+        ResultMessage(
+            total_cost_usd=0.001,
+            usage={"input_tokens": 5, "output_tokens": 2},
+            num_turns=1,
+        ),
+    ]
+    _install_fake_query(monkeypatch, messages)
+
+    spec = SpawnSpec(
+        caller_id="ag_tool",
+        skill_name="fake_skill",
+        skill_root=skill_root,
+        task="t",
+    )
+    asyncio.run(run_agent(orch, spec))
+
+    tool_called_events = [p for n, p in orch.events if n == "tool_called"]
+    tool_result_events = [p for n, p in orch.events if n == "tool_result"]
+
+    assert len(tool_called_events) == 1, f"expected 1 tool_called, got {len(tool_called_events)}"
+    assert len(tool_result_events) == 1, f"expected 1 tool_result, got {len(tool_result_events)}"
+
+    tc = tool_called_events[0]
+    tr = tool_result_events[0]
+
+    # tool_called fields.
+    assert tc["tool_use_id"] == "toolu_abc123"
+    assert tc["message_id"] == "msg_tool"
+    assert tc["name"] == "mcp__beidou__report_status"
+    assert tc["input"] == {"state": "done"}
+    assert tc["caller_id"] == "ag_tool"
+
+    # tool_result fields.
+    assert tr["tool_use_id"] == "toolu_abc123"
+    assert isinstance(tr["duration_ms"], int)
+    assert tr["duration_ms"] >= 0
+    assert tr["is_error"] is False
+
+    # Pairing: same tool_use_id.
+    assert tc["tool_use_id"] == tr["tool_use_id"]
+
+
+def test_tool_result_without_prior_tool_called_emits_none_duration(tmp_path, monkeypatch):
+    """ToolResultBlock with no prior ToolUseBlock emits tool_result with duration_ms=None.
+
+    This exercises the 'orphan result' path in the drain loop (pending_tool_uses
+    lookup returns None) without crashing.
+    """
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_orphan")
+
+    messages = [
+        # No ToolUseBlock — jump straight to ToolResultBlock.
+        UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id="toolu_orphan",
+                    is_error=True,
+                ),
+            ],
+        ),
+        ResultMessage(
+            total_cost_usd=0.0,
+            usage={},
+            num_turns=1,
+        ),
+    ]
+    _install_fake_query(monkeypatch, messages)
+
+    spec = SpawnSpec(
+        caller_id="ag_orphan",
+        skill_name="fake_skill",
+        skill_root=skill_root,
+        task="t",
+    )
+    asyncio.run(run_agent(orch, spec))  # must not raise
+
+    tool_result_events = [p for n, p in orch.events if n == "tool_result"]
+    assert len(tool_result_events) == 1
+    tr = tool_result_events[0]
+    assert tr["tool_use_id"] == "toolu_orphan"
+    assert tr["duration_ms"] is None
+    assert tr["is_error"] is True
 
 
 # ---------------------------------------------------------------------------

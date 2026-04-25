@@ -345,9 +345,9 @@ class Orchestrator:
         self.emit_event(
             "team_created",
             {
-                "team_id": team_id,
-                "name": name,
-                "leader_id": leader_id,
+                "new_team_id": team_id,
+                "team_name": name,
+                "leader_agent_id": leader_id,
                 "parent_team_id": parent_team_id,
                 "depth": new_depth,
                 "members": members_out,
@@ -593,7 +593,7 @@ class Orchestrator:
                     "agent_exited",
                     {
                         "caller_id": rec.agent_id,
-                        "strikes": rec.contract_strikes,
+                        "strike_count": rec.contract_strikes,
                         "terminated": True,
                         "ts": time.time(),
                     },
@@ -605,7 +605,7 @@ class Orchestrator:
                 "contract_violation",
                 {
                     "caller_id": rec.agent_id,
-                    "strikes": rec.contract_strikes,
+                    "strike_count": rec.contract_strikes,
                     "stop_reason": result.stop_reason,
                     "action": (
                         "escalated_to_user"
@@ -624,7 +624,7 @@ class Orchestrator:
                     "agent_exited",
                     {
                         "caller_id": rec.agent_id,
-                        "strikes": rec.contract_strikes,
+                        "strike_count": rec.contract_strikes,
                         "terminated": False,
                         "ts": time.time(),
                     },
@@ -654,7 +654,7 @@ class Orchestrator:
                 "root_contract_escalation",
                 rec.agent_id,
                 rec.team_id,
-                {"strikes": rec.contract_strikes, "ts": time.time()},
+                {"strike_count": rec.contract_strikes, "ts": time.time()},
             )
             if self.is_gateway_available():
                 try:
@@ -725,6 +725,18 @@ class Orchestrator:
             member_ids=[root_agent_id],
             rules=[],
             parent_team_id=None,
+        )
+        self.emit_event(
+            "team_created",
+            {
+                "new_team_id": ROOT_TEAM_ID,
+                "team_name": "root",
+                "leader_agent_id": root_agent_id,
+                "parent_team_id": None,
+                "depth": 0,
+                "members": [{"agent_id": root_agent_id, "role": "root", "skill": root_skill}],
+                "ts": time.time(),
+            },
         )
         rec = AgentRecord(
             agent_id=root_agent_id,

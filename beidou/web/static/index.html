@@ -3,121 +3,290 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Beidou</title>
+  <title>Beidou 北斗</title>
 
-  <link rel="stylesheet" href="/vis-timeline.min.css" />
   <link rel="stylesheet" href="/styles.css" />
 
   <script src="/tailwindcss.js"></script>
   <script>
     tailwind.config = { corePlugins: { preflight: false } };
   </script>
-  <!-- app.js must execute before Alpine so Alpine.data("app") is registered before alpine:init fires -->
-  <script defer src="/app.js"></script>
-  <script defer src="/alpinejs.min.js"></script>
-  <script defer src="/vis-timeline.min.js"></script>
-</head>
-
-<body class="bg-0 fg-0">
-  <div x-data="app" x-init="init()" x-cloak>
-    <!-- Top bar -->
-    <header class="sticky top-0 z-30 flex items-center justify-between px-4 py-2"
-            style="background: var(--bg-0); border-bottom: 1px solid var(--border);">
-      <div class="flex items-center gap-3">
-        <a href="#/" class="mono font-semibold text-sm brand" aria-label="Beidou home">北斗 Beidou</a>
-        <nav class="flex items-center gap-1 text-[11px] fg-2 mono" x-show="breadcrumb.length">
-          <template x-for="(crumb, i) in breadcrumb" :key="i">
-            <span class="flex items-center gap-1">
-              <span class="fg-2">/</span>
-              <a :href="crumb.href" class="fg-1 hover:fg-0" x-text="crumb.label"></a>
-            </span>
-          </template>
-        </nav>
-      </div>
-      <div class="flex items-center gap-3">
-        <span class="drawer-toggles" x-show="routeName === 'task'">
-          <button class="btn" @click="drawerLeft = !drawerLeft" aria-label="Toggle team tree">◧ Teams</button>
-          <button class="btn" @click="drawerRight = !drawerRight" aria-label="Toggle event stream">Events ◨</button>
-        </span>
-        <span class="flex items-center gap-1 text-[11px] fg-1 mono" aria-live="polite">
-          <span class="dot"
-                :class="liveOK ? 'running pulse' : 'failed'"
-                aria-hidden="true"></span>
-          <span x-text="liveOK ? 'live' : 'offline'"></span>
-        </span>
-      </div>
-    </header>
-
-    <main class="px-4 py-4">
-      <!-- Dashboard -->
-      <template x-if="routeName === 'home'">
-        <section x-html="renderHome()"></section>
-      </template>
-
-      <!-- Persistent timeline mount — lives outside x-html so vis.js survives re-renders -->
-      <section class="panel mb-3" x-show="routeName === 'task' && task" x-cloak>
-        <button class="w-full flex items-center justify-between px-3 py-2 text-[11px] mono fg-1"
-                @click="timelineOpen = !timelineOpen; $nextTick(() => drawTimeline())"
-                :aria-expanded="timelineOpen">
-          <span>Timeline</span>
-          <span x-text="timelineOpen ? '▾' : '▸'"></span>
-        </button>
-        <div x-show="timelineOpen" id="beidou-timeline" style="height: 120px;"></div>
-      </section>
-
-      <!-- Task detail -->
-      <template x-if="routeName === 'task'">
-        <section x-html="renderTask()"></section>
-      </template>
-
-      <!-- Agent detail -->
-      <template x-if="routeName === 'agent'">
-        <section x-html="renderAgent()"></section>
-      </template>
-
-      <!-- 404 / unknown -->
-      <template x-if="routeName === 'unknown'">
-        <section class="panel p-4 fg-1">
-          <p>Unknown route. <a class="fg-0 underline" href="#/">Go home.</a></p>
-        </section>
-      </template>
-    </main>
-  <!-- Question modal -->
-  <template x-if="activeQuestion">
-    <div class="fixed inset-0 z-50 flex items-center justify-center"
-         style="background: rgba(0,0,0,0.7);">
-      <div class="panel mono" style="width: 560px; max-width: 95vw; padding: 24px;">
-        <div class="fg-2 text-[11px] mb-1">
-          Question from <span x-text="activeQuestion.asker_agent_id" class="fg-1"></span>
-          <span class="fg-2" x-show="activeQuestion.chain && activeQuestion.chain.length > 1">
-            — chain: <span x-text="(activeQuestion.chain || []).join(' → ')"></span>
-          </span>
-        </div>
-        <p class="fg-0 mb-3 text-[13px]" x-text="activeQuestion.prompt"></p>
-        <p class="fg-2 text-[11px] mb-3" x-show="activeQuestion.context_hint"
-           x-text="'context: ' + activeQuestion.context_hint"></p>
-        <textarea class="mono text-[12px] w-full rounded"
-                  style="background: var(--bg-1); border: 1px solid var(--border); padding: 8px; color: var(--fg-0); resize: vertical;"
-                  rows="4"
-                  x-model="questionAnswer"
-                  placeholder="Type your answer…"
-                  @keydown.meta.enter="submitAnswer()"
-                  @keydown.ctrl.enter="submitAnswer()"></textarea>
-        <div class="flex gap-2 mt-3">
-          <button class="btn" @click="submitAnswer()"
-                  style="background: #7c3aed; color: white;">
-            Submit answer
-          </button>
-          <button class="btn" @click="activeQuestion = null; questionAnswer = ''">
-            Dismiss
-          </button>
-        </div>
-        <div class="fg-2 text-[10px] mt-2">Cmd+Enter or Ctrl+Enter to submit</div>
-      </div>
-    </div>
-  </template>
-  </div>
 
   <style>[x-cloak] { display: none !important; }</style>
+</head>
+
+<body class="bg-0" x-data="app()" x-cloak>
+
+  <!-- ===== TOP BAR ===== -->
+  <header class="sticky top-0 z-30 flex items-center justify-between px-4 py-2 panel"
+          style="border-radius:0; border-left:none; border-right:none; border-top:none;">
+    <div class="flex items-center gap-3">
+      <a href="#/" class="mono font-semibold text-sm brand">北斗 Beidou</a>
+      <nav class="flex items-center gap-1 text-xs fg-2 mono" x-show="breadcrumb.length">
+        <template x-for="(crumb, i) in breadcrumb" :key="i">
+          <span class="flex items-center gap-1">
+            <span class="fg-2">/</span>
+            <a :href="crumb.href" class="fg-1" x-text="crumb.label"></a>
+          </span>
+        </template>
+      </nav>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="drawer-toggles" x-show="routeName === 'task'">
+        <button class="btn" @click="drawerLeft = !drawerLeft">◧ Tree</button>
+        <button class="btn" @click="drawerRight = !drawerRight">Signal ◨</button>
+      </span>
+      <span class="flex items-center gap-1 mono text-xs fg-1" aria-live="polite">
+        <span :class="liveOK ? 'dot running pulse' : 'dot failed'"></span>
+        <span x-text="liveOK ? (liveMode ? 'live' : 'replay') : 'offline'"></span>
+      </span>
+    </div>
+  </header>
+
+  <!-- ===== HOME VIEW ===== -->
+  <template x-if="routeName === 'home'">
+    <main class="p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h1 class="text-sm font-medium fg-0">Recent tasks</h1>
+        <span class="mono text-xs fg-2 num" x-text="tasks.length + ' tasks'"></span>
+      </div>
+      <template x-if="tasks.length === 0">
+        <div class="panel p-8 text-center fg-1">
+          <p class="fg-0 mb-1 text-sm">No tasks yet.</p>
+          <p class="mono text-xs">Run <span class="chip">beidou run "your task"</span> to get started.</p>
+        </div>
+      </template>
+      <template x-if="tasks.length > 0">
+        <div class="panel" style="divide-y: 1px solid var(--border);">
+          <template x-for="t in tasks" :key="t.task_id">
+            <a :href="'#/tasks/' + t.task_id"
+               class="row"
+               style="height:auto; min-height:44px; padding:10px 16px; text-decoration:none; display:flex; align-items:center; gap:12px; border-bottom: 1px solid var(--border);">
+              <span :class="t.status === 'running' ? 'dot running pulse' : t.status === 'failed' ? 'dot failed' : 'dot done'"></span>
+              <span class="mono text-xs fg-2 truncate-1" style="width:120px;flex:none;" x-text="t.task_id.slice(-12)"></span>
+              <span class="text-xs fg-0 flex-1 clamp-2" style="min-width:0;" x-text="t.description || '—'"></span>
+              <span class="chip mono" x-text="(t.model||'—').slice(0,20)"></span>
+              <span class="chip chip-emerald mono num" x-text="(t.live_agent_count||0) + ' live'"></span>
+              <span class="mono text-xs fg-2 num" style="width:70px;flex:none;" x-text="ago(t.started_at, now)"></span>
+              <span class="mono text-xs fg-0 num" style="width:80px;flex:none;" x-text="fmtMoney(t.total_cost_usd)"></span>
+            </a>
+          </template>
+        </div>
+      </template>
+    </main>
+  </template>
+
+  <!-- ===== TASK VIEW (three-pane) ===== -->
+  <template x-if="routeName === 'task'">
+    <div>
+      <!-- Task header bar -->
+      <div class="panel mx-4 mt-4 mb-3 p-4">
+        <template x-if="!stateTask()">
+          <div class="mono text-xs fg-2">Loading task…</div>
+        </template>
+        <template x-if="stateTask()">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div class="flex items-start gap-3">
+              <span :class="stateTask().status === 'running' ? 'dot running pulse' : stateTask().status === 'failed' ? 'dot failed' : 'dot done'" style="margin-top:3px;"></span>
+              <div>
+                <div class="mono text-xs fg-2 mb-0.5" x-text="stateTask().task_id"></div>
+                <p class="fg-0 text-sm clamp-2" style="margin:0;" x-text="stateTask().description || '—'"></p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="chip mono" x-text="(stateTask().model||'—').slice(0,20)"></span>
+              <span class="chip mono" x-text="stateTask().template || 'default'"></span>
+              <span class="mono text-xs fg-2 num" x-text="taskElapsed()"></span>
+              <span class="chip chip-emerald mono num" x-text="fmtMoney(totalCost())"></span>
+              <template x-if="pendingQuestions.length > 0">
+                <button class="btn" style="background:#7c3aed;border-color:#7c3aed;color:white;"
+                        @click="rightTab = 'questions'">
+                  ❓ <span x-text="pendingQuestions.length"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Three-pane layout -->
+      <div class="flex gap-3 px-4 pb-6" style="align-items:flex-start; height:calc(100vh - 148px);">
+
+        <!-- LEFT PANE: Leader Thoughts -->
+        <aside class="pane-left panel flex flex-col h-full" :class="{'drawer-open': drawerLeft}">
+          <div class="px-3 py-2 flex items-center gap-2 divider" style="flex:none;">
+            <template x-if="rootAgent()">
+              <span :class="dotCls(agentStatus(rootAgent()))"></span>
+            </template>
+            <span class="mono text-xs fg-1">Root:</span>
+            <span class="mono text-xs fg-0" x-text="rootAgentId() ? rootAgentId().slice(-8) : '—'"></span>
+            <span class="flex-1"></span>
+            <span class="chip chip-emerald mono num" x-text="fmtMoney(rootAgent() ? agentCost(rootAgent()) : 0)"></span>
+          </div>
+          <div id="leader-scroll"
+               class="flex-1 p-2"
+               style="overflow-y:auto;"
+               @scroll="leaderAutoScroll = ($event.target.scrollHeight - $event.target.scrollTop - $event.target.clientHeight) < 80">
+            <template x-if="!rootAgent()">
+              <div class="mono text-xs fg-2 p-2">Waiting for root agent…</div>
+            </template>
+            <template x-if="rootAgent() && ((_state||{}).leaderStream||[]).length === 0">
+              <div class="mono text-xs fg-2 p-2">No events yet.</div>
+            </template>
+            <template x-for="(item, idx) in ((_state||{}).leaderStream||[])" :key="idx">
+              <div class="mb-1">
+                <template x-if="item.type === 'turn'">
+                  <div class="panel p-2 mb-1">
+                    <div class="flex items-center gap-2 mono fg-2" style="font-size:10px;">
+                      <span style="color:var(--violet);">◆ turn</span>
+                      <span class="num" x-text="hhmmss(item.ts)"></span>
+                      <template x-if="item.stop_reason">
+                        <span x-text="'· ' + item.stop_reason"></span>
+                      </template>
+                    </div>
+                    <div class="mono fg-1 num" style="font-size:11px;">
+                      <span x-text="fmtNum(item.in_tok) + ' in'"></span>
+                      <span class="fg-2"> / </span>
+                      <span x-text="fmtNum(item.out_tok) + ' out'"></span>
+                    </div>
+                  </div>
+                </template>
+                <template x-if="item.type === 'tool_start'">
+                  <div class="flex items-center gap-2 px-2 py-1 mono" style="font-size:11px;">
+                    <span style="color:var(--sky);">→</span>
+                    <span class="fg-0" x-text="item.name"></span>
+                    <span class="flex-1"></span>
+                    <template x-if="item.duration_ms != null">
+                      <span class="fg-2 num" x-text="item.duration_ms + 'ms'"></span>
+                      <span :style="item.is_error ? 'color:var(--rose)' : 'color:var(--emerald)'"
+                            x-text="item.is_error ? '✗' : '✓'"></span>
+                    </template>
+                    <template x-if="item.duration_ms == null">
+                      <span class="dot running pulse" style="width:6px;height:6px;"></span>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </aside>
+
+        <!-- CENTER PANE: Team Tree -->
+        <section class="pane-center panel flex flex-col h-full">
+          <div class="px-3 py-2 divider flex items-center gap-2" style="flex:none;">
+            <span class="mono text-xs fg-1">Team Tree</span>
+            <span class="flex-1"></span>
+            <span class="mono text-xs fg-2 num" x-text="stateAgents().length + ' agents'"></span>
+          </div>
+          <div class="flex-1" style="overflow-y:auto;" x-html="renderTeamTree()"></div>
+        </section>
+
+        <!-- RIGHT PANE: Signal Pane -->
+        <aside class="pane-right panel flex flex-col h-full" :class="{'drawer-open': drawerRight}">
+          <!-- Tab bar -->
+          <div class="flex items-center divider" style="flex:none; overflow-x:auto;">
+            <button class="tab" :class="rightTab === 'inbox' ? 'active' : ''"
+                    @click="rightTab = 'inbox'">
+              Inbox
+              <template x-if="((_state||{}).recentMessages||[]).length">
+                <span class="chip" style="margin-left:4px;" x-text="Math.min(((_state||{}).recentMessages||[]).length,50)"></span>
+              </template>
+            </button>
+            <button class="tab" :class="rightTab === 'questions' ? 'active' : ''"
+                    @click="rightTab = 'questions'">
+              Questions
+              <template x-if="pendingQuestions.length">
+                <span class="chip chip-rose" style="margin-left:4px;" x-text="pendingQuestions.length"></span>
+              </template>
+            </button>
+            <template x-if="pinnedAgentId">
+              <button class="tab" :class="rightTab === 'agent' ? 'active' : ''"
+                      @click="rightTab = 'agent'">
+                <span x-text="'Agent ' + (pinnedAgentId||'').slice(-6)"></span>
+              </button>
+            </template>
+          </div>
+
+          <!-- Inbox -->
+          <div class="flex-1" :style="rightTab==='inbox' ? 'overflow-y:auto;display:block;' : 'display:none;'">
+            <template x-if="((_state||{}).recentMessages||[]).length === 0">
+              <div class="mono text-xs fg-2 p-3">No A2A messages yet.</div>
+            </template>
+            <template x-for="(msg, idx) in ((_state||{}).recentMessages||[]).slice(0,50)" :key="idx">
+              <div class="p-3 divider slide-in">
+                <div class="flex items-center gap-2 mono fg-2 mb-1" style="font-size:11px;">
+                  <span class="chip fg-0" x-text="msg.from.slice(-6)"></span>
+                  <span>→</span>
+                  <span class="chip fg-0" x-text="msg.to.slice(-6)"></span>
+                  <span class="flex-1"></span>
+                  <span x-text="ago(msg.ts, now)"></span>
+                </div>
+                <p class="mono text-xs fg-1 clamp-2" style="margin:0;" x-text="msg.content"></p>
+              </div>
+            </template>
+          </div>
+
+          <!-- Questions -->
+          <div class="flex-1" :style="rightTab==='questions' ? 'overflow-y:auto;display:block;' : 'display:none;'">
+            <template x-if="pendingQuestions.length === 0">
+              <div class="mono text-xs fg-2 p-3">No pending questions.</div>
+            </template>
+            <template x-for="q in pendingQuestions" :key="q.qid">
+              <div class="p-3 divider">
+                <div class="mono fg-2 mb-1" style="font-size:11px;">
+                  <span x-text="(q.asker_agent_id||'?').slice(-8)"></span>
+                  <span class="fg-2"> asks:</span>
+                </div>
+                <p class="text-sm fg-0 mb-2" x-text="q.prompt"></p>
+                <template x-if="q.context_hint">
+                  <p class="mono text-xs fg-2 mb-2" x-text="'ctx: ' + q.context_hint"></p>
+                </template>
+                <textarea class="mono text-xs w-full rounded p-2"
+                          style="background:var(--bg-2);border:1px solid var(--border);color:var(--fg-0);resize:vertical;min-height:56px;"
+                          :placeholder="'Answer for ' + q.qid"
+                          x-model="answerTexts[q.qid]"
+                          @keydown.meta.enter="submitAnswer(q.qid)"
+                          @keydown.ctrl.enter="submitAnswer(q.qid)"></textarea>
+                <button class="btn mt-2"
+                        style="background:#7c3aed;border-color:#7c3aed;color:white;"
+                        @click="submitAnswer(q.qid)">Answer</button>
+              </div>
+            </template>
+          </div>
+
+          <!-- Agent detail -->
+          <div class="flex-1" :style="rightTab==='agent' ? 'overflow-y:auto;display:block;' : 'display:none;'"
+               x-html="rightTab === 'agent' ? renderPinnedAgent() : ''">
+          </div>
+        </aside>
+
+      </div><!-- /three-pane -->
+    </div>
+  </template>
+
+  <!-- ===== AGENT STANDALONE VIEW ===== -->
+  <template x-if="routeName === 'agent'">
+    <main class="p-6">
+      <template x-if="!agentViewData">
+        <div class="panel p-6 fg-2 mono text-xs">Loading agent…</div>
+      </template>
+      <template x-if="agentViewData">
+        <div x-html="renderAgentStandalone()"></div>
+      </template>
+    </main>
+  </template>
+
+  <!-- ===== UNKNOWN ROUTE ===== -->
+  <template x-if="routeName === 'unknown'">
+    <main class="p-6">
+      <div class="panel p-6 fg-1 text-sm">
+        Unknown route. <a class="fg-0 underline" href="#/">Go home.</a>
+      </div>
+    </main>
+  </template>
+
+  <script src="/app.js"></script>
+  <script src="/alpinejs.min.js"></script>
+
 </body>
 </html>

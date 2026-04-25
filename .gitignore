@@ -13,3 +13,6 @@ __pycache__/
 .dolt/
 *.db
 .beads-credential-key
+
+# trial-run scratch (agent-created during dogfooding)
+artifacts/
