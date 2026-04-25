@@ -54,6 +54,9 @@ def init() -> None:
 
 @main.command()
 @click.argument("task")
+@click.option("--workspace", "workspace", required=True,
+              type=click.Path(exists=True, file_okay=False, dir_okay=True, resolve_path=True),
+              help="Project workspace directory. Beidou writes team scratch under {WORKSPACE}/.beidou/tasks/{task_id}/teams/, and agents read shared files from this directory via absolute paths.")
 @click.option("--model", "-m", default="claude-sonnet-4-6", show_default=True, help="Anthropic model ID.")
 @click.option("--skill", "-s", default="orchestrator", show_default=True, help="Agent skill name (e.g. orchestrator).")
 @click.option("--template", "-t", default=None, hidden=True, help="Deprecated alias for --skill. Use --skill instead.")
@@ -66,7 +69,7 @@ def init() -> None:
               help="Port for web gateway (only used with --gateway web).")
 @click.option("--open", "open_browser", is_flag=True, default=False,
               help="Auto-open browser when using --gateway web.")
-def run(task: str, model: str, skill: str, template: str | None, base_url: str | None,
+def run(task: str, workspace: str, model: str, skill: str, template: str | None, base_url: str | None,
         gateway: str, web_host: str, web_port: int,
         open_browser: bool) -> None:
     """Run an agent on TASK."""
@@ -84,7 +87,7 @@ def run(task: str, model: str, skill: str, template: str | None, base_url: str |
         )
         skill = template
 
-    asyncio.run(_run_task(task=task, model=model, skill=skill,
+    asyncio.run(_run_task(task=task, workspace=Path(workspace), model=model, skill=skill,
                           base_url=base_url,
                           gateway=gateway, web_host=web_host, web_port=web_port,
                           open_browser=open_browser))
@@ -179,6 +182,7 @@ class _GatewayAdapter:
 
 async def _run_task(
     task: str,
+    workspace: Path,
     model: str,
     skill: str,
     base_url: str | None = None,
@@ -215,6 +219,7 @@ async def _run_task(
         skill_root=skill_root,
         gateway=gateway_adapter,
         default_model=model,
+        project_workspace=workspace,
     )
 
     # Record task start.  agent_id is a placeholder here because the

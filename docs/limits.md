@@ -55,9 +55,15 @@ approval. See `README.md` for the approval rule.
 | | |
 |---|---|
 | **Value** | **500 MiB per team workspace** |
-| Rationale | Keeps `~/.beidou/workspaces/` bounded. Above this, agents should externalise (object storage, git LFS, etc.) rather than pile bytes into the team directory. |
+| Rationale | Keeps each team's `{project}/.beidou/tasks/{task_id}/teams/{team_id}/` directory bounded. Above this, agents should externalise (object storage, git LFS, etc.) rather than pile bytes into the team directory. |
 | Enforced in | Checked at team start and periodically (cadence is an implementation detail; if formalised it becomes a new boundary in this file). Exceeding emits a `workspace_over_budget` event and posts a `send_message` to the team leader. |
 | Change policy | Requires user approval to change. |
+
+Agents may also write to the project workspace (`{project_workspace_path}`) via
+SDK file tools using absolute paths. The project workspace is **user-supplied and
+not Beidou-capped** — Beidou makes no claims about its size. Operators concerned
+about disk usage should monitor the project workspace independently. (This is a
+deliberate non-boundary; it is documented here to make the absence explicit.)
 
 ## 7. Per-agent token ceiling per run
 

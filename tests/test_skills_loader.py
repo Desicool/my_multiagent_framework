@@ -58,11 +58,13 @@ def test_load_orchestrator_by_name() -> None:
 
 def test_render_system_prompt_substitutes_known_and_preserves_unknown() -> None:
     skill = load_skill_file(ORCHESTRATOR_PATH)
-    rendered = render_system_prompt(skill, workspace_path="/tmp/foo")
+    rendered = render_system_prompt(skill, workspace_path="/tmp/foo", project_workspace_path="/tmp/proj")
 
     assert "/tmp/foo" in rendered
-    # Placeholder literal must be gone.
+    assert "/tmp/proj" in rendered
+    # Placeholder literals must be gone.
     assert "{workspace_path}" not in rendered
+    assert "{project_workspace_path}" not in rendered
     # Unknown-looking tokens that happen to share brace syntax MUST survive.
     # The orchestrator body contains `{role: "<task-id>", ...}` JSON-ish and
     # nothing we pass should replace them.
@@ -77,7 +79,7 @@ def test_render_leaves_unknown_placeholder_literal() -> None:
         allowed_tools=[],
         system_prompt="hello {role}, workspace={workspace_path}, unknown={something_else}",
     )
-    rendered = render_system_prompt(skill, role="pm", workspace_path="/w")
+    rendered = render_system_prompt(skill, role="pm", workspace_path="/w", project_workspace_path="/proj")
 
     assert rendered == "hello pm, workspace=/w, unknown={something_else}"
 
@@ -256,6 +258,7 @@ def _make_spawn_ctx(**kwargs) -> dict:
         "role_description": "writes code",
         "team_name": "alpha",
         "workspace_path": "/tmp/ws",
+        "project_workspace_path": "/tmp/proj",
         "leader_id": "agent-leader-123",
     }
     defaults.update(kwargs)
@@ -267,7 +270,7 @@ def test_build_system_prompt_skill_body_first() -> None:
     {role} inside skill body gets substituted; IDENTITY block has role/team/workspace/leader;
     CONTRACT block has required phrases; OTHER SKILLS is at the end."""
     skill = _make_fake_skill("role={role}, ws={workspace_path}")
-    ctx = _make_spawn_ctx(role="pm", workspace_path="/workspace/alpha", team_name="team-one", leader_id="boss-99")
+    ctx = _make_spawn_ctx(role="pm", workspace_path="/workspace/alpha", project_workspace_path="/workspace", team_name="team-one", leader_id="boss-99")
     prompt = build_system_prompt(skill, ctx)
 
     # Must start with the ASSIGNED SKILL section.
@@ -283,6 +286,7 @@ def test_build_system_prompt_skill_body_first() -> None:
     # IDENTITY block fields.
     assert "You are pm in team team-one." in prompt
     assert "Workspace: /workspace/alpha." in prompt
+    assert "Project workspace: /workspace." in prompt
     assert "Leader: boss-99." in prompt
 
     # CONTRACT block required phrases.
@@ -362,3 +366,63 @@ def test_sdk_builtins_allowlist_dedup_and_order() -> None:
         "web_fetch",    # duplicate
     ])
     assert result == ["Bash", "Read", "Write", "WebSearch", "WebFetch"]
+
+
+# ---------------------------------------------------------------------------
+# New tests for project_workspace_path support
+# ---------------------------------------------------------------------------
+
+
+def test_project_workspace_path_substituted_in_skill_body() -> None:
+    """render_system_prompt replaces {project_workspace_path} inside the skill body."""
+    skill = LoadedSkill(
+        name="t",
+        version="1",
+        description="",
+        allowed_tools=[],
+        system_prompt="team_ws={workspace_path}, proj_ws={project_workspace_path}",
+    )
+    rendered = render_system_prompt(
+        skill,
+        workspace_path="/team/ws",
+        project_workspace_path="/proj/ws",
+    )
+    assert rendered == "team_ws=/team/ws, proj_ws=/proj/ws"
+    assert "{project_workspace_path}" not in rendered
+
+
+def test_identity_block_contains_both_workspace_and_project_workspace() -> None:
+    """IDENTITY block has both Workspace and Project workspace lines in correct order."""
+    skill = _make_fake_skill("no placeholders here")
+    ctx = _make_spawn_ctx(
+        workspace_path="/team/workspace",
+        project_workspace_path="/project/root",
+        leader_id="leader-42",
+    )
+    prompt = build_system_prompt(skill, ctx)
+
+    identity_start = prompt.index("[IDENTITY]")
+    contract_start = prompt.index("[PERSISTENT-AGENT CONTRACT]")
+    identity_block = prompt[identity_start:contract_start]
+
+    assert "Workspace: /team/workspace." in identity_block
+    assert "Project workspace: /project/root." in identity_block
+    assert "Leader: leader-42." in identity_block
+
+    ws_idx = identity_block.index("Workspace: /team/workspace.")
+    proj_idx = identity_block.index("Project workspace: /project/root.")
+    leader_idx = identity_block.index("Leader: leader-42.")
+    assert ws_idx < proj_idx < leader_idx
+
+
+def test_provision_skills_writes_to_caller_supplied_dir(tmp_path: Path) -> None:
+    """provision_skills writes SKILL.md files into <dir>/.claude/skills/<name>/SKILL.md."""
+    target = tmp_path / "agent_workspace"
+    written = provision_skills(target, skill_root=SKILLS_ROOT)
+
+    assert len(written) > 0
+    for dst in written:
+        assert dst.name == "SKILL.md"
+        assert dst.parent.parent.name == "skills"
+        assert dst.parent.parent.parent.name == ".claude"
+        assert dst.parent.parent.parent.parent == target

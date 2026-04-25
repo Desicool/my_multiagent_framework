@@ -32,7 +32,7 @@ from beidou.primitives.core import (
     PrimitiveError,
 )
 from beidou.sdk_agent import RunResult, SpawnSpec
-from beidou.workspace import BEIDOU_DIR
+from beidou.workspace import team_workspace
 
 if TYPE_CHECKING:  # pragma: no cover
     from beidou.gateways.base import BaseGateway
@@ -104,12 +104,14 @@ class Orchestrator:
         gateway: "BaseGateway | None" = None,
         *,
         default_model: Optional[str] = None,
+        project_workspace: Optional[Path] = None,
     ) -> None:
         self.task_id = task_id
         self.emitter = emitter if emitter is not None else EventEmitter(task_id)
         self.skill_root = Path(skill_root) if skill_root is not None else Path.cwd()
         self.gateway = gateway
         self._default_model = default_model
+        self.project_workspace = project_workspace if project_workspace is not None else Path.cwd()
 
         self._agents: dict[str, AgentRecord] = {}
         self._teams: dict[str, TeamRecord] = {}
@@ -294,8 +296,7 @@ class Orchestrator:
                 raise
 
         # Workspace for the new team.
-        workspace_path = BEIDOU_DIR / "workspaces" / self.task_id / team_id
-        workspace_path.mkdir(parents=True, exist_ok=True)
+        workspace_path = team_workspace(self.project_workspace, self.task_id, team_id)
 
         # Provision all bundled skills into the team workspace so the SDK's
         # setting_sources=["project"] discovery can find them via .claude/skills/.
@@ -334,6 +335,7 @@ class Orchestrator:
                     "role_description": role_desc,
                     "team_name": name,
                     "workspace_path": str(workspace_path),
+                    "project_workspace_path": str(self.project_workspace),
                     "leader_id": leader_id,
                 },
                 cwd=str(workspace_path),
@@ -844,15 +846,40 @@ class Orchestrator:
 
         effective_model = model or self._default_model
 
-        # Root team.
-        root_workspace = BEIDOU_DIR / "workspaces" / self.task_id / ROOT_TEAM_ID
-        root_workspace.mkdir(parents=True, exist_ok=True)
-
-        # Provision all bundled skills into the root workspace.
-        from beidou.skills.loader import provision_skills
-        provision_skills(root_workspace, skill_root=self.skill_root)
+        # Root team workspace (for inbox files + artifacts; orchestrator-internal).
+        root_workspace = team_workspace(self.project_workspace, self.task_id, ROOT_TEAM_ID)
 
         root_agent_id = f"ag_{uuid.uuid4().hex[:8]}"
+
+        # Emit collision warnings for any user-owned skill files that provision_skills
+        # would overwrite in the project workspace.
+        from beidou.skills.loader import provision_skills, _parse_skill_text
+        skills_dst_dir = self.project_workspace / ".claude" / "skills"
+        if skills_dst_dir.exists():
+            for skill_md in sorted(self.skill_root.rglob("SKILL.md")):
+                try:
+                    bundled_bytes = skill_md.read_bytes()
+                    loaded = _parse_skill_text(bundled_bytes.decode("utf-8"), skill_md)
+                except Exception:
+                    continue
+                user_skill_path = skills_dst_dir / loaded.name / "SKILL.md"
+                if user_skill_path.exists():
+                    existing_bytes = user_skill_path.read_bytes()
+                    if existing_bytes != bundled_bytes:
+                        self.emit_event(
+                            "config_warning",
+                            {
+                                "agent_id": root_agent_id,
+                                "warning": "user_skill_overwritten",
+                                "skill": loaded.name,
+                                "ts": time.time(),
+                            },
+                        )
+
+        # Provision all bundled skills into the project workspace so the SDK's
+        # setting_sources=["project"] discovery can find them via .claude/skills/
+        # (root agent cwd = project workspace).
+        provision_skills(self.project_workspace, skill_root=self.skill_root)
         self._teams[ROOT_TEAM_ID] = TeamRecord(
             team_id=ROOT_TEAM_ID,
             name="root",
@@ -899,9 +926,10 @@ class Orchestrator:
                 "role_description": root_task,
                 "team_name": "root",
                 "workspace_path": str(root_workspace),
+                "project_workspace_path": str(self.project_workspace),
                 "leader_id": USER_SENTINEL,
             },
-            cwd=str(root_workspace),
+            cwd=str(self.project_workspace),
         )
 
         rec.run_task = asyncio.create_task(

@@ -43,9 +43,13 @@ on turn 2+).
 **Section order (locked):**
 
 1. `[ASSIGNED SKILL]` — skill body with `{role}` / `{role_description}` /
-   `{team_name}` / `{workspace_path}` substituted. Goes first so agents
-   sharing the same skill share a cache prefix.
-2. `[IDENTITY]` — agent role, team name, workspace path, and leader id.
+   `{team_name}` / `{workspace_path}` / `{project_workspace_path}` substituted.
+   Goes first so agents sharing the same skill share a cache prefix.
+2. `[IDENTITY]` — agent role, team name, workspace path, project workspace path,
+   and leader id. For the root agent, the agent's cwd is the project workspace,
+   while `{workspace_path}` refers to the synthetic root team's directory
+   (`tm_root`) used for orchestrator-internal storage; these two paths differ
+   only for the root agent.
 3. `[PERSISTENT-AGENT CONTRACT]` — verbatim persistent-agent rules.
 4. `[OTHER SKILLS]` — note that the `Skill` tool lists other available skills.
 

@@ -438,11 +438,11 @@ def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
     not break the prefix.
 
     ``spawn_ctx`` keys:
-        role, role_description, team_name, workspace_path, leader_id
+        role, role_description, team_name, workspace_path, project_workspace_path, leader_id
         (all strings; leader_id may be the user-sentinel for a root agent).
 
     Section order (locked):
-        1. [ASSIGNED SKILL] — skill body with {role}/{role_description}/{team_name}/{workspace_path} substituted
+        1. [ASSIGNED SKILL] — skill body with {role}/{role_description}/{team_name}/{workspace_path}/{project_workspace_path} substituted
         2. [IDENTITY] — per-agent identity filled from spawn_ctx
         3. [PERSISTENT-AGENT CONTRACT] — verbatim, no substitution
         4. [OTHER SKILLS] — verbatim, no substitution
@@ -454,6 +454,7 @@ def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
         role_description=spawn_ctx.get("role_description", ""),
         team_name=spawn_ctx.get("team_name", ""),
         workspace_path=spawn_ctx.get("workspace_path", ""),
+        project_workspace_path=spawn_ctx.get("project_workspace_path", ""),
     )
 
     skill_section = (
@@ -467,6 +468,7 @@ def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
     role = spawn_ctx.get("role", "")
     team_name = spawn_ctx.get("team_name", "")
     workspace_path = spawn_ctx.get("workspace_path", "")
+    project_workspace_path = spawn_ctx.get("project_workspace_path", "")
     leader_id = spawn_ctx.get("leader_id", "unset")
     if not leader_id:
         leader_id = "unset"
@@ -475,6 +477,7 @@ def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
         "[IDENTITY]\n"
         f"You are {role} in team {team_name}.\n"
         f"Workspace: {workspace_path}.\n"
+        f"Project workspace: {project_workspace_path}.\n"
         f"Leader: {leader_id}."
     )
 
