@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -135,23 +136,129 @@ _BEIDOU_PRIMITIVE_TOOLS: list[str] = [
 
 
 def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
-    """Build a ``PostToolUse`` hook dict for the report_status completion mechanism.
+    """Build hook dicts for the SDK agent.
 
-    The hook fires when the agent calls ``mcp__beidou__report_status(state="done")``.
-    It reads the agent's last assistant text (bound to that turn) from the orchestrator
-    and delivers it to the leader's inbox as a ``completion_report`` message.
+    Hooks registered:
 
-    If ``leader_id`` is the user-sentinel (root agent), the hook still registers but
-    emits ``completion.empty`` with reason ``root_no_leader`` instead of delivering.
+    **PreToolUse — AskUserQuestion**
+        Intercepts raw ``AskUserQuestion`` tool calls emitted by models that do not
+        use the ``mcp__beidou__ask_user`` namespaced primitive (e.g. MiniMax-M2.7 via
+        the Anthropic-compatible proxy).  The hook routes the question(s) to the human
+        gateway (same plumbing as ``ask_user``) and returns the answer as the tool's
+        effective response by denying the tool call with a ``permissionDecisionReason``.
+        Emits a synthetic ``tool_called`` + ``tool_result`` pair so the UI/JSONL log
+        reflects what happened.
 
-    Guards:
-    - Wrong tool_name: return early (the HookMatcher should filter this, but be safe).
-    - state != "done": no-op.
-    - is_error=True: the report_status call failed; skip delivery.
-    - Empty summary: emit completion.empty with reason "no summary in report_status turn".
-    - leader inbox_full: handled inside deliver_message, which emits completion.empty.
+    **PostToolUse — mcp__beidou__report_status**
+        Fires when the agent calls ``mcp__beidou__report_status(state="done")``.
+        Reads the agent's last assistant text (bound to that turn) from the orchestrator
+        and delivers it to the leader's inbox as a ``completion_report`` message.
+
+        If ``leader_id`` is the user-sentinel (root agent), the hook still registers but
+        emits ``completion.empty`` with reason ``root_no_leader`` instead of delivering.
+
+        Guards:
+        - Wrong tool_name: return early (the HookMatcher should filter this, but be safe).
+        - state != "done": no-op.
+        - is_error=True: the report_status call failed; skip delivery.
+        - Empty summary: emit completion.empty with reason "no summary in report_status turn".
+        - leader inbox_full: handled inside deliver_message, which emits completion.empty.
     """
     from .orchestrator import USER_SENTINEL
+
+    async def on_ask_user_question(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """Intercept raw AskUserQuestion tool calls and route them to the human gateway.
+
+        The SDK emits ``permissionDecision="deny"`` with the user's answer as
+        ``permissionDecisionReason`` so the model receives the answer and proceeds.
+        """
+        # Defensive guard — HookMatcher should filter, but be safe.
+        if input_data.get("tool_name") != "AskUserQuestion":
+            return {}
+
+        raw_input = input_data.get("tool_input") or {}
+        questions = raw_input.get("questions") or []
+        if not isinstance(questions, list) or not questions:
+            # Nothing to ask — deny with a clear reason so the model knows to use ask_user.
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        "AskUserQuestion received no questions. "
+                        "Use mcp__beidou__ask_user(question, context_hint) instead."
+                    ),
+                }
+            }
+
+        # Build a single composite question prompt covering all sub-questions and their options.
+        parts: list[str] = []
+        context_lines: list[str] = []
+        for i, q in enumerate(questions, start=1):
+            if not isinstance(q, dict):
+                continue
+            qtext = (q.get("question") or "").strip()
+            header = (q.get("header") or "").strip()
+            opts = q.get("options") or []
+            if header:
+                parts.append(f"Q{i} ({header}): {qtext}")
+            else:
+                parts.append(f"Q{i}: {qtext}")
+            if isinstance(opts, list) and opts:
+                for j, o in enumerate(opts, start=1):
+                    if isinstance(o, dict):
+                        label = o.get("label", "")
+                        desc = o.get("description", "")
+                        if desc:
+                            context_lines.append(f"  Q{i} option {j}: {label} — {desc}")
+                        else:
+                            context_lines.append(f"  Q{i} option {j}: {label}")
+
+        composite_question = "\n".join(parts) if parts else "(no question)"
+        context_hint: Optional[str] = "\n".join(context_lines) if context_lines else None
+
+        # Use a fresh synthetic id so the hook-emitted pair is distinguishable
+        # from any drain-loop pair on the original tool_use_id.
+        synthetic_tool_use_id = f"hook_askuserquestion_{uuid.uuid4().hex[:8]}"
+        started = time.time()
+        orch.emit_event(
+            "tool_called",
+            {
+                "ts": started,
+                "caller_id": caller_id,
+                "tool_use_id": synthetic_tool_use_id,
+                "name": "AskUserQuestion",
+                "input": raw_input,
+            },
+        )
+
+        is_error = False
+        answer: str
+        try:
+            answer = await orch.gateway_ask_user(caller_id, composite_question, context_hint)
+        except Exception as exc:  # noqa: BLE001 — gateway can be diverse
+            is_error = True
+            answer = f"ask_user failed: {type(exc).__name__}: {exc}"
+
+        duration_ms = int(round((time.time() - started) * 1000))
+        orch.emit_event(
+            "tool_result",
+            {
+                "ts": time.time(),
+                "caller_id": caller_id,
+                "tool_use_id": synthetic_tool_use_id,
+                "duration_ms": duration_ms,
+                "is_error": is_error,
+            },
+        )
+
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": answer,
+            }
+        }
 
     async def on_report_status(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
         # Guard: wrong tool (HookMatcher should filter, but be defensive).
@@ -209,6 +316,12 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
         return {}
 
     return {
+        "PreToolUse": [
+            HookMatcher(
+                matcher="AskUserQuestion",
+                hooks=[on_ask_user_question],
+            ),
+        ],
         "PostToolUse": [
             HookMatcher(
                 matcher="mcp__beidou__report_status",
