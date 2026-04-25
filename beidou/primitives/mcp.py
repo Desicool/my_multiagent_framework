@@ -15,13 +15,14 @@ server. The agent-visible names are (see ``docs/tool-surface.md``):
 
 Per ``docs/tool-surface.md``: ``caller_id`` is baked into the per-spawn MCP
 server via closure -- the model NEVER supplies it, and every primitive runs
-through a uniform error-translation + observability wrapper (``_wrap``).
+through a uniform error-translation wrapper (``_wrap``). Tool observability
+(``tool_called`` / ``tool_result`` events) is owned by the drain loop in
+``beidou/sdk_agent.py``, not here.
 """
 
 from __future__ import annotations
 
 import json
-import time
 from typing import Any, Callable
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -90,9 +91,8 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         )
 
     ``caller_id`` is captured by closure and never read from tool input.
-    Every call is observed via ``orch.emit_event("tool_called", {...})`` with
-    tool name, caller id, duration_ms, redacted input args, and -- on failure
-    -- ``error_code`` (and ``exception`` type for unexpected errors).
+    Tool observability (``tool_called`` / ``tool_result`` events) is the
+    responsibility of the drain loop in ``beidou/sdk_agent.py``.
 
     Errors are translated into structured tool results the model can reason
     about rather than raised exceptions: ``PrimitiveError`` becomes an
@@ -106,22 +106,9 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         raw_args: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        t0 = time.monotonic()
         try:
             result = await fn(**kwargs)
         except PrimitiveError as e:
-            dur_ms = (time.monotonic() - t0) * 1000
-            orch.emit_event(
-                "tool_called",
-                {
-                    "caller_id": caller_id,
-                    "tool": tool_name,
-                    "args": _redact_args(raw_args),
-                    "duration_ms": dur_ms,
-                    "is_error": True,
-                    "error_code": e.code,
-                },
-            )
             return {
                 "content": [
                     {
@@ -138,19 +125,6 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                 "is_error": True,
             }
         except Exception as e:
-            dur_ms = (time.monotonic() - t0) * 1000
-            orch.emit_event(
-                "tool_called",
-                {
-                    "caller_id": caller_id,
-                    "tool": tool_name,
-                    "args": _redact_args(raw_args),
-                    "duration_ms": dur_ms,
-                    "is_error": True,
-                    "error_code": "internal_error",
-                    "exception": type(e).__name__,
-                },
-            )
             return {
                 "content": [
                     {
@@ -163,17 +137,6 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                 "is_error": True,
             }
         else:
-            dur_ms = (time.monotonic() - t0) * 1000
-            orch.emit_event(
-                "tool_called",
-                {
-                    "caller_id": caller_id,
-                    "tool": tool_name,
-                    "args": _redact_args(raw_args),
-                    "duration_ms": dur_ms,
-                    "is_error": False,
-                },
-            )
             return {
                 "content": [{"type": "text", "text": _json(result)}],
             }

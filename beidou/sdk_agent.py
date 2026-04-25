@@ -7,12 +7,15 @@ producer of the events catalogued in ``docs/observability.md``:
 
 * ``agent_started`` -- pre-drain lifecycle event.
 * ``turn.usage``    -- deduplicated per-turn token accounting.
+* ``tool_called``   -- emitted when a ``ToolUseBlock`` arrives in an ``AssistantMessage``.
+* ``tool_result``   -- emitted when a ``ToolResultBlock`` arrives in a ``UserMessage``.
 * ``run.cost``      -- terminal authoritative cost/duration/num_turns rollup.
 * ``agent_completed`` -- post-drain lifecycle event.
 * ``agent_error``   -- emitted on unexpected exceptions, before re-raising.
 
-``tool_called`` is emitted by the MCP wrapper layer (see
-``beidou/primitives/mcp.py``) -- never here -- so there is no double counting.
+The drain loop is the **sole owner** of ``tool_called`` and ``tool_result``
+emission. The MCP wrapper (``beidou/primitives/mcp.py``) does NOT emit
+``tool_called`` -- that was the prior design, now replaced.
 
 ``contract_violation`` is emitted by the *orchestrator*, not this module. We
 only set the flag on :class:`RunResult`; the orchestrator reads it and
@@ -195,6 +198,9 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     final_text_parts: list[str] = []
     last_message_id: Optional[str] = None
     result_data: Optional[dict] = None
+    # Tool-span tracking: maps tool_use_id -> monotonic start time.
+    # Populated on ToolUseBlock arrival; consumed on ToolResultBlock arrival.
+    pending_tool_uses: dict[str, float] = {}
 
     try:
         async for msg in query(prompt=spec.task, options=options):
@@ -239,12 +245,49 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                     final_text_parts.clear()
                     last_message_id = mid
                 for block in (getattr(msg, "content", None) or []):
-                    if type(block).__name__ == "TextBlock":
+                    block_cls = type(block).__name__
+                    if block_cls == "TextBlock":
                         text = getattr(block, "text", "")
                         if text:
                             final_text_parts.append(text)
-                # ToolUseBlock observation happens in the MCP wrapper; no
-                # event emission here.
+                    elif block_cls == "ToolUseBlock":
+                        tool_use_id = getattr(block, "id", None)
+                        if tool_use_id:
+                            pending_tool_uses[tool_use_id] = time.monotonic()
+                            orch.emit_event(
+                                "tool_called",
+                                {
+                                    "ts": time.time(),
+                                    "caller_id": spec.caller_id,
+                                    "message_id": mid,
+                                    "tool_use_id": tool_use_id,
+                                    "name": getattr(block, "name", None),
+                                    "input": getattr(block, "input", {}),
+                                },
+                            )
+
+            elif cls == "UserMessage":
+                # UserMessage carries tool-result echoes from the SDK.
+                # Drain ToolResultBlocks to close open tool spans.
+                for block in (getattr(msg, "content", None) or []):
+                    if type(block).__name__ == "ToolResultBlock":
+                        tool_use_id = getattr(block, "tool_use_id", None)
+                        start = pending_tool_uses.pop(tool_use_id, None) if tool_use_id else None
+                        duration_ms: Optional[int] = (
+                            int(round((time.monotonic() - start) * 1000.0))
+                            if start is not None
+                            else None
+                        )
+                        orch.emit_event(
+                            "tool_result",
+                            {
+                                "ts": time.time(),
+                                "caller_id": spec.caller_id,
+                                "tool_use_id": tool_use_id,
+                                "duration_ms": duration_ms,
+                                "is_error": getattr(block, "is_error", False) or False,
+                            },
+                        )
 
             elif cls == "ResultMessage":
                 result_data = {

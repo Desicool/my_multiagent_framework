@@ -225,6 +225,16 @@ async def send_message(
             "ts": msg.ts,
         },
     )
+    orch.emit_event(
+        "send_message",
+        {
+            "ts": time.time(),
+            "caller_id": caller_id,
+            "to": to,
+            "content": content,
+            "message_id": message_id,
+        },
+    )
     return {"delivered": True, "message_id": message_id}
 
 
