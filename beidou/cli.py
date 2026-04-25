@@ -58,8 +58,6 @@ def init() -> None:
 @click.option("--skill", "-s", default="orchestrator", show_default=True, help="Agent skill name (e.g. orchestrator).")
 @click.option("--template", "-t", default=None, hidden=True, help="Deprecated alias for --skill. Use --skill instead.")
 @click.option("--base-url", default=None, help="Override Anthropic API base URL (also reads ANTHROPIC_BASE_URL env var).")
-@click.option("--max-question-wait", default=300, show_default=True, type=int,
-              help="Seconds an agent's ask_user tool will wait for an answer before raising TimeoutError.")
 @click.option("--gateway", "-g", default="terminal", show_default=True,
               help="Question gateway(s), comma-separated: terminal, web, tui")
 @click.option("--web-host", default="127.0.0.1", show_default=True,
@@ -69,7 +67,7 @@ def init() -> None:
 @click.option("--open", "open_browser", is_flag=True, default=False,
               help="Auto-open browser when using --gateway web.")
 def run(task: str, model: str, skill: str, template: str | None, base_url: str | None,
-        max_question_wait: int, gateway: str, web_host: str, web_port: int,
+        gateway: str, web_host: str, web_port: int,
         open_browser: bool) -> None:
     """Run an agent on TASK."""
     _ensure_db()
@@ -87,7 +85,7 @@ def run(task: str, model: str, skill: str, template: str | None, base_url: str |
         skill = template
 
     asyncio.run(_run_task(task=task, model=model, skill=skill,
-                          base_url=base_url, max_question_wait=max_question_wait,
+                          base_url=base_url,
                           gateway=gateway, web_host=web_host, web_port=web_port,
                           open_browser=open_browser))
 
@@ -151,11 +149,9 @@ class _GatewayAdapter:
         self,
         gateway: "BaseGateway",
         broker: "QuestionBroker",
-        timeout: int = 300,
     ) -> None:
         self._gw = gateway
         self._broker = broker
-        self._timeout = timeout
 
     async def ask(self, caller_id: str, question: str, context: str | None) -> str:
         import asyncio as _asyncio
@@ -176,10 +172,7 @@ class _GatewayAdapter:
         # Surface the question to the human via the registered gateway.
         await self._gw.surface_question(q, self._broker)
         try:
-            return await _asyncio.wait_for(q.future, timeout=self._timeout)
-        except _asyncio.TimeoutError:
-            q.state = "timed_out"
-            raise
+            return await q.future
         finally:
             self._broker._pending.pop(q.qid, None)
 
@@ -189,7 +182,6 @@ async def _run_task(
     model: str,
     skill: str,
     base_url: str | None = None,
-    max_question_wait: int = 300,
     gateway: str = "terminal",
     web_host: str = "127.0.0.1",
     web_port: int = 7777,
@@ -215,7 +207,7 @@ async def _run_task(
     broker = QuestionBroker()
     gw = _build_gateway(gateway, broker, task_id, web_host, web_port, open_browser, console)
     broker.set_gateway(gw)
-    gateway_adapter = _GatewayAdapter(gw, broker, timeout=max_question_wait)
+    gateway_adapter = _GatewayAdapter(gw, broker)
 
     orch = Orchestrator(
         task_id=task_id,

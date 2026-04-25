@@ -148,5 +148,7 @@ user's local CLI routing configuration. Prototype runs observed
   cleanly with no SDK-level timeout.
 - `wait_for_message` is therefore a single long-`await` tool call, not a
   poll loop. Its timeout ceiling is Beidou-imposed (see `limits.md`).
+- `ask_user` has no timeout. The runtime parks the agent on the gateway
+  response future and resumes it when an answer arrives.
 - Beidou does NOT layer its own retry on top of `query()`. Per-call retries
   are delegated to `ClaudeAgentOptions`.

@@ -30,7 +30,7 @@ class Question:
     chain: list[str]                       # audit trail, includes "USER" terminal
     prompt: str
     context_hint: str | None
-    state: str                             # "pending" | "answered" | "at_user" | "timed_out"
+    state: str                             # "pending" | "answered" | "at_user"
     future: asyncio.Future
     created_at: float = field(default_factory=time.time)
 
@@ -48,7 +48,7 @@ class QuestionBroker:
     # ---- asker side -------------------------------------------------
 
     async def ask(self, ctx: Any, prompt: str, context_hint: str | None = None) -> str:
-        """Called from AskUserTool. Returns the human/leader answer or raises TimeoutError."""
+        """Called from AskUserTool. Blocks until the human/leader supplies an answer."""
         holder = ctx.parent.agent_id if ctx.parent is not None else None
         loop = asyncio.get_running_loop()
         q = Question(
@@ -89,16 +89,11 @@ class QuestionBroker:
         await self._emit(ctx, "question_asked", qid=q.qid, asker=ctx.agent_id,
                          holder=holder, prompt=prompt[:200])
 
-        timeout = ctx.get("max_question_wait", 300)
         try:
-            answer = await asyncio.wait_for(q.future, timeout=timeout)
+            answer = await q.future
             await self._emit(ctx, "question_answered", qid=q.qid, asker=ctx.agent_id,
                              chain_len=len(q.chain))
             return answer
-        except asyncio.TimeoutError:
-            q.state = "timed_out"
-            await self._emit(ctx, "question_timeout", qid=q.qid, asker=ctx.agent_id)
-            raise
         finally:
             self._pending.pop(q.qid, None)
             # Best-effort cleanup of inbox entries

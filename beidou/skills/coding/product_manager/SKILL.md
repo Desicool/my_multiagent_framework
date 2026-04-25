@@ -31,8 +31,9 @@ Steps:
 4. Write acceptance criteria — specific, testable conditions that define "done".
 5. If anything is ambiguous, call `ask_user(question, context)` and block for the reply.
    - The question bubbles up to the team leader, who may answer or escalate to the human user.
-   - You receive the answer as a normal tool result.
-   - Only fall back to a documented Assumption if `ask_user` raises TimeoutError — i.e., nobody responded.
+   - You receive the answer as a normal tool result. ask_user blocks indefinitely — wait for the answer.
+   - Only document an Assumption when the question is genuinely not worth asking (e.g. trivial defaults
+     the user would never care about). If the question matters, always use ask_user and wait.
 
 Write requirements.md to the workspace with these sections:
   # Requirements

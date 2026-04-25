@@ -143,6 +143,8 @@ The agent's correct response to the sentinel is documented in
 - `user_declined`: user explicitly refused. Returns the refusal as a
   structured error.
 
+ask_user blocks indefinitely until the user (or an escalating leader via the inbox question broker) supplies an answer. There is no timeout.
+
 ---
 
 ## report_status
