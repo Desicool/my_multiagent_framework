@@ -144,6 +144,7 @@ function reduce(state, ev) {
           cost_usd:      0,
           _turns:        [],   // per-turn records for detail table
           _toolList:     [],   // tool calls list for detail pane
+          _stream:       [],   // live chronological stream: text + tool events
         };
       } else {
         const ag = Object.assign({}, existing);
@@ -172,7 +173,7 @@ function reduce(state, ev) {
     case "turn.usage": {
       // llm_response: tokens_in, tokens_out, cost_usd, duration_ms, stop_reason
       // turn.usage:   input_tokens, output_tokens, cache_*, stop_reason, model, message_id
-      const ag = Object.assign({}, s.agents[aid] || { agent_id: aid, tokens_in:0, tokens_out:0, llm_calls:0, cost_usd:0, _turns:[], _toolList:[] });
+      const ag = Object.assign({}, s.agents[aid] || { agent_id: aid, tokens_in:0, tokens_out:0, llm_calls:0, cost_usd:0, _turns:[], _toolList:[], _stream:[] });
       const inTok  = ev.tokens_in  || ev.input_tokens  || 0;
       const outTok = ev.tokens_out || ev.output_tokens || 0;
       ag.tokens_in  = (ag.tokens_in  || 0) + inTok;
@@ -209,8 +210,24 @@ function reduce(state, ev) {
       break;
     }
 
+    case "assistant_text": {
+      const ag = Object.assign({}, s.agents[aid] || { agent_id: aid, _stream: [] });
+      ag._stream = [...(ag._stream||[]), {
+        type:        "text",
+        ts:          ev.ts,
+        message_id:  ev.message_id,
+        text:        ev.text || "",
+        stop_reason: ev.stop_reason,
+      }];
+      if (ag._stream.length > 200) ag._stream = ag._stream.slice(-200);
+      ag._lastEventType = "assistant_text";
+      ag._lastEventTs   = ev.ts;
+      s.agents[aid] = ag;
+      break;
+    }
+
     case "tool_called": {
-      const ag = Object.assign({}, s.agents[aid] || { agent_id: aid, tool_calls:0, _turns:[], _toolList:[] });
+      const ag = Object.assign({}, s.agents[aid] || { agent_id: aid, tool_calls:0, _turns:[], _toolList:[], _stream:[] });
       ag.tool_calls    = (ag.tool_calls||0) + 1;
       ag._lastEventType = "tool_called";
       ag._lastEventTs   = ev.ts;
@@ -229,6 +246,16 @@ function reduce(state, ev) {
         is_error: false,
         pending: ev.duration_ms == null,
       }];
+      // Per-agent live stream entry
+      ag._stream = [...(ag._stream||[]), {
+        type:        "tool_start",
+        ts:          ev.ts,
+        name:        toolName,
+        tool_use_id: toolUseId,
+        duration_ms: null,
+        is_error:    null,
+      }];
+      if (ag._stream.length > 200) ag._stream = ag._stream.slice(-200);
       s.agents[aid]    = ag;
 
       // Left pane: inline tool item
@@ -255,6 +282,14 @@ function reduce(state, ev) {
             t.tool_use_id === toolUseId
               ? Object.assign({}, t, { duration_ms: ev.duration_ms, is_error: !!ev.is_error, pending: false })
               : t
+          );
+        }
+        // Patch per-agent stream entry
+        if (ag._stream) {
+          ag._stream = ag._stream.map(item =>
+            (item.type === "tool_start" && item.tool_use_id === toolUseId)
+              ? Object.assign({}, item, { duration_ms: ev.duration_ms, is_error: !!ev.is_error })
+              : item
           );
         }
         ag._lastEventType = "tool_result";
@@ -310,7 +345,7 @@ function reduce(state, ev) {
     case "send_message": {
       const msg = {
         ts:        ev.ts,
-        from:      ev.sender_agent_id || ev.agent_id || "?",
+        from:      ev.sender_agent_id || ev.caller_id || ev.agent_id || "?",
         to:        ev.recipient_agent_id || ev.to || "?",
         content:   ev.content || ev.message || "",
         _new:      true,
@@ -451,6 +486,10 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
     questionPollId:   null,
     answerTexts:      {},  // qid -> string
 
+    // Agent composer
+    agentDraftTexts:  {},  // agentId -> draft string
+    agentSendStatus:  {},  // agentId -> status string
+
     // Infra
     ws:         null,
     wsAttempts: 0,
@@ -529,6 +568,12 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
       this.pendingQuestions = [];
 
       await this.loadTaskSnapshot(id);
+      // Auto-pin root agent so the Agent tab is live immediately
+      const rootId = this.rootAgentId();
+      if (rootId) {
+        this.pinnedAgentId = rootId;
+        this.rightTab = "agent";
+      }
       this.openWS(id);
       await this.pollQuestions();
       this.questionPollId = setInterval(() => this.pollQuestions(), 5000);
@@ -566,6 +611,7 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
             cost_usd:   a.total_cost_usd || 0,
             _turns:    [],
             _toolList: [],
+            _stream:   [],
           };
         }
 
@@ -599,6 +645,13 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
       if (this.leaderAutoScroll) {
         this.$nextTick && this.$nextTick(() => {
           const el = document.getElementById("leader-scroll");
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      }
+      // Auto-scroll pinned agent stream pane
+      if (ev.agent_id && ev.agent_id === this.pinnedAgentId) {
+        this.$nextTick && this.$nextTick(() => {
+          const el = document.getElementById("agent-stream-" + ev.agent_id);
           if (el) el.scrollTop = el.scrollHeight;
         });
       }
@@ -711,6 +764,33 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
           delete this.answerTexts[qid];
         }
       } catch {}
+    },
+
+    async sendToAgent(agentId) {
+      const content = (this.agentDraftTexts[agentId] || "").trim();
+      if (!content) return;
+      this.agentSendStatus = Object.assign({}, this.agentSendStatus, { [agentId]: "sending…" });
+      try {
+        const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content }),
+        });
+        if (r.ok) {
+          this.agentDraftTexts = Object.assign({}, this.agentDraftTexts, { [agentId]: "" });
+          this.agentSendStatus = Object.assign({}, this.agentSendStatus, { [agentId]: "sent" });
+          setTimeout(() => {
+            this.agentSendStatus = Object.assign({}, this.agentSendStatus, { [agentId]: "" });
+          }, 1500);
+        } else {
+          const j = await r.json().catch(() => ({}));
+          this.agentSendStatus = Object.assign({}, this.agentSendStatus, {
+            [agentId]: "error: " + (j.detail || r.status),
+          });
+        }
+      } catch {
+        this.agentSendStatus = Object.assign({}, this.agentSendStatus, { [agentId]: "error" });
+      }
     },
 
     // ---- AGENT STANDALONE VIEW ----
@@ -862,6 +942,7 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
       const dCls    = dotCls(status);
       const turns   = (a._turns||[]).slice(-20);
       const tools   = (a._toolList||[]).slice(-20);
+      const stream  = (a._stream||[]).slice(-200);
       const skillsHtml = (a.skills||[]).map(s => `<span class="chip chip-violet">${esc(s)}</span>`).join(" ");
       const promptHtml = a.system_prompt
         ? `<details class="mb-2"><summary class="mono text-xs fg-2 cursor-pointer p-2" style="list-style:none;">System prompt ▸</summary><pre class="mono p-2 fg-1 whitespace-pre-wrap" style="font-size:10px;margin:0;max-height:130px;overflow-y:auto;">${esc(a.system_prompt)}</pre></details>`
@@ -878,6 +959,32 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
             t.is_error ? `<span style="color:var(--rose)">✗</span>` : `<span style="color:var(--emerald)">✓</span>`}
         </div>`
       ).join("");
+      const streamRows = stream.map(item => {
+        if (item.type === "text") {
+          return `<div class="mb-2">
+            <span class="mono fg-2" style="font-size:10px;">${esc(hhmmss(item.ts))}</span>
+            <pre class="mono fg-1" style="font-size:11px;white-space:pre-wrap;margin:2px 0 0 0;">${esc(item.text)}</pre>
+          </div>`;
+        } else if (item.type === "tool_start") {
+          const pending = item.duration_ms == null;
+          const indicator = pending
+            ? `<span class="dot running pulse" style="width:6px;height:6px;display:inline-block;"></span>`
+            : item.is_error
+              ? `<span style="color:var(--rose)">✗</span>`
+              : `<span style="color:var(--emerald)">✓</span>`;
+          const dur = !pending && item.duration_ms != null
+            ? `<span class="fg-2 num" style="font-size:10px;">${esc(String(item.duration_ms))}ms</span>`
+            : "";
+          return `<div class="flex items-center gap-2 py-0.5 mono" style="font-size:11px;">
+            <span class="fg-2" style="font-size:10px;">${esc(hhmmss(item.ts))}</span>
+            <span style="color:var(--sky);">→</span>
+            <span class="fg-0 flex-1">${esc(item.name)}</span>
+            ${dur}
+            ${indicator}
+          </div>`;
+        }
+        return "";
+      }).join("");
       return `<div class="p-3">
         <div class="flex items-center gap-2 mb-3">
           <span class="${esc(dCls)}"></span>
@@ -893,7 +1000,11 @@ if (typeof document !== "undefined") document.addEventListener("alpine:init", ()
         </div>
         ${skillsHtml ? `<div class="flex flex-wrap gap-1 mb-3">${skillsHtml}</div>` : ""}
         ${promptHtml}
-        ${turns.length > 0 ? `<div class="mono text-xs fg-2 mb-1">Turns (last 20)</div><div style="overflow-x:auto;"><table class="detail-table"><thead><tr><th>Time</th><th>In</th><th>Out</th><th>CacheR</th><th>CacheW</th><th>Stop</th></tr></thead><tbody>${turnRows}</tbody></table></div>` : ""}
+        ${stream.length > 0 ? `<div class="mono text-xs fg-2 mb-1">Live stream (last 200)</div>
+        <div class="panel" id="agent-stream-${esc(a.agent_id)}" style="max-height:300px;overflow-y:auto;font-size:11px;padding:8px;">
+          ${streamRows}
+        </div>` : ""}
+        ${turns.length > 0 ? `<div class="mono text-xs fg-2 mb-1 mt-3">Turns (last 20)</div><div style="overflow-x:auto;"><table class="detail-table"><thead><tr><th>Time</th><th>In</th><th>Out</th><th>CacheR</th><th>CacheW</th><th>Stop</th></tr></thead><tbody>${turnRows}</tbody></table></div>` : ""}
         ${tools.length > 0 ? `<div class="mono text-xs fg-2 mt-3 mb-1">Tool calls (last 20)</div><div class="panel">${toolRows}</div>` : ""}
       </div>`;
     },

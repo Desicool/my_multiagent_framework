@@ -15,6 +15,10 @@ from pydantic import BaseModel
 class AnswerBody(BaseModel):
     answer: str
 
+
+class SendBody(BaseModel):
+    content: str
+
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
@@ -70,7 +74,7 @@ def _read_jsonl_events(path: Path) -> list[dict]:
     return events
 
 
-def create_app(broker=None, task_id=None) -> "FastAPI":
+def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
     from beidou import db
     from beidou.web.tail import current_cursor
 
@@ -265,6 +269,39 @@ def create_app(broker=None, task_id=None) -> "FastAPI":
         b._pending.pop(qid, None)
         q.future.set_result(body.answer)
         return {"ok": True}
+
+    @app.post("/api/agents/{agent_id}/send")
+    async def api_agents_send(agent_id: str, body: SendBody):
+        if orch is None:
+            raise HTTPException(status_code=503, detail="no active orchestrator")
+        if not orch.agent_exists(agent_id):
+            raise HTTPException(status_code=404, detail="unknown agent")
+        import time as _time
+        import uuid as _uuid
+        from beidou.primitives.core import Message as _Message
+        mid = _uuid.uuid4().hex
+        msg = _Message(
+            from_id="user",
+            content=body.content,
+            ts=_time.time(),
+            message_id=mid,
+            kind="user",
+        )
+        try:
+            await orch.inbox_put(agent_id, msg)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        orch.emit_event(
+            "send_message",
+            {
+                "ts": msg.ts,
+                "caller_id": "user",
+                "to": agent_id,
+                "content": body.content,
+                "message_id": mid,
+            },
+        )
+        return {"ok": True, "message_id": mid}
 
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 

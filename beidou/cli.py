@@ -229,7 +229,17 @@ async def _run_task(
     console.print(f"[dim]model:[/dim] {model}  [dim]skill:[/dim] {skill}")
     console.print(f"[bold]Task:[/bold] {task}\n")
 
+    # Inject the orchestrator into any WebGateway instances so the /send
+    # endpoint has access to inbox_put.  Do this before gw.start() so the
+    # orch reference is available when create_app() is called inside start().
     _has_web = "web" in gateway.lower()
+    if _has_web:
+        from beidou.gateways.web import WebGateway as _WebGateway
+        from beidou.gateways.composite import CompositeGateway as _CompositeGateway
+        _candidates = gw._gateways if isinstance(gw, _CompositeGateway) else [gw]
+        for _g in _candidates:
+            if isinstance(_g, _WebGateway):
+                _g.orch = orch
     await gw.start()
     try:
         result = await orch.run_root(root_skill=skill, root_task=task, model=model)

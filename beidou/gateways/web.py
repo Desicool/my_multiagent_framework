@@ -63,13 +63,14 @@ class WebGateway(BaseGateway):
         self._server = None
         self._server_task: asyncio.Task | None = None
         self._url = ""
+        self.orch = None  # set after orchestrator is created, before start()
 
     async def start(self) -> None:
         import uvicorn
         from beidou.web.app import create_app
 
         actual_port = _find_free_port(self._port)
-        app = create_app(broker=self._broker, task_id=self._task_id)
+        app = create_app(broker=self._broker, orch=self.orch, task_id=self._task_id)
         config = uvicorn.Config(app, host=self._host, port=actual_port, log_level="warning")
         server = uvicorn.Server(config)
         self._server = server

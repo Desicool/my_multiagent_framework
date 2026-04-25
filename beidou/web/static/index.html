@@ -255,8 +255,27 @@
           </div>
 
           <!-- Agent detail -->
-          <div class="flex-1" :style="rightTab==='agent' ? 'overflow-y:auto;display:block;' : 'display:none;'"
-               x-html="rightTab === 'agent' ? renderPinnedAgent() : ''">
+          <div :style="rightTab==='agent' ? 'display:flex;flex-direction:column;flex:1;min-height:0;' : 'display:none;'">
+            <div class="flex-1" style="overflow-y:auto;"
+                 x-html="rightTab === 'agent' ? renderPinnedAgent() : ''">
+            </div>
+            <template x-if="pinnedAgentId">
+              <div class="p-2 divider" style="flex:none;">
+                <textarea
+                  :id="'agent-send-' + pinnedAgentId"
+                  x-model="agentDraftTexts[pinnedAgentId]"
+                  placeholder="Send a message to this agent…"
+                  rows="3"
+                  style="width:100%;resize:vertical;font-family:inherit;font-size:11px;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--fg-0);border-radius:4px;box-sizing:border-box;"
+                  @keydown.meta.enter="sendToAgent(pinnedAgentId)"
+                  @keydown.ctrl.enter="sendToAgent(pinnedAgentId)"
+                ></textarea>
+                <div class="flex items-center gap-2 mt-1">
+                  <button class="btn" @click="sendToAgent(pinnedAgentId)">Send</button>
+                  <span class="mono fg-2 text-xs" x-text="agentSendStatus[pinnedAgentId] || ''"></span>
+                </div>
+              </div>
+            </template>
           </div>
         </aside>
 
