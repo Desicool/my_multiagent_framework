@@ -23,7 +23,7 @@ dependencies = [
 tui = ["textual>=0.60.0"]
 
 [tool.setuptools.package-data]
-beidou = ["web/static/*", "skills/**/SKILL.md"]
+beidou = ["web/static/*", "web/static/assets/*", "skills/**/SKILL.md"]
 
 [project.scripts]
 beidou = "beidou.cli:main"

@@ -11,7 +11,7 @@ and contract events.
 ## Reducer contract
 
 Consumers derive state by reducing the JSONL stream in order.
-Dedup key for `turn.usage` messages: `(agent_id, message_id, ts)`.
+Dedup key for `turn.usage` messages: `(caller_id, message_id, ts)`.
 Dedup key for tool pairs: `tool_use_id` (shared by `tool_called` and `tool_result`).
 
 ## Event catalogue
@@ -89,7 +89,7 @@ SDK may yield multiple `AssistantMessage` fragments that share a
 | Field | Source |
 |---|---|
 | `ts` | Wall clock at emission. |
-| `agent_id` | Context. |
+| `caller_id` | Context. |
 | `message_id` | `AssistantMessage.message_id`. |
 | `model` | `AssistantMessage.model`. **Authoritative**; may differ from `model_requested` (see `agent-runtime.md` section 6). |
 | `stop_reason` | `AssistantMessage.stop_reason`. |
@@ -114,7 +114,7 @@ this emission — the MCP wrapper does NOT emit `tool_called`.
 | Field | Source |
 |---|---|
 | `ts` | Wall clock at `ToolUseBlock` arrival. |
-| `agent_id` | Context. |
+| `caller_id` | Context. |
 | `message_id` | Parent `AssistantMessage.message_id`. |
 | `tool_use_id` | `ToolUseBlock.id`. Join key for the matching `tool_result`. |
 | `name` | `ToolUseBlock.name` (includes `mcp__beidou__` prefix for Beidou primitives). |
@@ -130,7 +130,7 @@ End of a tool span. Emitted by the drain loop when it observes the
 | Field | Source |
 |---|---|
 | `ts` | Wall clock at `ToolResultBlock` arrival. |
-| `agent_id` | Context. |
+| `caller_id` | Context. |
 | `tool_use_id` | `ToolResultBlock.tool_use_id`. Join key — links back to the corresponding `tool_called`. |
 | `duration_ms` | Orchestrator-measured: monotonic time from `ToolUseBlock` arrival to `ToolResultBlock` arrival. |
 | `is_error` | `ToolResultBlock.is_error`; `false` when the field is absent. |
@@ -165,6 +165,51 @@ ground truth) and investigate the dedup logic.
 
 ---
 
+### `question_asked`
+
+Emitted by `QuestionBroker` when an agent calls `ask_user`. The `prompt`
+field is **truncated to 200 characters**; the full record (full prompt,
+`context_hint`, `chain`) is only available via `GET /api/questions/pending`.
+Treat this event as a ping and re-poll the API for rich data.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at emission. |
+| `qid` | Unique question id (e.g. `q_abc12345`). |
+| `asker` | `agent_id` of the agent that called `ask_user`. |
+| `holder` | `agent_id` of the team-leader currently holding the question, or `null` if surfaced to the user. |
+| `prompt` | The question text, truncated to 200 chars. |
+
+---
+
+### `question_answered`
+
+Emitted by `QuestionBroker` after the question future resolves.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at answer receipt. |
+| `qid` | Matches the corresponding `question_asked` event. |
+| `asker` | `agent_id` of the original asker. |
+
+---
+
+### `send_message`
+
+Emitted by the `send_message` primitive whenever an agent (or the user via
+the web composer) delivers a message to another agent's inbox. User messages
+have `caller_id == "user"`. No `kind` field.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at delivery. |
+| `caller_id` | Sender — an `agent_id` or the literal string `"user"`. |
+| `to` | Recipient `agent_id`. |
+| `content` | Full message text. |
+| `message_id` | UUID-based id shared with the inbox `Message` record. |
+
+---
+
 ### `contract_violation`
 
 Emitted every time the SDK `query()` returns for an agent that has not been
@@ -188,7 +233,7 @@ rollup.
 | Field | Source |
 |---|---|
 | `ts` | Wall-clock seconds at emission. |
-| `agent_id` | Context (= `caller_id`). |
+| `caller_id` | Context. |
 | `message_id` | `AssistantMessage.message_id` — ties to the `turn.usage` event with the same `message_id`. |
 | `text` | Concatenation of every `TextBlock` in this `AssistantMessage`. |
 | `stop_reason` | SDK-reported stop reason for this turn; `null` if absent. |

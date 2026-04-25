@@ -1,0 +1,38 @@
+{
+  "name": "beidou-frontend",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "rebuild": "bash scripts/clean-static.sh && vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "bundle-stats": "npx vite-bundle-visualizer"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tailwindcss/typography": "^0.5.15",
+    "@tsconfig/svelte": "^5.0.4",
+    "@types/dompurify": "^3.0.5",
+    "@types/jsdom": "^28.0.1",
+    "@vitest/ui": "^3.1.2",
+    "autoprefixer": "^10.4.20",
+    "jsdom": "^29.0.2",
+    "postcss": "^8.4.49",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.1.4",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0",
+    "vite-bundle-visualizer": "^1.2.1",
+    "vitest": "^3.1.2"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.3",
+    "highlight.js": "^11.10.0",
+    "marked": "^14.1.4"
+  }
+}

@@ -16,3 +16,7 @@ __pycache__/
 
 # trial-run scratch (agent-created during dogfooding)
 artifacts/
+
+# Frontend build artifacts
+beidou/web/frontend/node_modules/
+beidou/web/frontend/dist/

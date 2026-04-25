@@ -16,6 +16,7 @@ Given a change kind, open these files FIRST (top-to-bottom), then code.
 | The orchestrator <-> SDK boundary, event drain, context propagation, process layout | `architecture.md`, `agent-runtime.md` |
 | Team topology: leader/member semantics, cascade termination, liveness, message routing | `orchestration.md`, `tool-surface.md` (create_team, terminate_child, send_message) |
 | Event schema, JSONL/SQLite fields, accounting, turn-level usage, cost rollups | `observability.md` |
+| The web UI / frontend (Svelte components, reducer, panels, build) | `web-ui.md`, `observability.md` |
 | Dev process, PR checklist, which specs gate which change | `workflows.md` |
 
 ## Approval rule for boundary changes
@@ -32,7 +33,7 @@ Any diff that:
 specific boundary and proposed new value via `AskUserQuestion`. Bug fixes that
 preserve all documented boundaries proceed without approval.
 
-## The nine specs
+## The ten specs
 
 1. `README.md` - this index.
 2. `architecture.md` - orchestrator/SDK split, process layout, context propagation, event flow.
@@ -43,6 +44,7 @@ preserve all documented boundaries proceed without approval.
 7. `observability.md` - event schema and accounting granularity.
 8. `limits.md` - every hard limit; every line is a boundary.
 9. `workflows.md` - per-change-kind checklist for developers.
+10. `web-ui.md` - frontend layout, event-to-state reducer, build instructions, bundle policy.
 
 ## Working rules
 
