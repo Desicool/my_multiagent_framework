@@ -16,8 +16,6 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 | Tool (mcp__beidou__...) | Kind | Blocking? |
 |---|---|---|
 | `send_message` | A2A | No |
-| `read_messages` | Agent-Beidou | No |
-| `wait_for_message` | Agent-Beidou | Yes (bounded) |
 | `list_peers` | Agent-Beidou | No |
 | `ask_user` | Agent-Beidou | Yes (human-bounded) |
 | `report_status` | Agent-Beidou | No |
@@ -46,60 +44,6 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 - `inbox_full`: recipient's inbox has reached the cap in `limits.md`. Returned
   as a structured tool error; sender decides how to react.
 - `task_mismatch`: `to` resolves but belongs to a different task.
-
----
-
-## read_messages
-
-**Kind:** Agent-Beidou. Non-blocking drain of the caller's inbox.
-
-**Input schema:** none.
-
-**Output schema**
-```
-{ "messages": [ {"from": "<agent_id>", "content": "...", "ts": "<iso>"}, ... ] }
-```
-Returns the current batch and removes them from the inbox atomically. Empty
-list if the inbox is empty.
-
-**Error cases:** none under normal operation.
-
----
-
-## wait_for_message
-
-**Kind:** Agent-Beidou. Blocking. Parks the agent until a message arrives or
-the timeout fires.
-
-**Input schema**
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `from` | string (agent_id) | no | If set, only returns when a message from this sender arrives. |
-| `timeout` | number (seconds) | yes | Max seconds to block. Validated against the ceiling in `limits.md`. |
-
-**Output schema**
-```
-{ "message": {"from": "...", "content": "...", "ts": "..."}, "timeout": false }
-```
-Or, if the timeout fires first:
-```
-{ "timeout": true }
-```
-If the next message is a **terminate sentinel**, output shape is:
-```
-{ "message": {"from": "beidou", "content": "__terminate__", ...}, "timeout": false }
-```
-The agent's correct response to the sentinel is documented in
-`agent-runtime.md` section 5.
-
-**Error cases**
-- `timeout_over_ceiling`: `timeout` exceeds `limits.md` ceiling. Structured
-  tool error; agent retries with a smaller value.
-
-**Validation rules**
-- The SDK imposes NO per-tool timeout (verified in `proto_01_long_tool.py`).
-  The ceiling enforced here is Beidou-imposed.
-- Implementation: `asyncio.wait_for(agent.inbox.get_one(filter), timeout)`.
 
 ---
 

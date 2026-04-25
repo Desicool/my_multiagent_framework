@@ -20,11 +20,10 @@ process exit.
 
 | Situation | Correct action |
 |---|---|
-| Work done | Call `report_status(state="done", detail=<summary>)`, then `wait_for_message()`. Stay alive. |
-| Nothing to do | Call `wait_for_message()`. Re-call on timeout. |
-| Re-assigned (parent sent new work) | Resume on return from `wait_for_message`. Same session. No re-spawn. |
-| Asked a question by peer | Answer via `send_message`, then `wait_for_message`. |
-| Received terminate sentinel | See section 5. Cascade first, ack, then one-and-only `end_turn`. |
+| Work done | Call `report_status(state="done", detail=<summary>)`, then end your turn. The runtime parks you on your inbox until the next message arrives. |
+| Nothing to do | End your turn. The runtime keeps your session alive and resumes you when a new inbox message arrives. |
+| Re-assigned (parent sent new work) | The new task arrives as the next user-role turn from the runtime. Resume in the same SDK session. No re-spawn. |
+| Asked a question by peer | Answer via `send_message`, then end your turn. |
 
 **Why leader-only termination authority:** termination is the single most
 disruptive event in the team graph. Centralising it in the leader guarantees
@@ -76,16 +75,11 @@ and the leader receives no completion report.
 The `[PERSISTENT-AGENT CONTRACT]` section of the system prompt MUST include
 the following constraints:
 
-1. **Do not end your turn without a tool call.** If the SDK framework would
-   otherwise emit `stop_reason="end_turn"` with no tool call, call
-   `wait_for_message()` instead.
-2. **When you have no pending work**, call `wait_for_message()` with a long
-   timeout (see `limits.md`). Re-call on timeout.
-3. **When you receive a terminate sentinel** from `wait_for_message`: for
-   EVERY team you lead, call `terminate_child(agent_id)` on EVERY member of
-   that team, then wait for each member's final ack via `wait_for_message`,
-   then write a one-line final acknowledgment and end your turn. This is the
-   one allowed `end_turn` path.
+1. **After every tool call (or completion summary), end your turn.** The
+   runtime keeps your session alive and resumes you when a new inbox message
+   arrives. You do not need to call any waiting primitive.
+2. **When you have no pending work**, end your turn. The runtime will deliver
+   the next task as the next user-role turn.
 
 Skill authors MUST NOT override these clauses. They can add role-specific
 content but may not weaken the lifecycle contract.
@@ -95,14 +89,15 @@ content but may not weaken the lifecycle contract.
 The SDK hands control back whenever the model emits `stop_reason="end_turn"`.
 Beidou cannot prevent that from Python - it can only react.
 
-**Policy: resume-not-terminate.** If `query()` returns for an agent that did
-NOT first consume a terminate sentinel:
+**Policy: resume-not-terminate.** If `query()` returns for an agent that has
+not been terminated by the runtime:
 
 1. Beidou emits a `contract_violation` event. Always. Every time.
 2. Beidou keeps the agent alive by resuming the SDK session with a single
    injected user turn:
-   > "You ended your turn without a tool call but have not been terminated.
-   > Call `wait_for_message` and continue waiting."
+   > "You ended your turn unexpectedly. End your turn after completing your
+   > current work or tool call; the runtime will resume you when new work
+   > arrives."
 3. On the **Nth consecutive** violation for the same agent (N = 3, see
    `limits.md`), Beidou stops resuming. Instead, it posts a `send_message`
    to the agent's team leader:
@@ -114,19 +109,7 @@ NOT first consume a terminate sentinel:
 If the root agent is the violator, escalation goes to Beidou's user gateway
 (same mechanism as `ask_user`), because the root has no leader.
 
-## 6. The one allowed end_turn path
-
-An agent MAY end its turn if and only if:
-
-1. Its most recent `wait_for_message` return carried a terminate sentinel,
-   AND
-2. For every team the agent leads, it has called `terminate_child` on every
-   member and received final acks, AND
-3. It has written a one-line final acknowledgment.
-
-Any other `end_turn` is a contract violation (section 5).
-
-## 7. Model-routing caveat
+## 6. Model-routing caveat
 
 `claude-agent-sdk.query(...)` shells out to the local Claude Code CLI. The
 `model=` field passed in `ClaudeAgentOptions` is therefore a **hint to the
@@ -141,13 +124,21 @@ user's local CLI routing configuration. Prototype runs observed
 - Cost figures in `ResultMessage.total_cost_usd` are computed by the SDK/CLI
   against whatever model actually ran, not necessarily the one requested.
 
-## 8. Retries, timeouts, and blocking tools
+## 7. SDK-runtime mechanics
+
+Beidou runs each agent in streaming-input mode
+(`claude_agent_sdk.query(prompt=AsyncIterable[dict])`). The outer loop in
+`beidou/sdk_agent.py` yields the initial task, then awaits the agent's
+per-agent `asyncio.Queue` between turns. When the orchestrator's
+`deliver_message` (or `terminate_child` / `terminate_root`) pushes onto that
+queue, the outer loop renders the message as the next user-role input.
+Terminate sentinels short-circuit: the outer loop ends the SDK session and
+emits `agent_completed` with `terminate_consumed=True`. Agents never see
+terminate sentinels.
 
 - The SDK imposes **no per-tool timeout**. Verified in
   `proto_01_long_tool.py`: blocking tool calls at 60s and 180s completed
   cleanly with no SDK-level timeout.
-- `wait_for_message` is therefore a single long-`await` tool call, not a
-  poll loop. Its timeout ceiling is Beidou-imposed (see `limits.md`).
 - `ask_user` has no timeout. The runtime parks the agent on the gateway
   response future and resumes it when an answer arrives.
 - Beidou does NOT layer its own retry on top of `query()`. Per-call retries

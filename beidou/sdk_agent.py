@@ -5,13 +5,14 @@ and translates the stream into Beidou observability events. It is called by
 the orchestrator (built in the next step). The drain loop is Beidou's sole
 producer of the events catalogued in ``docs/observability.md``:
 
-* ``agent_started`` -- pre-drain lifecycle event.
-* ``turn.usage``    -- deduplicated per-turn token accounting.
-* ``tool_called``   -- emitted when a ``ToolUseBlock`` arrives in an ``AssistantMessage``.
-* ``tool_result``   -- emitted when a ``ToolResultBlock`` arrives in a ``UserMessage``.
-* ``run.cost``      -- terminal authoritative cost/duration/num_turns rollup.
+* ``agent_started``   -- pre-drain lifecycle event.
+* ``turn.usage``      -- deduplicated per-turn token accounting.
+* ``tool_called``     -- emitted when a ``ToolUseBlock`` arrives in an ``AssistantMessage``.
+* ``tool_result``     -- emitted when a ``ToolResultBlock`` arrives in a ``UserMessage``.
+* ``assistant_text``  -- emitted once per ``AssistantMessage`` that contains ``TextBlock``s.
+* ``run.cost``        -- terminal authoritative cost/duration/num_turns rollup.
 * ``agent_completed`` -- post-drain lifecycle event.
-* ``agent_error``   -- emitted on unexpected exceptions, before re-raising.
+* ``agent_error``     -- emitted on unexpected exceptions, before re-raising.
 
 The drain loop is the **sole owner** of ``tool_called`` and ``tool_result``
 emission. The MCP wrapper (``beidou/primitives/mcp.py``) does NOT emit
@@ -21,6 +22,13 @@ emission. The MCP wrapper (``beidou/primitives/mcp.py``) does NOT emit
 only set the flag on :class:`RunResult`; the orchestrator reads it and
 decides whether to resume-not-terminate (see ``docs/agent-runtime.md``
 section 4).
+
+**Outer loop.** The SDK agent runs as a persistent session driven by a per-agent
+``asyncio.Queue``. After the initial task turn, the ``input_stream`` generator
+parks on ``await queue.get()``. Whoever pushes (peer agent via ``send_message``,
+orchestrator via ``terminate_root``/``terminate_child``, future web endpoint)
+wakes the session. A ``kind=="terminate"`` sentinel ends the generator, which
+closes the SDK session cleanly. The agent never sees a "wait" or "receive" tool.
 """
 from __future__ import annotations
 
@@ -28,11 +36,11 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
-from .primitives.core import Orchestrator
+from .primitives.core import Message, Orchestrator
 from .primitives.mcp import build_mcp_server_for
 from claude_agent_sdk.types import HookMatcher
 
@@ -114,12 +122,10 @@ def _resolve_skill(skill_root: Path, skill_name: str) -> LoadedSkill:
         raise
 
 
-# The canonical list of all 8 Beidou MCP primitive tool names (namespaced).
+# The canonical list of Beidou MCP primitive tool names (namespaced).
 # These match the tools registered in beidou/primitives/mcp.py exactly.
 _BEIDOU_PRIMITIVE_TOOLS: list[str] = [
     "mcp__beidou__send_message",
-    "mcp__beidou__read_messages",
-    "mcp__beidou__wait_for_message",
     "mcp__beidou__list_peers",
     "mcp__beidou__ask_user",
     "mcp__beidou__report_status",
@@ -347,8 +353,47 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     current_turn_text_parts: list[str] = []
     current_turn_tool_ids: list[str] = []
 
+    # Build the streaming-input generator that parks the agent between turns
+    # on its per-agent queue. The generator owns terminate detection and sets
+    # terminate_consumed on the AgentRecord before returning (closing the SDK
+    # session). The agent never sees a "wait" or "receive" tool.
+    session_id = spec.caller_id
+    # queue_for() is the canonical path on the real Orchestrator. Fall back to
+    # an empty Queue when the orchestrator under test doesn't expose it (e.g.
+    # FakeOrchestrator in mechanical tests where query() is monkeypatched and
+    # the generator is never consumed).
+    _queue_for = getattr(orch, "queue_for", None)
+    queue: asyncio.Queue = _queue_for(spec.caller_id) if _queue_for is not None else asyncio.Queue()
+
+    async def input_stream():
+        # Yield the initial task as the first user-role message.
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": spec.task},
+            "parent_tool_use_id": None,
+            "session_id": session_id,
+        }
+        # Park on the per-agent queue until terminated or a new message arrives.
+        while True:
+            msg_in: Message = await queue.get()
+            if msg_in.kind == "terminate":
+                # Mark consumed BEFORE returning so was_terminated() reads
+                # True in the post-loop check.
+                rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
+                if rec is not None:
+                    rec.terminate_consumed = True
+                return  # Closing the generator ends the SDK session.
+            # Render peer messages as user-role input to the next turn.
+            content = f"[from {msg_in.from_id}] {msg_in.content}"
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None,
+                "session_id": session_id,
+            }
+
     try:
-        async for msg in query(prompt=spec.task, options=options):
+        async for msg in query(prompt=input_stream(), options=options):
             cls = type(msg).__name__
 
             if cls == "AssistantMessage":
@@ -386,6 +431,19 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 # start of each NEW message_id so we end up with the last
                 # turn's text, not the concatenation of every assistant turn.
                 if mid != last_message_id:
+                    # Emit assistant_text for the PREVIOUS message_id (now
+                    # complete) before clearing accumulators.
+                    if last_message_id and current_turn_text_parts:
+                        orch.emit_event(
+                            "assistant_text",
+                            {
+                                "ts": time.time(),
+                                "caller_id": spec.caller_id,
+                                "message_id": last_message_id,
+                                "text": "".join(current_turn_text_parts),
+                                "stop_reason": stop_reason,
+                            },
+                        )
                     final_text_parts.clear()
                     current_turn_text_parts.clear()
                     current_turn_tool_ids.clear()
@@ -478,6 +536,20 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             # SystemMessage / UserMessage / anything else: ignored by design.
             # UserMessage carries tool-result echoes; ToolUseBlocks are the
             # MCP layer's concern. Unknown types must not crash the loop.
+
+        # Emit assistant_text for the final message_id (last message in the
+        # stream, not followed by a new message_id to trigger the flush above).
+        if last_message_id and current_turn_text_parts:
+            orch.emit_event(
+                "assistant_text",
+                {
+                    "ts": time.time(),
+                    "caller_id": spec.caller_id,
+                    "message_id": last_message_id,
+                    "text": "".join(current_turn_text_parts),
+                    "stop_reason": result_data["stop_reason"] if result_data else "unknown",
+                },
+            )
 
     except asyncio.CancelledError:
         orch.emit_event(

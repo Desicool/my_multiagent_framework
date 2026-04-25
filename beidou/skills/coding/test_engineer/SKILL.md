@@ -12,8 +12,6 @@ allowed-tools:
   - file_read
   - file_write
   - send_message
-  - read_messages
-  - wait_for_message
   - report_status
 triggers:
   - test the code
@@ -77,8 +75,7 @@ Write test_report.md with:
 
   ## Overall: PASS / FAIL
 
-When your report is written, follow the Completion handoff sequence below,
-then call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment or termination.
+When your report is written, follow the Completion handoff sequence below, then end your turn.
 
 ## Completion handoff
 
@@ -98,12 +95,6 @@ summary message above.
 
 ## Persistent-agent lifecycle — MANDATORY
 
-1. **Never end your turn without a tool call.** If you would otherwise emit an end_turn
-   with no tool call, call `wait_for_message(timeout=300)` instead.
-2. **When you have no pending work**, call `wait_for_message(timeout=300)`. Re-call on
-   timeout. Stay alive.
-3. **When work is done**, follow the Completion handoff sequence above, then call
-   `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment.
-4. **When you receive a terminate sentinel** (wait_for_message returns content `__terminate__`
-   from `beidou`): write a one-line final acknowledgment and end your turn. This is the
-   ONE allowed end_turn path. (You do not lead teams, so no cascade step is required.)
+After your last tool call returns, simply stop emitting tool calls and end your turn. The runtime keeps your session alive and resumes you automatically when a new message arrives in your inbox (delivered as the next user-role message). You do NOT need to call any "wait" or "receive" tool — there isn't one anymore.
+
+**Do NOT pre-emptively wrap up your session.** Don't say goodbye, don't summarize "I'm done now" as a final message — just end the turn. The runtime decides when your session truly ends (via a terminate sentinel, which you will never see — it's intercepted by the runtime).

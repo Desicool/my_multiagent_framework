@@ -43,8 +43,10 @@ The registry is append-mostly: members are removed only on terminate-ack.
 ## Inboxes
 
 Every agent has exactly one inbox: an `asyncio.Queue` bounded by
-`limits.md` inbox cap. `send_message` writes; `read_messages` /
-`wait_for_message` read. Terminate sentinels are pushed by `terminate_child`.
+`limits.md` inbox cap. `send_message` writes; the runtime drains the queue
+between SDK turns, delivering each message as a user-role input. Terminate
+sentinels are pushed by `terminate_child` (or by the runtime for the root
+agent) and are consumed by the runtime — agents never see them.
 
 ## Message routing
 
@@ -71,21 +73,21 @@ Two authorities, strictly scoped:
    agent-callable tool. Triggered on user signal (Ctrl-C, CLI "task done",
    gateway close). Writes a terminate sentinel to the root agent's inbox.
 
-Cascade mechanics (top-down, agent-driven):
+Cascade mechanics (runtime-driven, depth-first):
 
-1. Beidou posts terminate sentinel to the root agent's inbox (on user
+When a leader receives a terminate sentinel via `inbox_put`, the orchestrator
+automatically posts terminate sentinels to every member of every team led by
+that agent (depth-first cascade). This continues recursively until leaves are
+reached. Agents never see terminate sentinels — the runtime's outer loop in
+`beidou/sdk_agent.py` consumes each sentinel, ends the SDK session for that
+agent, and emits `agent_completed` with `terminate_consumed=True`.
+
+1. Beidou posts a terminate sentinel to the root agent's inbox (on user
    signal).
-2. Root agent's next `wait_for_message` returns the sentinel.
-3. Root agent: for every team it leads, calls `terminate_child(agent_id)`
-   on every member. Then waits on `wait_for_message` for final acks from
-   each.
-4. Each direct child receives its sentinel, does the same recursion, acks
-   upward via `send_message`, ends its turn.
-5. Root agent, after all acks received, writes final ack to Beidou and ends
-   its turn.
-
-Leaves end first; root ends last. The only legal `end_turn` is after
-terminate-ack (see `agent-runtime.md` section 5).
+2. The runtime cascade walks the team graph depth-first, posting terminate
+   sentinels to all descendants.
+3. Each agent's SDK session is ended by the runtime as its sentinel is
+   consumed. Leaves terminate first; root terminates last.
 
 ## Liveness checks
 
@@ -113,8 +115,9 @@ Termination is still leader-driven.
 1. Parent P observes child C reported `done` (via a message or via
    `list_peers`).
 2. P decides to assign more work: `send_message(to=C.agent_id, content=...)`.
-3. C's next `wait_for_message` returns. C picks up the new work in the same
-   session. No re-spawn; same `claude_agent_sdk.query` generator.
+3. The runtime delivers the message as C's next user-role input. C picks up
+   the new work in the same session. No re-spawn; same
+   `claude_agent_sdk.query` generator.
 
 ## Topology walkthrough (verification case)
 
@@ -135,5 +138,7 @@ root (R, skill=orchestrator)
   "spike", leader=A, members=[A1, A2], parent=impl, depth=2.
 - A is both a member of "impl" and leader of "spike". Both facts hold.
 - R cannot `terminate_child(A1)` - it does not lead "spike". A must.
-- On root termination: R terminates A/B/C. A in turn terminates A1/A2.
-  A1/A2 ack to A; A acks to R; R acks to Beidou.
+- On root termination: Beidou posts a terminate sentinel to R's inbox. The
+  runtime cascade automatically propagates sentinels depth-first to A, B, C,
+  then from A's subtree to A1 and A2. Each agent's SDK session ends as its
+  sentinel is consumed; leaves terminate first, root last.

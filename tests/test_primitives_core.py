@@ -20,7 +20,6 @@ from beidou.primitives.core import (
     FAN_OUT_CAP,
     INBOX_CAP,
     MAX_DEPTH,
-    WAIT_CEILING,
     GatewayDeclined,
     Message,
     Peer,
@@ -28,11 +27,9 @@ from beidou.primitives.core import (
     ask_user,
     create_team,
     list_peers,
-    read_messages,
     report_status,
     send_message,
     terminate_child,
-    wait_for_message,
 )
 
 
@@ -331,72 +328,6 @@ def test_send_message_inbox_full():
 
 
 # ---------------------------------------------------------------------------
-# read_messages
-# ---------------------------------------------------------------------------
-
-
-def test_read_messages_drains_atomically_and_idempotent():
-    o = _build()
-
-    async def body():
-        await send_message(o, caller_id="A", to="B", content="one")
-        await send_message(o, caller_id="A", to="B", content="two")
-        out = await read_messages(o, caller_id="B")
-        assert len(out["messages"]) == 2
-        contents = [m["content"] for m in out["messages"]]
-        assert contents == ["one", "two"]
-        # Atomicity: a second drain sees an empty inbox.
-        out2 = await read_messages(o, caller_id="B")
-        assert out2 == {"messages": []}
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
-# wait_for_message
-# ---------------------------------------------------------------------------
-
-
-def test_wait_for_message_returns_when_posted():
-    o = _build()
-
-    async def body():
-        async def sender():
-            await asyncio.sleep(0.05)
-            await send_message(o, caller_id="A", to="B", content="wake")
-
-        send_task = asyncio.create_task(sender())
-        out = await wait_for_message(o, caller_id="B", timeout=2.0)
-        await send_task
-        assert out["timeout"] is False
-        assert out["message"]["content"] == "wake"
-        assert out["message"]["kind"] == "user"
-
-    run(body())
-
-
-def test_wait_for_message_times_out():
-    o = _build()
-
-    async def body():
-        out = await wait_for_message(o, caller_id="B", timeout=0.05)
-        assert out == {"timeout": True}
-
-    run(body())
-
-
-def test_wait_for_message_rejects_over_ceiling():
-    o = _build()
-
-    async def body():
-        with pytest.raises(PrimitiveError) as ei:
-            await wait_for_message(o, caller_id="B", timeout=WAIT_CEILING + 1)
-        assert ei.value.code == "timeout_over_ceiling"
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
 # list_peers
 # ---------------------------------------------------------------------------
 
@@ -577,12 +508,12 @@ def test_terminate_child_happy_path():
     async def body():
         out = await terminate_child(o, caller_id="R", agent_id="A")
         assert out == {"sentinel_posted": True}
-        # The sentinel should be readable via wait_for_message with kind=="terminate".
-        got = await wait_for_message(o, caller_id="A", timeout=1.0)
-        assert got["timeout"] is False
-        assert got["message"]["kind"] == "terminate"
-        assert got["message"]["from"] == "beidou"
-        assert got["message"]["content"] == "__terminate__"
+        # Drain A's inbox directly to verify the sentinel landed.
+        msgs = await o.inbox_drain("A")
+        assert len(msgs) == 1
+        assert msgs[0].kind == "terminate"
+        assert msgs[0].from_id == "beidou"
+        assert msgs[0].content == "__terminate__"
         assert any(ev[0] == "terminate_posted" for ev in o.events)
 
     run(body())

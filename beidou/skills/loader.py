@@ -90,14 +90,12 @@ def skills_as_tools(skill_names: list[str], all_skills: dict[str, Skill]) -> lis
 # ---------------------------------------------------------------------------
 
 
-# The eight Beidou MCP primitives from docs/tool-surface.md. Entries matching
+# The Beidou MCP primitives from docs/tool-surface.md. Entries matching
 # any of these are namespaced to ``mcp__beidou__<name>``; anything else is
 # passed through verbatim for the sdk_agent layer to validate.
 _BEIDOU_MCP_TOOLS: frozenset[str] = frozenset(
     {
         "send_message",
-        "read_messages",
-        "wait_for_message",
         "list_peers",
         "ask_user",
         "report_status",

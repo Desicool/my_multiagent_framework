@@ -1,12 +1,10 @@
-"""MCP adapter for Beidou's eight agent primitives.
+"""MCP adapter for Beidou's agent primitives.
 
 Each primitive in :mod:`beidou.primitives.core` is exposed to a single
 ``claude-agent-sdk`` agent as an in-process MCP tool under the ``beidou``
 server. The agent-visible names are (see ``docs/tool-surface.md``):
 
 * ``mcp__beidou__send_message``     -- A2A enqueue.
-* ``mcp__beidou__read_messages``    -- Non-blocking inbox drain.
-* ``mcp__beidou__wait_for_message`` -- Bounded blocking inbox read.
 * ``mcp__beidou__list_peers``       -- Peer snapshot (team/children/all).
 * ``mcp__beidou__ask_user``         -- Human gateway question.
 * ``mcp__beidou__report_status``    -- State update + observability.
@@ -33,11 +31,9 @@ from .core import (
     ask_user,
     create_team,
     list_peers,
-    read_messages,
     report_status,
     send_message,
     terminate_child,
-    wait_for_message,
 )
 
 # Max characters of a JSON-serialised arg value kept in observability events.
@@ -79,8 +75,6 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             mcp_servers={"beidou": build_mcp_server_for(orch, caller_id)},
             allowed_tools=[
                 "mcp__beidou__send_message",
-                "mcp__beidou__read_messages",
-                "mcp__beidou__wait_for_message",
                 "mcp__beidou__list_peers",
                 "mcp__beidou__ask_user",
                 "mcp__beidou__report_status",
@@ -163,59 +157,6 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             caller_id=caller_id,
             to=args["to"],
             content=args["content"],
-        )
-
-    @tool(
-        "read_messages",
-        "Atomic non-blocking drain of your inbox. Returns the current batch "
-        "of messages and empties the inbox.",
-        {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    )
-    async def _read_messages(args: dict[str, Any]) -> dict[str, Any]:
-        return await _wrap(
-            "read_messages",
-            read_messages,
-            args,
-            orch=orch,
-            caller_id=caller_id,
-        )
-
-    @tool(
-        "wait_for_message",
-        "Block until a message arrives or the timeout fires. Optionally "
-        "filter by sender agent_id. Timeout must be within Beidou's ceiling.",
-        {
-            "type": "object",
-            "properties": {
-                "timeout": {
-                    "type": "number",
-                    "description": "Max seconds to block (validated against limits.md).",
-                },
-                "from": {
-                    "type": "string",
-                    "description": "If set, only return when a message from this sender arrives.",
-                },
-            },
-            "required": ["timeout"],
-        },
-    )
-    async def _wait_for_message(args: dict[str, Any]) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "orch": orch,
-            "caller_id": caller_id,
-            "timeout": args["timeout"],
-        }
-        # Tool schema field is "from" (collides with Python keyword), but the
-        # core primitive takes ``from_``. Translate here; omit when absent so
-        # the default (None) applies.
-        if "from" in args and args["from"] is not None:
-            kwargs["from_"] = args["from"]
-        return await _wrap(
-            "wait_for_message", wait_for_message, args, **kwargs
         )
 
     @tool(
@@ -360,8 +301,6 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         version="1.0.0",
         tools=[
             _send_message,
-            _read_messages,
-            _wait_for_message,
             _list_peers,
             _ask_user,
             _report_status,

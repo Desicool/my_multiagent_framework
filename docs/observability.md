@@ -167,8 +167,8 @@ ground truth) and investigate the dedup logic.
 
 ### `contract_violation`
 
-Emitted every time the SDK `query()` returns for an agent that had not
-consumed a terminate sentinel. See `agent-runtime.md` section 4.
+Emitted every time the SDK `query()` returns for an agent that has not been
+terminated by the runtime. See `agent-runtime.md` section 5.
 
 | Field | Source |
 |---|---|
@@ -176,6 +176,25 @@ consumed a terminate sentinel. See `agent-runtime.md` section 4.
 | `agent_id` | Context. |
 | `strike_count` | Current consecutive-violation count (1-indexed). |
 | `action` | One of: `resumed`, `escalated_to_leader`, `escalated_to_user` (root). |
+
+---
+
+### `assistant_text`
+
+Emitted once per `AssistantMessage` that contains `TextBlock` content (the
+agent's natural-language reasoning for a turn). JSONL-only — no SQLite
+rollup.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall-clock seconds at emission. |
+| `agent_id` | Context (= `caller_id`). |
+| `message_id` | `AssistantMessage.message_id` — ties to the `turn.usage` event with the same `message_id`. |
+| `text` | Concatenation of every `TextBlock` in this `AssistantMessage`. |
+| `stop_reason` | SDK-reported stop reason for this turn; `null` if absent. |
+
+Useful for showing per-agent live output in observability tools (e.g. the
+web UI right pane).
 
 ---
 

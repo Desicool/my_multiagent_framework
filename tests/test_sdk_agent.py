@@ -19,8 +19,10 @@ import asyncio
 import os
 import shutil
 import textwrap
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import pytest
@@ -50,16 +52,37 @@ class FakeOrchestrator:
         self._most_recent_assistant_text: dict[str, str] = {}
         # Delivery tracking for hook tests.
         self.delivered: list[tuple[str, str, str, str]] = []  # (from, to, body, kind)
+        # _agents: used by input_stream in sdk_agent to set terminate_consumed.
+        # Each value is a SimpleNamespace(terminate_consumed=False, inbox=Queue).
+        self._agents: dict[str, SimpleNamespace] = {}
 
     # --- Events / termination --------------------------------------------
     def emit_event(self, name: str, payload: dict) -> None:
         self.events.append((name, payload))
 
     def was_terminated(self, caller_id: str) -> bool:
-        return caller_id in self._terminated
+        if caller_id in self._terminated:
+            return True
+        rec = self._agents.get(caller_id)
+        return rec is not None and rec.terminate_consumed
 
     def mark_terminated(self, caller_id: str) -> None:
         self._terminated.add(caller_id)
+
+    def queue_for(self, agent_id: str) -> asyncio.Queue:
+        """Return the per-agent queue (creates inbox+agent record on demand)."""
+        if agent_id not in self._agents:
+            q: asyncio.Queue = asyncio.Queue()
+            self._agents[agent_id] = SimpleNamespace(
+                terminate_consumed=False,
+                inbox=q,
+            )
+        return self._agents[agent_id].inbox
+
+    async def deliver_to_queue(self, agent_id: str, msg: Message) -> None:
+        """Test helper: push a message onto the agent's queue."""
+        q = self.queue_for(agent_id)
+        await q.put(msg)
 
     # --- Registry stubs --------------------------------------------------
     def agent_exists(self, agent_id: str) -> bool:
@@ -746,6 +769,102 @@ def test_drain_loop_most_recent_fallback(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Outer-loop (streaming-input) test.
+# ---------------------------------------------------------------------------
+
+
+def test_outer_loop_streaming_input_terminate(tmp_path, monkeypatch):
+    """Drive the streaming-input outer loop end-to-end without Anthropic API.
+
+    1. FakeOrchestrator exposes queue_for and _agents so the input_stream
+       in sdk_agent can park and detect the terminate sentinel.
+    2. A stub query consumes the AsyncIterable and yields one AssistantMessage
+       per user-role input it receives.
+    3. The test sends an extra peer message then terminates, asserting:
+       - at least 2 assistant_text events (initial turn + peer turn)
+       - agent_completed with terminated=True
+    """
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    agent_id = "ag_loop"
+
+    # Pre-register the agent record so queue_for is idempotent.
+    orch.queue_for(agent_id)
+
+    # Stub query: consume the AsyncIterable; yield one AssistantMessage per
+    # user-role dict it receives from input_stream, then a ResultMessage.
+    async def stub_query(*, prompt, options):
+        turn = 0
+        async for item in prompt:
+            if not isinstance(item, dict) or item.get("type") != "user":
+                continue
+            turn += 1
+            yield AssistantMessage(
+                content=[TextBlock(f"response to turn {turn}")],
+                message_id=f"msg_{turn}",
+                usage={"input_tokens": 5, "output_tokens": 2},
+                stop_reason="end_turn",
+            )
+        yield ResultMessage(
+            total_cost_usd=0.001,
+            usage={"input_tokens": 10, "output_tokens": 4},
+            num_turns=turn,
+        )
+
+    monkeypatch.setattr(sdk_agent, "query", stub_query)
+
+    async def body():
+        # Start run_agent as a background task.
+        task = asyncio.create_task(
+            run_agent(
+                orch,
+                SpawnSpec(
+                    caller_id=agent_id,
+                    skill_name="fake_skill",
+                    skill_root=skill_root,
+                    task="initial task",
+                ),
+            )
+        )
+
+        # Allow the initial turn to be processed.
+        await asyncio.sleep(0.05)
+
+        # Deliver a peer message — triggers a second turn.
+        await orch.deliver_to_queue(
+            agent_id,
+            Message(from_id="peer_x", content="ping", ts=time.time(), message_id="peer_m1", kind="user"),
+        )
+        await asyncio.sleep(0.05)
+
+        # Deliver a terminate sentinel — ends the input_stream.
+        await orch.deliver_to_queue(
+            agent_id,
+            Message(from_id="beidou", content="__terminate__", ts=time.time(), message_id="term_1", kind="terminate"),
+        )
+
+        result = await task
+        return result
+
+    result = asyncio.run(body())
+
+    # agent_completed with terminated=True.
+    assert isinstance(result, RunResult)
+    assert result.terminated is True
+    assert result.contract_violation is False
+
+    # At least 2 assistant_text events (initial + peer turn).
+    assistant_text_events = [p for n, p in orch.events if n == "assistant_text"]
+    assert len(assistant_text_events) >= 2, (
+        f"expected >=2 assistant_text events, got {len(assistant_text_events)}"
+    )
+
+    # Final agent_completed event has terminated=True.
+    completed = next(p for n, p in orch.events if n == "agent_completed")
+    assert completed["terminated"] is True
+
+
+# ---------------------------------------------------------------------------
 # Integration test (real SDK / claude CLI).
 # ---------------------------------------------------------------------------
 
@@ -803,7 +922,28 @@ def test_integration_real_sdk_agent(tmp_path):
         model="claude-haiku-4-5-20251001",
     )
 
-    result = asyncio.run(run_agent(orch, spec))
+    async def _drive() -> object:
+        # Pre-seed a terminate sentinel on the agent's queue. After the agent
+        # finishes its single turn (report_status + final ack), the outer loop
+        # in sdk_agent will park on queue.get() and immediately consume the
+        # sentinel, ending the SDK session. Without this the run hangs forever
+        # under streaming-input mode (agents are now persistent listeners).
+        from beidou.primitives.core import Message
+
+        orch.queue_for("ag_int")  # materialise the queue
+        await orch.deliver_to_queue(
+            "ag_int",
+            Message(
+                from_id="beidou",
+                content="__terminate__",
+                ts=time.time(),
+                message_id="int-terminate",
+                kind="terminate",
+            ),
+        )
+        return await run_agent(orch, spec)
+
+    result = asyncio.run(_drive())
 
     names = [n for n, _ in orch.events]
     assert "agent_started" in names

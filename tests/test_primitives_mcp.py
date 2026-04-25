@@ -20,17 +20,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 
 import pytest
 from mcp import types as mcp_types
 
 from beidou.primitives import build_mcp_server_for
-from beidou.primitives.core import FAN_OUT_CAP, WAIT_CEILING, Message
+from beidou.primitives.core import FAN_OUT_CAP, Message
 
 # Reuse the FakeOrchestrator + _build helper from the core test module.
-from tests.test_primitives_core import FakeOrchestrator, _build
+from test_primitives_core import FakeOrchestrator, _build
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +71,7 @@ def run(coro) -> object:
 # ---------------------------------------------------------------------------
 
 
-def test_server_lists_all_eight_tools():
+def test_server_lists_all_six_tools():
     o = _build()
     cfg = build_mcp_server_for(o, caller_id="A")
 
@@ -84,8 +83,6 @@ def test_server_lists_all_eight_tools():
         names = {t.name for t in result.tools}
         assert names == {
             "send_message",
-            "read_messages",
-            "wait_for_message",
             "list_peers",
             "ask_user",
             "report_status",
@@ -126,121 +123,6 @@ def test_send_message_unknown_recipient_is_structured_error():
         payload = _text_payload(result)
         assert payload["error"] == "unknown_recipient"
         assert "ghost" in payload["message"]
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
-# read_messages
-# ---------------------------------------------------------------------------
-
-
-def test_read_messages_empty_inbox():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="B")
-
-    async def body():
-        result = await _call(cfg, "read_messages", {})
-        assert result.isError in (False, None)
-        payload = _text_payload(result)
-        assert payload == {"messages": []}
-
-    run(body())
-
-
-def test_read_messages_drains():
-    o = _build()
-    cfg_b = build_mcp_server_for(o, caller_id="B")
-
-    async def body():
-        # Seed B's inbox via orchestrator directly.
-        await o.inbox_put("B", Message("A", "one", time.time(), "m1", "user"))
-        await o.inbox_put("B", Message("A", "two", time.time(), "m2", "user"))
-
-        result = await _call(cfg_b, "read_messages", {})
-        payload = _text_payload(result)
-        assert [m["content"] for m in payload["messages"]] == ["one", "two"]
-
-        # Second drain is empty.
-        result2 = await _call(cfg_b, "read_messages", {})
-        assert _text_payload(result2) == {"messages": []}
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
-# wait_for_message
-# ---------------------------------------------------------------------------
-
-
-def test_wait_for_message_times_out():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="B")
-
-    async def body():
-        result = await _call(cfg, "wait_for_message", {"timeout": 0.05})
-        assert result.isError in (False, None)
-        payload = _text_payload(result)
-        assert payload == {"timeout": True}
-
-    run(body())
-
-
-def test_wait_for_message_returns_posted_message():
-    o = _build()
-    cfg_b = build_mcp_server_for(o, caller_id="B")
-
-    async def body():
-        async def sender():
-            await asyncio.sleep(0.05)
-            await o.inbox_put(
-                "B", Message("A", "wake", time.time(), "m1", "user")
-            )
-
-        send_task = asyncio.create_task(sender())
-        result = await _call(cfg_b, "wait_for_message", {"timeout": 2.0})
-        await send_task
-
-        payload = _text_payload(result)
-        assert payload["timeout"] is False
-        assert payload["message"]["content"] == "wake"
-
-    run(body())
-
-
-def test_wait_for_message_with_from_filter():
-    """The tool schema field is 'from' (Python reserved word); the adapter
-    translates to the core primitive's ``from_`` argument."""
-    o = _build()
-    cfg_b = build_mcp_server_for(o, caller_id="B")
-
-    async def body():
-        # Non-matching sender then matching sender; filter must skip the first.
-        await o.inbox_put("B", Message("R", "from R", time.time(), "m1", "user"))
-        await o.inbox_put("B", Message("A", "from A", time.time(), "m2", "user"))
-
-        result = await _call(
-            cfg_b, "wait_for_message", {"timeout": 1.0, "from": "A"}
-        )
-        payload = _text_payload(result)
-        assert payload["timeout"] is False
-        assert payload["message"]["from"] == "A"
-        assert payload["message"]["content"] == "from A"
-
-    run(body())
-
-
-def test_wait_for_message_over_ceiling_is_structured_error():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="B")
-
-    async def body():
-        result = await _call(
-            cfg, "wait_for_message", {"timeout": WAIT_CEILING + 1}
-        )
-        assert result.isError is True
-        payload = _text_payload(result)
-        assert payload["error"] == "timeout_over_ceiling"
 
     run(body())
 

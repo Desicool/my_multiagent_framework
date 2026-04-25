@@ -200,6 +200,12 @@ class Orchestrator:
         "beidou"``), which covers terminate sentinels — those must not be
         lost to a full inbox. All other senders get ``inbox_full`` when at
         the cap.
+
+        When ``msg`` is a terminate sentinel and ``recipient`` leads
+        sub-teams, the sentinel is also posted to every member of those
+        teams. This makes the cascade a runtime guarantee — the prior
+        prose-driven cascade no longer fires because sdk_agent's outer
+        loop intercepts terminate before the agent sees it.
         """
         if recipient not in self._agents:
             raise PrimitiveError("unknown_recipient", f"no such agent: {recipient}", to=recipient)
@@ -213,42 +219,31 @@ class Orchestrator:
             )
         rec.inbox.put_nowait(msg)
 
-    async def inbox_drain(self, agent_id: str) -> list[Message]:
-        q = self._agents[agent_id].inbox
-        out: list[Message] = []
-        while not q.empty():
-            out.append(q.get_nowait())
-        return out
-
-    async def inbox_get_one(
-        self,
-        agent_id: str,
-        from_filter: Optional[str],
-        timeout: float,
-    ) -> Optional[Message]:
-        rec = self._agents[agent_id]
-        q = rec.inbox
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            try:
-                msg = await asyncio.wait_for(q.get(), timeout=remaining)
-            except asyncio.TimeoutError:
-                return None
-            if from_filter is not None and msg.from_id != from_filter:
-                # Drop non-matching; keep waiting (matches FakeOrchestrator
-                # semantics and the tool-surface spec for ``from`` filter).
-                continue
-            # MUST flip BEFORE returning so sdk_agent's post-loop
-            # was_terminated() sees the correct state.
-            if msg.kind == "terminate":
-                rec.terminate_consumed = True
-            return msg
+        if msg.kind == "terminate":
+            for tid in self.teams_led_by(recipient):
+                for mid in list(self._teams[tid].member_ids):
+                    if mid == recipient or mid not in self._agents:
+                        continue
+                    cascade = Message(
+                        from_id="beidou",
+                        content="__terminate__",
+                        ts=time.time(),
+                        message_id=str(uuid.uuid4()),
+                        kind="terminate",
+                    )
+                    await self.inbox_put(mid, cascade)
 
     def inbox_size(self, agent_id: str) -> int:
         return self._agents[agent_id].inbox.qsize()
+
+    def queue_for(self, agent_id: str) -> asyncio.Queue:
+        """Return the per-agent asyncio.Queue for direct use by sdk_agent's outer loop.
+
+        The returned queue is the same object that ``inbox_put`` / ``deliver_message``
+        push onto. sdk_agent's ``input_stream`` parks on ``await queue.get()`` between
+        turns; terminate sentinels end the stream by returning from the generator.
+        """
+        return self._agents[agent_id].inbox
 
     # ------------------------------------------------------------------
     # Protocol: team spawn
@@ -774,9 +769,9 @@ class Orchestrator:
                 current_spec,
                 task=(
                     "[beidou] You ended your turn without a tool call but "
-                    "have not been terminated. Call "
-                    "mcp__beidou__wait_for_message (timeout=60) and continue "
-                    "waiting."
+                    "have not been terminated. You must not self-exit. "
+                    "Continue working or call report_status(state='done') "
+                    "when your task is complete."
                 ),
             )
 

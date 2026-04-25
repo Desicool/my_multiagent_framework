@@ -5,7 +5,6 @@ from beidou.primitives.core import (
     FAN_OUT_CAP,
     INBOX_CAP,
     MAX_DEPTH,
-    WAIT_CEILING,
     GatewayDeclined,
     Message,
     Orchestrator,
@@ -14,17 +13,14 @@ from beidou.primitives.core import (
     ask_user,
     create_team,
     list_peers,
-    read_messages,
     report_status,
     send_message,
     terminate_child,
-    wait_for_message,
 )
 from beidou.primitives.mcp import build_mcp_server_for
 
 __all__ = [
     "INBOX_CAP",
-    "WAIT_CEILING",
     "FAN_OUT_CAP",
     "MAX_DEPTH",
     "CONTRACT_STRIKES",
@@ -34,8 +30,6 @@ __all__ = [
     "Peer",
     "Orchestrator",
     "send_message",
-    "read_messages",
-    "wait_for_message",
     "list_peers",
     "ask_user",
     "report_status",

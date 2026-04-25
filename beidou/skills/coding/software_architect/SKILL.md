@@ -14,8 +14,6 @@ allowed-tools:
   - web_search
   - create_team
   - send_message
-  - read_messages
-  - wait_for_message
   - list_peers
   - report_status
   - terminate_child
@@ -56,8 +54,7 @@ Create a review team to stress-test SPEC_DRAFT.md:
                     Write DEPLOY_CONCERNS.md in the workspace."
     }
   ])
-  Use wait_for_message to collect completion reports from each reviewer.
-  When both reviewers are done, call terminate_child for each.
+  End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect both, then call terminate_child for each.
 
 STEP 4 — REVISE AND FINALISE
 Read TEST_CONCERNS.md and DEPLOY_CONCERNS.md.
@@ -77,8 +74,7 @@ Use this format for each task:
 Aim for tasks that a junior engineer can complete in a single agent loop without
 coordinating with other tasks. If tasks have dependencies, list them under Inputs.
 
-When SPEC.md and tasks.md are written, follow the Completion handoff sequence below,
-then call `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment or termination.
+When SPEC.md and tasks.md are written, follow the Completion handoff sequence below, then end your turn.
 
 ## Completion handoff
 
@@ -98,13 +94,6 @@ summary message above.
 
 ## Persistent-agent lifecycle — MANDATORY
 
-1. **Never end your turn without a tool call.** If you would otherwise emit an end_turn
-   with no tool call, call `wait_for_message(timeout=300)` instead.
-2. **When you have no pending work**, call `wait_for_message(timeout=300)`. Re-call on
-   timeout. Stay alive.
-3. **When work is done**, follow the Completion handoff sequence above, then call
-   `wait_for_message(timeout=300)`. Do NOT exit. Wait for re-assignment.
-4. **When you receive a terminate sentinel** (wait_for_message returns content `__terminate__`
-   from `beidou`): for EVERY team you lead, call `terminate_child(agent_id)` on EVERY member,
-   wait for each member's final acknowledgment via `wait_for_message`. Then write a one-line
-   final acknowledgment and end your turn. This is the ONE allowed end_turn path.
+After your last tool call returns, simply stop emitting tool calls and end your turn. The runtime keeps your session alive and resumes you automatically when a new message arrives in your inbox (delivered as the next user-role message). You do NOT need to call any "wait" or "receive" tool — there isn't one anymore.
+
+**Do NOT pre-emptively wrap up your session.** Don't say goodbye, don't summarize "I'm done now" as a final message — just end the turn. The runtime decides when your session truly ends (via a terminate sentinel, which you will never see — it's intercepted by the runtime and cascades to your team automatically).

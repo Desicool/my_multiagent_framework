@@ -1,4 +1,4 @@
-"""Pure-Python implementation of Beidou's eight agent primitives.
+"""Pure-Python implementation of Beidou's agent primitives.
 
 Each primitive is an ``async`` function that takes an explicit ``caller_id``
 (bound by the MCP per-spawn closure in production - never read from model
@@ -11,8 +11,6 @@ error codes. See ``docs/limits.md`` for the hard boundaries enforced here.
 Summary of primitives (full spec in ``docs/tool-surface.md``):
 
 * :func:`send_message`     -- A2A enqueue to recipient inbox.
-* :func:`read_messages`    -- Atomic non-blocking drain of caller's inbox.
-* :func:`wait_for_message` -- Blocking inbox read with bounded timeout.
 * :func:`list_peers`       -- Snapshot of peers in ``team``/``children``/``all`` scope.
 * :func:`ask_user`         -- Routes a question to the human gateway.
 * :func:`report_status`    -- Records agent state and emits a status event.
@@ -37,7 +35,6 @@ from typing import Any, Optional, Protocol, runtime_checkable
 # ---------------------------------------------------------------------------
 
 INBOX_CAP = 1000              # limits.md #3
-WAIT_CEILING = 3600.0         # limits.md #4
 FAN_OUT_CAP = 8               # limits.md #1
 MAX_DEPTH = 5                 # limits.md #2
 CONTRACT_STRIKES = 3          # limits.md #5 (used by orchestrator, not primitives)
@@ -109,13 +106,6 @@ class Orchestrator(Protocol):
 
     # --- Inbox operations (per-recipient asyncio.Queue) ---------------------
     async def inbox_put(self, recipient: str, msg: Message) -> None: ...
-    async def inbox_drain(self, agent_id: str) -> list[Message]: ...
-    async def inbox_get_one(
-        self,
-        agent_id: str,
-        from_filter: Optional[str],
-        timeout: float,
-    ) -> Optional[Message]: ...
     def inbox_size(self, agent_id: str) -> int: ...
 
     # --- Team creation / termination ---------------------------------------
@@ -236,36 +226,6 @@ async def send_message(
         },
     )
     return {"delivered": True, "message_id": message_id}
-
-
-async def read_messages(orch: Orchestrator, *, caller_id: str) -> dict:
-    """Non-blocking drain. See docs/tool-surface.md#read_messages."""
-    msgs = await orch.inbox_drain(caller_id)
-    return {"messages": [_msg_to_out(m) for m in msgs]}
-
-
-async def wait_for_message(
-    orch: Orchestrator,
-    *,
-    caller_id: str,
-    timeout: float,
-    from_: Optional[str] = None,
-) -> dict:
-    """Blocking inbox read. See docs/tool-surface.md#wait_for_message."""
-    if timeout > WAIT_CEILING:
-        raise PrimitiveError(
-            "timeout_over_ceiling",
-            f"timeout {timeout}s exceeds ceiling {WAIT_CEILING}s (limits.md #4)",
-            timeout=timeout,
-            ceiling=WAIT_CEILING,
-        )
-
-    msg = await orch.inbox_get_one(caller_id, from_, timeout)
-    if msg is None:
-        return {"timeout": True}
-    # Terminate sentinels surface here with kind=="terminate"; the output
-    # shape matches the tool-surface.md sentinel example.
-    return {"message": _msg_to_out(msg), "timeout": False}
 
 
 async def list_peers(
@@ -477,7 +437,6 @@ async def terminate_child(
 __all__ = [
     # constants
     "INBOX_CAP",
-    "WAIT_CEILING",
     "FAN_OUT_CAP",
     "MAX_DEPTH",
     "CONTRACT_STRIKES",
@@ -489,8 +448,6 @@ __all__ = [
     "Orchestrator",
     # primitives
     "send_message",
-    "read_messages",
-    "wait_for_message",
     "list_peers",
     "ask_user",
     "report_status",

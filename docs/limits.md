@@ -32,16 +32,7 @@ approval. See `README.md` for the approval rule.
 | Enforced in | `send_message` primitive. On overflow, returns structured error `inbox_full` to the SENDER. The recipient is not crashed; the sender decides. |
 | Change policy | Requires user approval to change. |
 
-## 4. `wait_for_message` timeout ceiling
-
-| | |
-|---|---|
-| **Value** | **3600 seconds (1 hour) per single call** |
-| Rationale | The SDK itself imposes NO per-tool timeout (verified in `proto_01_long_tool.py` with 60s and 180s blocking tools). The ceiling here is entirely Beidou-imposed, to keep agents' worst-case time-to-shutdown bounded and to force a heartbeat on truly idle agents. |
-| Enforced in | `wait_for_message` primitive. Validates the `timeout` field; returns `timeout_over_ceiling` if over. Agent re-calls with a smaller value. |
-| Change policy | Requires user approval to change. |
-
-## 5. Contract-violation strikes before escalation
+## 4. Contract-violation strikes before escalation
 
 | | |
 |---|---|
@@ -50,7 +41,7 @@ approval. See `README.md` for the approval rule.
 | Enforced in | Orchestrator recovery loop (`beidou/orchestrator.py`). After N=3, orchestrator stops resuming and posts a `send_message` to the agent's team leader recommending `terminate_child`. For the root agent, escalates to the user gateway instead. See `agent-runtime.md` section 4. |
 | Change policy | Requires user approval to change. |
 
-## 6. Per-agent concurrent in-flight `create_team` calls
+## 5. Per-agent concurrent in-flight `create_team` calls
 
 | | |
 |---|---|
@@ -59,7 +50,7 @@ approval. See `README.md` for the approval rule.
 | Enforced in | Per-agent asyncio lock held by the orchestrator during `create_team`. Returns `concurrent_create_team` on contention. |
 | Change policy | Requires user approval to change. |
 
-## 7. Workspace max size (per team)
+## 6. Workspace max size (per team)
 
 | | |
 |---|---|
@@ -68,7 +59,7 @@ approval. See `README.md` for the approval rule.
 | Enforced in | Checked at team start and periodically (cadence is an implementation detail; if formalised it becomes a new boundary in this file). Exceeding emits a `workspace_over_budget` event and posts a `send_message` to the team leader. |
 | Change policy | Requires user approval to change. |
 
-## 8. Per-agent token ceiling per run
+## 7. Per-agent token ceiling per run
 
 | | |
 |---|---|
@@ -84,10 +75,9 @@ approval. See `README.md` for the approval rule.
 | 1 | Team fan-out per `create_team` | 8 | `create_team` primitive |
 | 2 | Team recursion depth from root | 5 | `create_team` primitive |
 | 3 | Per-agent inbox cap | 1000 | `send_message` primitive |
-| 4 | `wait_for_message` timeout ceiling | 3600 s | `wait_for_message` primitive |
-| 5 | Contract-violation strikes | 3 | Orchestrator recovery |
-| 6 | Concurrent in-flight `create_team` per agent | 1 | Orchestrator lock |
-| 7 | Workspace size per team | 500 MiB | Workspace monitor |
-| 8 | Per-agent token ceiling per run | 1,000,000 | Orchestrator observer |
+| 4 | Contract-violation strikes | 3 | Orchestrator recovery |
+| 5 | Concurrent in-flight `create_team` per agent | 1 | Orchestrator lock |
+| 6 | Workspace size per team | 500 MiB | Workspace monitor |
+| 7 | Per-agent token ceiling per run | 1,000,000 | Orchestrator observer |
 
-All eight require user approval to change.
+All seven require user approval to change.

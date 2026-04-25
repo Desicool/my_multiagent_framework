@@ -276,13 +276,14 @@ def test_inbox_put_bypasses_cap_for_beidou_senders(tmp_path):
     run(body())
 
 
-def test_inbox_get_one_flips_terminate_consumed(tmp_path):
+def test_queue_for_returns_per_agent_inbox(tmp_path):
+    """queue_for returns the same asyncio.Queue that inbox_put pushes onto."""
     o, _ = _make_orchestrator(tmp_path)
     _seed_team(o, ROOT_TEAM_ID, leader_id="R", depth=0)
     _seed_agent(o, "R", ROOT_TEAM_ID)
 
     async def body():
-        assert o.was_terminated("R") is False
+        q = o.queue_for("R")
         await o.inbox_put(
             "R",
             Message(
@@ -293,8 +294,14 @@ def test_inbox_get_one_flips_terminate_consumed(tmp_path):
                 kind="terminate",
             ),
         )
-        msg = await o.inbox_get_one("R", None, timeout=1.0)
-        assert msg is not None and msg.kind == "terminate"
+        assert q.qsize() == 1
+        msg = q.get_nowait()
+        assert msg.kind == "terminate"
+        # Setting terminate_consumed on the record is now the outer loop's job;
+        # verify the flag starts False and can be set directly.
+        rec = o._agents["R"]
+        assert rec.terminate_consumed is False
+        rec.terminate_consumed = True
         assert o.was_terminated("R") is True
 
     run(body())
@@ -313,14 +320,17 @@ def test_terminate_root_posts_sentinel_and_fake_agent_exits(tmp_path, monkeypatc
     monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
 
     async def fake_run(orch, spec):
-        # Behave like a good persistent agent: block on inbox until a
-        # terminate sentinel shows up.
+        # Behave like a good persistent agent: block on the per-agent queue
+        # until a terminate sentinel shows up.
+        q = orch.queue_for(spec.caller_id)
         while True:
-            msg = await orch.inbox_get_one(spec.caller_id, None, timeout=5.0)
-            if msg is None:
-                continue
+            msg = await asyncio.wait_for(q.get(), timeout=5.0)
             if msg.kind == "terminate":
-                # was_terminated() is already True because inbox_get_one flipped it.
+                # Mirror what input_stream does: set terminate_consumed on
+                # the record so was_terminated() returns True.
+                rec = orch._agents.get(spec.caller_id)
+                if rec is not None:
+                    rec.terminate_consumed = True
                 return _make_result(terminated=True)
 
     monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
@@ -375,11 +385,10 @@ def test_cascade_leader_terminates_members_then_exits(tmp_path, monkeypatch):
         member_ids = [m["agent_id"] for m in team_out["members"]]
         members_created_event.set()
 
-        # Block on inbox until terminate.
+        # Block on queue until terminate.
+        q = orch.queue_for(spec.caller_id)
         while True:
-            msg = await orch.inbox_get_one(spec.caller_id, None, timeout=5.0)
-            if msg is None:
-                continue
+            msg = await asyncio.wait_for(q.get(), timeout=5.0)
             if msg.kind == "terminate":
                 # Cascade: terminate each member, await ack via sentinel receipt.
                 from beidou.primitives.core import terminate_child
@@ -392,15 +401,20 @@ def test_cascade_leader_terminates_members_then_exits(tmp_path, monkeypatch):
                     for mid in member_ids
                 ):
                     await asyncio.sleep(0.01)
+                rec = orch._agents.get(spec.caller_id)
+                if rec is not None:
+                    rec.terminate_consumed = True
                 exit_order.append(spec.caller_id)
                 return _make_result(terminated=True)
 
     async def leaf_behaviour(orch, spec):
+        q = orch.queue_for(spec.caller_id)
         while True:
-            msg = await orch.inbox_get_one(spec.caller_id, None, timeout=5.0)
-            if msg is None:
-                continue
+            msg = await asyncio.wait_for(q.get(), timeout=5.0)
             if msg.kind == "terminate":
+                rec = orch._agents.get(spec.caller_id)
+                if rec is not None:
+                    rec.terminate_consumed = True
                 exit_order.append(spec.caller_id)
                 leaf_terminated.set()
                 return _make_result(terminated=True)
@@ -630,8 +644,11 @@ def test_deliver_message_puts_to_inbox_and_emits_event(tmp_path):
         o.deliver_message(from_id="sender", to_id="recipient", body="hello", kind="completion_report")
         await asyncio.sleep(0.05)  # let the async delivery task run
 
-        # Verify the message is in the inbox.
-        msgs = await o.inbox_drain("recipient")
+        # Verify the message is in the inbox via queue_for.
+        q = o.queue_for("recipient")
+        msgs: list[Message] = []
+        while not q.empty():
+            msgs.append(q.get_nowait())
         assert len(msgs) == 1
         assert msgs[0].content == "hello"
         assert msgs[0].from_id == "sender"
