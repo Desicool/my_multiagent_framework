@@ -122,6 +122,12 @@ class Orchestrator:
         # Lazily-created per-agent create_team locks.
         self._locks: dict[str, asyncio.Lock] = {}
 
+        # Per-agent assistant text tracking for PostToolUse hook.
+        # Outer key: caller_id. Inner key: tool_use_id -> assistant text from that turn.
+        # Also maintains most_recent_text per agent as a fallback.
+        self._assistant_text_by_tool: dict[str, dict[str, str]] = {}
+        self._most_recent_assistant_text: dict[str, str] = {}
+
     # ------------------------------------------------------------------
     # Protocol: registry lookups
     # ------------------------------------------------------------------
@@ -296,6 +302,11 @@ class Orchestrator:
         workspace_path = BEIDOU_DIR / "workspaces" / self.task_id / team_id
         workspace_path.mkdir(parents=True, exist_ok=True)
 
+        # Provision all bundled skills into the team workspace so the SDK's
+        # setting_sources=["project"] discovery can find them via .claude/skills/.
+        from beidou.skills.loader import provision_skills
+        provision_skills(workspace_path, skill_root=self.skill_root)
+
         task_id = self.agent_task(leader_id)
         for r in roles:
             agent_id = f"ag_{uuid.uuid4().hex[:8]}"
@@ -328,6 +339,7 @@ class Orchestrator:
                     "role_description": role_desc,
                     "team_name": name,
                     "workspace_path": str(workspace_path),
+                    "leader_id": leader_id,
                 },
                 cwd=str(workspace_path),
             )
@@ -561,6 +573,130 @@ class Orchestrator:
         return rec.terminate_consumed
 
     # ------------------------------------------------------------------
+    # Assistant text recording / retrieval for PostToolUse hook.
+    # ------------------------------------------------------------------
+
+    def record_assistant_text(
+        self,
+        caller_id: str,
+        text: str,
+        tool_use_ids: list[str],
+    ) -> None:
+        """Record the assistant text from one turn, binding it to all tool_use_ids in that turn.
+
+        Called by the drain loop in sdk_agent.py after processing one AssistantMessage.
+        Both the per-tool_use_id map and the most-recent-per-agent fallback are updated.
+
+        If text is empty, only the fallback is updated when no prior text exists;
+        we deliberately avoid overwriting good text with empty text.
+        """
+        if text:
+            self._most_recent_assistant_text[caller_id] = text
+            agent_map = self._assistant_text_by_tool.setdefault(caller_id, {})
+            for tid in tool_use_ids:
+                agent_map[tid] = text
+
+    def assistant_text_for_turn(self, caller_id: str, tool_use_id: str) -> str | None:
+        """Return the assistant text from the same turn as tool_use_id.
+
+        Exact binding: looks up the per-tool_use_id map populated by the drain loop.
+        Fallback: if the tool_use_id is not found (e.g. model emitted text in a
+        prior message before the report_status call), returns the most recent
+        assistant text for the agent.
+
+        Returns None if no text has been recorded for this agent at all.
+        """
+        agent_map = self._assistant_text_by_tool.get(caller_id, {})
+        text = agent_map.get(tool_use_id)
+        if text is not None:
+            return text
+        # Fallback: most recent assistant text for this agent (may be from a prior turn).
+        return self._most_recent_assistant_text.get(caller_id)
+
+    # ------------------------------------------------------------------
+    # deliver_message: orchestrator-side A2A delivery (used by hooks).
+    # ------------------------------------------------------------------
+
+    def deliver_message(
+        self,
+        from_id: str,
+        to_id: str,
+        body: str,
+        kind: str = "message",
+    ) -> None:
+        """Deliver a message to ``to_id``'s inbox from the orchestrator runtime.
+
+        Unlike the agent-facing ``send_message`` primitive (which enforces the
+        inbox cap for non-Beidou senders), this method uses ``from_id=from_id``
+        so the recipient sees the real sender.  If ``to_id`` is the user-sentinel
+        (no agent registered), the call is silently ignored.
+
+        Inbox overflow: if the recipient's inbox is full, we emit a
+        ``completion.empty`` event with reason ``inbox_full`` rather than
+        crashing the hook callback.
+        """
+        if to_id not in self._agents:
+            # Destination is the user sentinel or an unknown id — drop silently.
+            return
+
+        message_id = str(uuid.uuid4())
+        msg = Message(
+            from_id=from_id,
+            content=body,
+            ts=time.time(),
+            message_id=message_id,
+            kind=kind,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — deliver inline (tests without a loop).
+            rec = self._agents[to_id]
+            if rec.inbox.qsize() < INBOX_CAP:
+                rec.inbox.put_nowait(msg)
+            else:
+                self.emit_event(
+                    "completion.empty",
+                    {
+                        "agent_id": from_id,
+                        "leader_id": to_id,
+                        "reason": "inbox_full",
+                    },
+                )
+            return
+
+        async def _deliver() -> None:
+            try:
+                await self.inbox_put(to_id, msg)
+            except PrimitiveError as exc:
+                if exc.code == "inbox_full":
+                    self.emit_event(
+                        "completion.empty",
+                        {
+                            "agent_id": from_id,
+                            "leader_id": to_id,
+                            "reason": "inbox_full",
+                        },
+                    )
+                # Unknown recipient errors are already logged; ignore.
+                return
+            # Emit the message event only on successful delivery.
+            self.emit_event(
+                "message",
+                {
+                    "agent_id": from_id,
+                    "to": to_id,
+                    "message_id": message_id,
+                    "kind": kind,
+                    "ts": time.time(),
+                },
+            )
+
+        task = loop.create_task(_deliver())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    # ------------------------------------------------------------------
     # Resume-not-terminate policy.
     # ------------------------------------------------------------------
 
@@ -717,6 +853,10 @@ class Orchestrator:
         root_workspace = BEIDOU_DIR / "workspaces" / self.task_id / ROOT_TEAM_ID
         root_workspace.mkdir(parents=True, exist_ok=True)
 
+        # Provision all bundled skills into the root workspace.
+        from beidou.skills.loader import provision_skills
+        provision_skills(root_workspace, skill_root=self.skill_root)
+
         root_agent_id = f"ag_{uuid.uuid4().hex[:8]}"
         self._teams[ROOT_TEAM_ID] = TeamRecord(
             team_id=ROOT_TEAM_ID,
@@ -764,6 +904,7 @@ class Orchestrator:
                 "role_description": root_task,
                 "team_name": "root",
                 "workspace_path": str(root_workspace),
+                "leader_id": USER_SENTINEL,
             },
             cwd=str(root_workspace),
         )

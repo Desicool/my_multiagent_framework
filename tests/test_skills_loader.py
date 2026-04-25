@@ -10,9 +10,12 @@ from beidou.skills.loader import (
     InvalidSkillFile,
     LoadedSkill,
     SkillNotFound,
+    build_system_prompt,
     load_skill,
     load_skill_file,
+    provision_skills,
     render_system_prompt,
+    sdk_builtins_allowlist,
 )
 
 
@@ -145,3 +148,217 @@ def test_junior_engineer_loads_with_unknown_model_field() -> None:
     path = SKILLS_ROOT / "coding" / "junior_engineer" / "SKILL.md"
     skill = load_skill_file(path)
     assert skill.name == "junior_engineer"
+
+
+# ---------------------------------------------------------------------------
+# Tests for provision_skills
+# ---------------------------------------------------------------------------
+
+
+def test_provision_skills_writes_canonical_copies(tmp_path: Path) -> None:
+    """provision_skills copies each bundled SKILL.md byte-for-byte (no substitution)."""
+    written = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+
+    # At least some files should have been written (we have bundled skills).
+    assert len(written) > 0
+
+    # Each written file should exist and be byte-identical to its source SKILL.md.
+    for dst in written:
+        assert dst.exists(), f"Expected {dst} to exist"
+        # Determine which source SKILL.md corresponds to this destination.
+        # dst is <workspace>/.claude/skills/<name>/SKILL.md
+        skill_name = dst.parent.name
+        # Find the source by scanning SKILLS_ROOT for a SKILL.md with that name.
+        source = None
+        for src_md in SKILLS_ROOT.rglob("SKILL.md"):
+            src_text = src_md.read_bytes()
+            src_loaded = load_skill_file(src_md)
+            if src_loaded.name == skill_name:
+                source = src_md
+                source_bytes = src_text
+                break
+        assert source is not None, f"Could not find source for skill name {skill_name!r}"
+        assert dst.read_bytes() == source_bytes, (
+            f"Destination {dst} is not byte-identical to source {source}"
+        )
+
+        # Confirm NO substitution occurred: if the source has {workspace_path},
+        # so should the destination.
+        if b"{workspace_path}" in source_bytes:
+            assert b"{workspace_path}" in dst.read_bytes(), (
+                f"Substitution was applied on disk — it should NOT be"
+            )
+
+
+def test_provision_skills_idempotent(tmp_path: Path) -> None:
+    """Calling provision_skills twice: second call returns [] (no files re-written)."""
+    first = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert len(first) > 0  # first call wrote something
+
+    second = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert second == [], (
+        f"Second call should return [] (all files already up-to-date), got {second}"
+    )
+
+    # Verify the files are still present and unchanged.
+    for dst in first:
+        assert dst.exists()
+
+
+def test_provision_skills_replaces_modified_destination(tmp_path: Path) -> None:
+    """If a destination has been tampered with, provision_skills restores the canonical content."""
+    # First provision — establish the canonical copies.
+    first = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert len(first) > 0
+
+    # Overwrite one destination with bogus content.
+    target = first[0]
+    original_bytes = target.read_bytes()
+    target.write_bytes(b"corrupted content, definitely wrong")
+
+    # Second provision — should detect the mismatch and restore.
+    second = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+
+    assert target in second, (
+        f"Expected {target} to be re-written on second call, but it wasn't in {second}"
+    )
+    assert target.read_bytes() == original_bytes, (
+        "File was not restored to canonical content"
+    )
+
+
+def test_provision_skills_nonexistent_skill_root(tmp_path: Path) -> None:
+    """provision_skills returns [] when skill_root does not exist."""
+    nonexistent = tmp_path / "does_not_exist"
+    result = provision_skills(tmp_path / "workspace", skill_root=nonexistent)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for build_system_prompt
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_skill(body: str = "role={role}, ws={workspace_path}") -> LoadedSkill:
+    """Build a minimal LoadedSkill for testing."""
+    return LoadedSkill(
+        name="test_skill",
+        version="2.0.0",
+        description="A test skill",
+        allowed_tools=[],
+        system_prompt=body,
+    )
+
+
+def _make_spawn_ctx(**kwargs) -> dict:
+    defaults = {
+        "role": "engineer",
+        "role_description": "writes code",
+        "team_name": "alpha",
+        "workspace_path": "/tmp/ws",
+        "leader_id": "agent-leader-123",
+    }
+    defaults.update(kwargs)
+    return defaults
+
+
+def test_build_system_prompt_skill_body_first() -> None:
+    """Output starts with [ASSIGNED SKILL] marker; skill name/version in BEGIN SKILL line;
+    {role} inside skill body gets substituted; IDENTITY block has role/team/workspace/leader;
+    CONTRACT block has required phrases; OTHER SKILLS is at the end."""
+    skill = _make_fake_skill("role={role}, ws={workspace_path}")
+    ctx = _make_spawn_ctx(role="pm", workspace_path="/workspace/alpha", team_name="team-one", leader_id="boss-99")
+    prompt = build_system_prompt(skill, ctx)
+
+    # Must start with the ASSIGNED SKILL section.
+    assert prompt.startswith("[ASSIGNED SKILL")
+
+    # BEGIN SKILL marker contains name and version.
+    assert "──── BEGIN SKILL: test_skill v2.0.0 ────" in prompt
+
+    # {role} substitution inside skill body.
+    assert "role=pm" in prompt
+    assert "ws=/workspace/alpha" in prompt
+
+    # IDENTITY block fields.
+    assert "You are pm in team team-one." in prompt
+    assert "Workspace: /workspace/alpha." in prompt
+    assert "Leader: boss-99." in prompt
+
+    # CONTRACT block required phrases.
+    assert "Completion is a state" in prompt
+    assert "completion handoff" in prompt
+
+    # OTHER SKILLS at the end.
+    assert prompt.rstrip().endswith(
+        "authoritative for your role and approach."
+    )
+
+    # Section order: SKILL → IDENTITY → CONTRACT → OTHER SKILLS.
+    idx_skill = prompt.index("[ASSIGNED SKILL")
+    idx_identity = prompt.index("[IDENTITY]")
+    idx_contract = prompt.index("[PERSISTENT-AGENT CONTRACT]")
+    idx_other = prompt.index("[OTHER SKILLS]")
+    assert idx_skill < idx_identity < idx_contract < idx_other
+
+
+def test_build_system_prompt_cache_prefix_invariant() -> None:
+    """Two different spawn contexts with the same skill and no placeholders in the
+    skill body produce byte-identical prefixes up to the END SKILL marker."""
+    # Use a skill body with NO substitution placeholders so both contexts
+    # produce the same substituted body.
+    skill = _make_fake_skill("This skill body has no placeholders at all.")
+    ctx1 = _make_spawn_ctx(role="alice", team_name="team-a", workspace_path="/ws/a", leader_id="boss-1")
+    ctx2 = _make_spawn_ctx(role="bob", team_name="team-b", workspace_path="/ws/b", leader_id="boss-2")
+
+    prompt1 = build_system_prompt(skill, ctx1)
+    prompt2 = build_system_prompt(skill, ctx2)
+
+    marker = "──── END SKILL ────"
+    end1 = prompt1.index(marker) + len(marker)
+    end2 = prompt2.index(marker) + len(marker)
+
+    prefix1 = prompt1[:end1]
+    prefix2 = prompt2[:end2]
+
+    assert prefix1 == prefix2, (
+        "Cache prefix (up to END SKILL) differs across spawn contexts using the same skill.\n"
+        f"prefix1: {prefix1!r}\nprefix2: {prefix2!r}"
+    )
+
+
+def test_build_system_prompt_missing_leader_id() -> None:
+    """spawn_ctx without leader_id renders 'Leader: unset' without crashing."""
+    skill = _make_fake_skill("no placeholders here")
+    ctx = _make_spawn_ctx()
+    del ctx["leader_id"]  # remove leader_id entirely
+
+    prompt = build_system_prompt(skill, ctx)
+    assert "Leader: unset." in prompt
+
+
+# ---------------------------------------------------------------------------
+# Tests for sdk_builtins_allowlist
+# ---------------------------------------------------------------------------
+
+
+def test_sdk_builtins_allowlist_basic() -> None:
+    """Beidou primitives like create_team are filtered; bash->Bash, file_read->Read."""
+    result = sdk_builtins_allowlist(["bash", "file_read", "create_team"])
+    assert result == ["Bash", "Read"]
+
+
+def test_sdk_builtins_allowlist_dedup_and_order() -> None:
+    """Duplicates are deduplicated preserving first-occurrence order; unknowns dropped."""
+    result = sdk_builtins_allowlist([
+        "bash",
+        "file_read",
+        "bash",         # duplicate
+        "unknown_tool", # not in map
+        "file_write",
+        "web_search",
+        "web_fetch",
+        "send_message", # Beidou MCP primitive — filtered
+        "web_fetch",    # duplicate
+    ])
+    assert result == ["Bash", "Read", "Write", "WebSearch", "WebFetch"]

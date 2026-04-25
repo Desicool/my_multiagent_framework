@@ -34,12 +34,15 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 
 from .primitives.core import Orchestrator
 from .primitives.mcp import build_mcp_server_for
+from claude_agent_sdk.types import HookMatcher
+
 from .skills.loader import (
     LoadedSkill,
     SkillError,
+    build_system_prompt,
     load_skill,
     load_skill_file,
-    render_system_prompt,
+    sdk_builtins_allowlist,
 )
 
 
@@ -111,6 +114,104 @@ def _resolve_skill(skill_root: Path, skill_name: str) -> LoadedSkill:
         raise
 
 
+# The canonical list of all 8 Beidou MCP primitive tool names (namespaced).
+# These match the tools registered in beidou/primitives/mcp.py exactly.
+_BEIDOU_PRIMITIVE_TOOLS: list[str] = [
+    "mcp__beidou__send_message",
+    "mcp__beidou__read_messages",
+    "mcp__beidou__wait_for_message",
+    "mcp__beidou__list_peers",
+    "mcp__beidou__ask_user",
+    "mcp__beidou__report_status",
+    "mcp__beidou__create_team",
+    "mcp__beidou__terminate_child",
+]
+
+
+def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
+    """Build a ``PostToolUse`` hook dict for the report_status completion mechanism.
+
+    The hook fires when the agent calls ``mcp__beidou__report_status(state="done")``.
+    It reads the agent's last assistant text (bound to that turn) from the orchestrator
+    and delivers it to the leader's inbox as a ``completion_report`` message.
+
+    If ``leader_id`` is the user-sentinel (root agent), the hook still registers but
+    emits ``completion.empty`` with reason ``root_no_leader`` instead of delivering.
+
+    Guards:
+    - Wrong tool_name: return early (the HookMatcher should filter this, but be safe).
+    - state != "done": no-op.
+    - is_error=True: the report_status call failed; skip delivery.
+    - Empty summary: emit completion.empty with reason "no summary in report_status turn".
+    - leader inbox_full: handled inside deliver_message, which emits completion.empty.
+    """
+    from .orchestrator import USER_SENTINEL
+
+    async def on_report_status(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        # Guard: wrong tool (HookMatcher should filter, but be defensive).
+        if input_data.get("tool_name") != "mcp__beidou__report_status":
+            return {}
+        # Guard: only act on state=="done".
+        if input_data.get("tool_input", {}).get("state") != "done":
+            return {}
+        # Guard: PostToolUse also fires for failed calls (is_error=True tool result).
+        tool_response = input_data.get("tool_response") or {}
+        if isinstance(tool_response, dict) and tool_response.get("is_error"):
+            return {}
+
+        # Root agent has no leader to deliver to.
+        if leader_id == USER_SENTINEL:
+            orch.emit_event(
+                "completion.empty",
+                {
+                    "agent_id": caller_id,
+                    "leader_id": leader_id,
+                    "reason": "root_no_leader",
+                },
+            )
+            return {}
+
+        # Retrieve the assistant text from the same turn as the report_status call.
+        # Exact binding: tool_use_id -> text recorded by the drain loop in the same message.
+        # Fallback: most recent assistant text for this agent (from any prior turn).
+        summary = orch.assistant_text_for_turn(caller_id, tool_use_id or "")
+        if not summary or not summary.strip():
+            orch.emit_event(
+                "completion.empty",
+                {
+                    "agent_id": caller_id,
+                    "leader_id": leader_id,
+                    "reason": "no summary in report_status turn",
+                },
+            )
+            return {}
+
+        orch.deliver_message(
+            from_id=caller_id,
+            to_id=leader_id,
+            body=summary,
+            kind="completion_report",
+        )
+        orch.emit_event(
+            "completion.reported",
+            {
+                "agent_id": caller_id,
+                "leader_id": leader_id,
+                "via": "hook",
+            },
+        )
+        return {}
+
+    return {
+        "PostToolUse": [
+            HookMatcher(
+                matcher="mcp__beidou__report_status",
+                hooks=[on_report_status],
+            ),
+        ],
+    }
+
+
 def _build_options(
     *,
     system_prompt: str,
@@ -118,26 +219,35 @@ def _build_options(
     allowed_tools: list[str],
     model: Optional[str],
     cwd: Optional[str],
+    hooks: Optional[dict] = None,
 ) -> ClaudeAgentOptions:
     """Assemble ``ClaudeAgentOptions`` for one SDK agent spawn.
 
-    ``setting_sources=[]`` is deliberate: Beidou's custom SKILL.md loader is
-    authoritative; we do not want the SDK's filesystem-discovery skills
-    feature racing with it. ``permission_mode='bypassPermissions'`` matches
-    ``docs/skills.md`` since every tool is either an MCP primitive we own
-    or an explicitly-listed built-in.
+    ``setting_sources=["user", "project"]`` enables SDK skill discovery:
+    - "user": ~/.claude/skills/ (user skills, never copied)
+    - "project": <cwd>/.claude/skills/ (team workspace, provisioned by provision_skills)
+
+    ``skills="all"`` enables the Skill tool so agents can invoke any discovered skill.
+    Note: skills="all" does NOT auto-add SDK builtins like Bash/Read/Write.
+    Those come from the skill's allowed-tools via sdk_builtins_allowlist().
+
+    ``permission_mode="bypassPermissions"`` matches docs/skills.md: every tool is
+    either an MCP primitive we own or an explicitly-listed SDK built-in.
     """
     kwargs: dict = dict(
         system_prompt=system_prompt,
         mcp_servers={"beidou": mcp_server},
         allowed_tools=list(allowed_tools),
         permission_mode="bypassPermissions",
-        setting_sources=[],
+        setting_sources=["user", "project"],
+        skills="all",
     )
     if model:
         kwargs["model"] = model
     if cwd:
         kwargs["cwd"] = cwd
+    if hooks:
+        kwargs["hooks"] = hooks
     return ClaudeAgentOptions(**kwargs)
 
 
@@ -156,11 +266,34 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     """
     skill = _resolve_skill(spec.skill_root, spec.skill_name)
     template_vars = spec.template_vars or {}
-    rendered_prompt = render_system_prompt(skill, **template_vars)
+
+    # Build the four-section system prompt (skill body first for cache reuse).
+    rendered_prompt = build_system_prompt(skill, template_vars)
 
     mcp = build_mcp_server_for(orch, caller_id=spec.caller_id)
 
-    allowed_tools = spec.allowed_tools if spec.allowed_tools is not None else list(skill.allowed_tools)
+    # Resolve allowed_tools. If an explicit override was supplied in the spec,
+    # use it verbatim (test / advanced caller path). Otherwise compose from:
+    #   1. The 8 Beidou MCP primitives, filtered by the skill's raw allowed-tools
+    #      to preserve the per-skill primitive restriction contract.
+    #   2. The SDK built-ins (Bash, Read, Write, etc.) derived from the skill's
+    #      allowed-tools via sdk_builtins_allowlist().
+    # Note: skills="all" auto-adds the Skill tool — we do NOT add it here.
+    if spec.allowed_tools is not None:
+        allowed_tools = list(spec.allowed_tools)
+    else:
+        # Primitive restriction: only expose the Beidou primitives the skill declares.
+        raw_primitives = {
+            t for t in skill.allowed_tools_raw
+            if f"mcp__beidou__{t}" in _BEIDOU_PRIMITIVE_TOOLS
+        }
+        filtered_primitives = [
+            t for t in _BEIDOU_PRIMITIVE_TOOLS
+            if t[len("mcp__beidou__"):] in raw_primitives
+        ]
+        sdk_builtins = sdk_builtins_allowlist(skill.allowed_tools_raw)
+        allowed_tools = filtered_primitives + sdk_builtins
+
     if not allowed_tools:
         # Not fatal -- an agent with no tools will hit the contract on its
         # first turn -- but the condition almost always signals a mis-built
@@ -175,12 +308,18 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             },
         )
 
+    # Build the PostToolUse hook for completion reporting.
+    # leader_id comes from template_vars (set by orchestrator at spawn time).
+    leader_id = template_vars.get("leader_id", "")
+    hooks = build_hooks(orch, spec.caller_id, leader_id)
+
     options = _build_options(
         system_prompt=rendered_prompt,
         mcp_server=mcp,
         allowed_tools=allowed_tools,
         model=spec.model,
         cwd=spec.cwd,
+        hooks=hooks,
     )
 
     orch.emit_event(
@@ -201,6 +340,12 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     # Tool-span tracking: maps tool_use_id -> monotonic start time.
     # Populated on ToolUseBlock arrival; consumed on ToolResultBlock arrival.
     pending_tool_uses: dict[str, float] = {}
+    # Per-turn assistant text accumulator for PostToolUse hook binding.
+    # Cleared at the start of each new message_id. At end of each message,
+    # the accumulated text is recorded on the orchestrator keyed by all
+    # tool_use_ids in that message.
+    current_turn_text_parts: list[str] = []
+    current_turn_tool_ids: list[str] = []
 
     try:
         async for msg in query(prompt=spec.task, options=options):
@@ -237,22 +382,26 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                         },
                     )
 
-                # Collect final-assistant text. Reset the accumulator at the
+                # Collect final-assistant text. Reset the accumulators at the
                 # start of each NEW message_id so we end up with the last
-                # turn's text, not the concatenation of every assistant
-                # turn.
+                # turn's text, not the concatenation of every assistant turn.
                 if mid != last_message_id:
                     final_text_parts.clear()
+                    current_turn_text_parts.clear()
+                    current_turn_tool_ids.clear()
                     last_message_id = mid
+
                 for block in (getattr(msg, "content", None) or []):
                     block_cls = type(block).__name__
                     if block_cls == "TextBlock":
                         text = getattr(block, "text", "")
                         if text:
                             final_text_parts.append(text)
+                            current_turn_text_parts.append(text)
                     elif block_cls == "ToolUseBlock":
                         tool_use_id = getattr(block, "id", None)
                         if tool_use_id:
+                            current_turn_tool_ids.append(tool_use_id)
                             pending_tool_uses[tool_use_id] = time.monotonic()
                             orch.emit_event(
                                 "tool_called",
@@ -265,6 +414,23 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                                     "input": getattr(block, "input", {}),
                                 },
                             )
+
+                # Record the current turn's text IMMEDIATELY after processing
+                # each AssistantMessage so the PostToolUse hook (which fires
+                # between messages, when the SDK calls the MCP tool) sees
+                # the correctly-bound text. Recording after every fragment of
+                # the same message_id is safe: current_turn_text_parts has
+                # been accumulating all fragments, so we overwrite with the
+                # growing cumulative text. This is the correct behaviour for
+                # multi-fragment messages (same message_id yields).
+                if mid and current_turn_text_parts:
+                    orch_record = getattr(orch, "record_assistant_text", None)
+                    if orch_record is not None:
+                        orch_record(
+                            spec.caller_id,
+                            "".join(current_turn_text_parts),
+                            list(current_turn_tool_ids),
+                        )
 
             elif cls == "UserMessage":
                 # UserMessage carries tool-result echoes from the SDK.
@@ -369,4 +535,4 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     )
 
 
-__all__ = ["SpawnSpec", "RunResult", "run_agent"]
+__all__ = ["SpawnSpec", "RunResult", "run_agent", "build_hooks"]

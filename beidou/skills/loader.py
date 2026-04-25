@@ -12,17 +12,26 @@ This module provides two layers:
    ``beidou/sdk_agent.py``. See ``docs/skills.md`` for the authoritative
    SKILL.md spec and ``docs/tool-surface.md`` for the MCP tool name
    namespacing rules applied here.
+
+3. Per-team provisioning helpers (``provision_skills``) and per-agent-spawn
+   system prompt assembly (``build_system_prompt``) and SDK builtin allowlist
+   extraction (``sdk_builtins_allowlist``).
 """
 from __future__ import annotations
 
+import logging
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 from beidou.skills.base import Skill, parse_skill_md
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +108,16 @@ _BEIDOU_MCP_TOOLS: frozenset[str] = frozenset(
 
 _MCP_PREFIX = "mcp__beidou__"
 
+# Mapping from legacy Beidou tool names to SDK built-in canonical tool names.
+# This is module-level so it can be reused by sdk_builtins_allowlist().
+_SDK_BUILTIN_MAP: dict[str, str] = {
+    "bash": "Bash",
+    "file_read": "Read",
+    "file_write": "Write",
+    "web_search": "WebSearch",
+    "web_fetch": "WebFetch",
+}
+
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?(.*)\Z", re.DOTALL)
 
 
@@ -133,6 +152,7 @@ class LoadedSkill:
     version: str
     description: str
     allowed_tools: list[str]  # namespaced where applicable, legacy names passed through
+    allowed_tools_raw: list[str] = field(default_factory=list)  # raw unnamespaced names from frontmatter
     sub_skills: list[str] = field(default_factory=list)
     triggers: list[str] = field(default_factory=list)
     system_prompt: str = ""  # body, un-substituted
@@ -162,13 +182,6 @@ def _namespace_tool(name: str) -> str:
     """
     if name in _BEIDOU_MCP_TOOLS:
         return _MCP_PREFIX + name
-    _SDK_BUILTIN_MAP: dict[str, str] = {
-        "bash": "Bash",
-        "file_read": "Read",
-        "file_write": "Write",
-        "web_search": "WebSearch",
-        "web_fetch": "WebFetch",
-    }
     return _SDK_BUILTIN_MAP.get(name, name)
 
 
@@ -214,7 +227,8 @@ def _parse_skill_text(text: str, source_path: Path) -> LoadedSkill:
         raise InvalidSkillFile(
             f"'allowed-tools' must be a list in {source_path}"
         )
-    allowed_tools = [_namespace_tool(str(t)) for t in raw_tools]
+    raw_tools_strs = [str(t) for t in raw_tools]
+    allowed_tools = [_namespace_tool(t) for t in raw_tools_strs]
 
     sub_skills_raw = fm.get("skills") or []
     if not isinstance(sub_skills_raw, list):
@@ -231,6 +245,7 @@ def _parse_skill_text(text: str, source_path: Path) -> LoadedSkill:
         version=version,
         description=description,
         allowed_tools=allowed_tools,
+        allowed_tools_raw=raw_tools_strs,
         sub_skills=sub_skills,
         triggers=triggers,
         system_prompt=body.strip(),
@@ -303,3 +318,207 @@ def render_system_prompt(skill: LoadedSkill, **substitutions: str) -> str:
         return match.group(0)
 
     return _PLACEHOLDER_RE.sub(_sub, skill.system_prompt)
+
+
+# ---------------------------------------------------------------------------
+# Per-team workspace provisioning
+# ---------------------------------------------------------------------------
+
+
+def provision_skills(
+    workspace_path: Path,
+    skill_root: Path | None = None,
+) -> list[Path]:
+    """Copy every bundled SKILL.md into ``<workspace_path>/.claude/skills/<name>/SKILL.md``.
+
+    The workspace copies are canonical/raw — no ``{role}``/``{team_name}`` substitution
+    is applied on disk. Substitution lives only in ``build_system_prompt``.
+
+    Behaviour:
+    - Discovers all SKILL.md files under ``skill_root`` (recursive).
+    - For each, the destination subdirectory is the skill's ``name`` from frontmatter
+      (NOT the directory name).
+    - Atomic write: writes to a tempfile in the same destination directory, then
+      ``os.replace`` to the final path.
+    - Idempotent: if destination already exists with byte-identical content, skips the
+      write entirely.
+    - Returns the list of destination paths actually written. Skipped (already-identical)
+      destinations are NOT returned.
+    - If ``skill_root`` does not exist or contains no SKILL.md files, returns ``[]``.
+    - If a SKILL.md fails to parse during discovery, skips it silently with a warning log.
+    """
+    if skill_root is None:
+        skill_root = _bundled_skills_dir()
+
+    skill_root = Path(skill_root)
+    workspace_path = Path(workspace_path)
+
+    if not skill_root.is_dir():
+        return []
+
+    written: list[Path] = []
+
+    for skill_md in sorted(skill_root.rglob("SKILL.md")):
+        # Parse to get the canonical skill name from frontmatter.
+        try:
+            text = skill_md.read_bytes()
+            loaded = _parse_skill_text(text.decode("utf-8"), skill_md)
+        except Exception as exc:  # InvalidSkillFile, yaml errors, decode errors
+            _log.warning("provision_skills: skipping %s — %s", skill_md, exc)
+            continue
+
+        skill_name = loaded.name
+        dst = workspace_path / ".claude" / "skills" / skill_name / "SKILL.md"
+
+        # Check idempotency: skip if content is byte-identical.
+        if dst.exists():
+            existing = dst.read_bytes()
+            if existing == text:
+                continue  # already up-to-date; don't include in returned list
+
+        # Ensure destination directory exists.
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        # Atomic write: tempfile in same directory, then os.replace.
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=dst.parent)
+        try:
+            os.write(tmp_fd, text)
+            os.close(tmp_fd)
+            os.replace(tmp_name, dst)
+        except Exception:
+            # Clean up temp file on failure; re-raise.
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+        written.append(dst)
+
+    return written
+
+
+# ---------------------------------------------------------------------------
+# Per-agent-spawn system prompt assembly
+# ---------------------------------------------------------------------------
+
+# Verbatim section text for the persistent-agent contract block (no substitutions).
+_CONTRACT_BLOCK = """\
+[PERSISTENT-AGENT CONTRACT]
+You do not self-exit. Completion is a state, not an exit: when your task is done,
+call mcp__beidou__report_status(state="done", detail=…).
+
+CRITICAL — completion handoff:
+Before calling report_status(state="done"), you MUST emit a final assistant
+message that summarizes what you accomplished. Beidou forwards exactly that
+text to your leader as the completion report — there is no second chance to
+add information. An empty or terse final message means an empty handoff.
+
+Use send_message only for mid-task progress updates; it is NOT the completion
+mechanism.
+
+Inter-agent communication uses Beidou primitives only — never shell, files,
+or environment variables to talk to other agents."""
+
+_OTHER_SKILLS_BLOCK = """\
+[OTHER SKILLS]
+Other available skills are listed via the `Skill` tool. You MAY invoke them
+when they would genuinely improve the work, but the [ASSIGNED SKILL] above is
+authoritative for your role and approach."""
+
+
+def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
+    """Assemble the four-section system prompt with the skill body first.
+
+    Putting the skill body first is required for cross-agent prompt cache reuse:
+    two agents using the same skill share a common cache prefix (the multi-KB
+    skill block), while per-agent identity (IDENTITY block) comes after and does
+    not break the prefix.
+
+    ``spawn_ctx`` keys:
+        role, role_description, team_name, workspace_path, leader_id
+        (all strings; leader_id may be the user-sentinel for a root agent).
+
+    Section order (locked):
+        1. [ASSIGNED SKILL] — skill body with {role}/{role_description}/{team_name}/{workspace_path} substituted
+        2. [IDENTITY] — per-agent identity filled from spawn_ctx
+        3. [PERSISTENT-AGENT CONTRACT] — verbatim, no substitution
+        4. [OTHER SKILLS] — verbatim, no substitution
+    """
+    # -- Section 1: skill body with substitutions (reuse existing helper) --
+    skill_body = render_system_prompt(
+        skill,
+        role=spawn_ctx.get("role", ""),
+        role_description=spawn_ctx.get("role_description", ""),
+        team_name=spawn_ctx.get("team_name", ""),
+        workspace_path=spawn_ctx.get("workspace_path", ""),
+    )
+
+    skill_section = (
+        "[ASSIGNED SKILL — authoritative instructions for your role]\n"
+        f"──── BEGIN SKILL: {skill.name} v{skill.version} ────\n"
+        f"{skill_body}\n"
+        "──── END SKILL ────"
+    )
+
+    # -- Section 2: identity block --
+    role = spawn_ctx.get("role", "")
+    team_name = spawn_ctx.get("team_name", "")
+    workspace_path = spawn_ctx.get("workspace_path", "")
+    leader_id = spawn_ctx.get("leader_id", "unset")
+    if not leader_id:
+        leader_id = "unset"
+
+    identity_section = (
+        "[IDENTITY]\n"
+        f"You are {role} in team {team_name}.\n"
+        f"Workspace: {workspace_path}.\n"
+        f"Leader: {leader_id}."
+    )
+
+    # -- Sections 3 and 4: verbatim blocks --
+    return "\n\n".join(
+        [skill_section, identity_section, _CONTRACT_BLOCK, _OTHER_SKILLS_BLOCK]
+    )
+
+
+# ---------------------------------------------------------------------------
+# SDK builtin allowlist extraction
+# ---------------------------------------------------------------------------
+
+
+def sdk_builtins_allowlist(allowed_tools: list[str]) -> list[str]:
+    """Return the subset of ``allowed_tools`` that maps to SDK builtin tool names.
+
+    Given the raw ``allowed-tools`` list from a SKILL.md frontmatter (which may
+    contain either Beidou primitive names, legacy SDK-builtin names, or already-
+    mapped names), returns only the entries that correspond to SDK built-in tools:
+    ``Bash``, ``Read``, ``Write``, ``WebFetch``, ``WebSearch``.
+
+    Beidou MCP primitives (e.g. ``create_team``, ``send_message``) and any
+    unrecognised entries are filtered out. Order is preserved; duplicates are
+    deduplicated while preserving first occurrence.
+
+    Why this is needed: ``skills="all"`` in ClaudeAgentOptions auto-adds the
+    ``Skill`` tool but does NOT auto-add ``Bash``/``Read``/``Write``/``WebFetch``.
+    Those must come from the skill's ``allowed-tools`` via this mapping.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in allowed_tools:
+        # The entry may be a raw name (e.g. "bash") or already-mapped (e.g. "Bash").
+        # Check raw name first via _SDK_BUILTIN_MAP, then check if it's already
+        # one of the SDK builtin values.
+        sdk_name = _SDK_BUILTIN_MAP.get(entry)
+        if sdk_name is None:
+            # Check if the entry is already a mapped SDK builtin value.
+            if entry in _SDK_BUILTIN_MAP.values():
+                sdk_name = entry
+        if sdk_name is not None and sdk_name not in seen:
+            seen.add(sdk_name)
+            result.append(sdk_name)
+    return result

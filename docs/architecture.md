@@ -61,6 +61,59 @@ MCP tool body never has to read `caller_id` from the model's tool input. This
 guarantees the self-lead invariant for `create_team` and the leadership check
 for `terminate_child` cannot be spoofed by the agent.
 
+## Workspace and skill provisioning
+
+Each team workspace is created at:
+
+```
+~/.beidou/workspaces/<task_id>/<team_id>/
+```
+
+At team creation (`spawn_team`) and root launch (`run_root`), `provision_skills`
+copies every bundled Beidou SKILL.md into:
+
+```
+<workspace>/.claude/skills/<skill_name>/SKILL.md
+```
+
+The copies are canonical/raw — no `{role}` substitution on disk. This populates
+the project-scope skill directory so the SDK's `setting_sources=["project"]`
+discovery can find them.
+
+## SDK skill discovery
+
+`ClaudeAgentOptions` is built with:
+
+```python
+setting_sources=["user", "project"],
+skills="all",
+```
+
+- `"user"`: discovers skills under `~/.claude/skills/` (user skills, never copied).
+- `"project"`: discovers skills under `<cwd>/.claude/skills/` (provisioned by
+  `provision_skills` at team creation time; `cwd=workspace_path` is set on
+  every spawn).
+- `skills="all"`: enables the `Skill` tool so agents can list and invoke any
+  discovered skill. **Does NOT auto-add Bash/Read/Write** — those come from the
+  skill's `allowed-tools` via `sdk_builtins_allowlist()`.
+
+## PostToolUse hook — completion reporting
+
+The orchestrator registers a `PostToolUse` hook on `mcp__beidou__report_status`
+for every non-root agent. The hook:
+
+1. Fires when the agent calls `report_status(state="done")`.
+2. Reads the agent's last assistant text (bound to the same turn's `tool_use_id`)
+   via `Orchestrator.assistant_text_for_turn()`.
+3. Delivers that text to the leader's inbox as a `completion_report` message
+   via `Orchestrator.deliver_message()`.
+4. Emits `completion.reported` on success, or `completion.empty` if no text
+   was found or the root sentinel check fires.
+
+The hook is **owned by the orchestrator**, not by any agent. It is built in
+`beidou/sdk_agent.py::build_hooks(orch, caller_id, leader_id)` and passed to
+`ClaudeAgentOptions.hooks`.
+
 ## Context propagation
 
 `AgentContext` chains parent -> child via `_kv` lookup (Go-style). Four keys

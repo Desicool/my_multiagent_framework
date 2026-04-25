@@ -48,36 +48,81 @@ leave the token untouched (a warning is logged, not an error).
 
 ## Loader behaviour (`beidou/skills/loader.py`)
 
-The loader is a pure function that maps SKILL.md + spawn context to
-`ClaudeAgentOptions`:
+The loader has three distinct responsibilities:
+
+### 1. Build-time / startup validation
+
+Validates every SKILL.md: frontmatter shape, `allowed-tools` legality (all
+entries must be recognised Beidou primitives or SDK builtins), `skills:`
+references resolve. `load_skill(skill_root, name)` and `load_skill_file(path)`
+are the entry points.
+
+### 2. Per-team workspace provisioning (`provision_skills`)
+
+```python
+provision_skills(workspace_path: Path, skill_root: Path | None = None) -> list[Path]
+```
+
+Called once per team workspace creation (in `spawn_team` and `run_root`).
+Copies every bundled SKILL.md into `<workspace>/.claude/skills/<name>/SKILL.md`.
+
+Rules:
+- The workspace copies are **canonical/raw** — no `{role}` / `{team_name}`
+  substitution on disk. Substitution lives only in `build_system_prompt`.
+- Atomic write: temp file + `os.replace`. Idempotent: skips if content is
+  byte-identical.
+- User skills under `~/.claude/skills/` are discovered by `setting_sources=["user"]`
+  in place — never copied.
+
+This provisioning makes the SDK's `setting_sources=["project"]` discovery work
+correctly: the agent's `Skill` tool can then list all bundled Beidou skills.
+
+### 3. Per-agent-spawn system prompt assembly (`build_system_prompt`)
+
+```python
+build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str
+```
+
+Assembles the four-section system prompt. Substitution of `{role}`,
+`{role_description}`, `{team_name}`, `{workspace_path}` happens here, in
+memory only, never on disk.
+
+#### System prompt structure (section order locked)
+
+Putting the skill body **first** is required for cross-agent prompt cache
+reuse: two agents using the same skill share a common byte-prefix (the multi-KB
+skill block), while per-agent identity (IDENTITY block) comes after.
 
 ```
-load_skill(path, spawn_ctx) -> ClaudeAgentOptions
+[ASSIGNED SKILL — authoritative instructions for your role]
+──── BEGIN SKILL: {skill_name} v{skill_version} ────
+{skill_body_with_substitutions}
+──── END SKILL ────
+
+[IDENTITY]
+You are {role} in team {team_name}.
+Workspace: {workspace_path}.
+Leader: {leader_id}.
+
+[PERSISTENT-AGENT CONTRACT]
+(verbatim — see agent-runtime.md)
+
+[OTHER SKILLS]
+Other available skills are listed via the `Skill` tool. You MAY invoke them
+when they would genuinely improve the work, but the [ASSIGNED SKILL] above is
+authoritative for your role and approach.
 ```
 
-Steps:
+### 4. SDK builtin allowlist extraction (`sdk_builtins_allowlist`)
 
-1. Read the file. Split frontmatter (YAML between two `---` lines) from body.
-2. Parse frontmatter with `yaml.safe_load`. Validate required fields.
-3. Apply template substitutions to the body using `spawn_ctx` fields
-   (`role`, `role_description`, `team_name`, `workspace_path`).
-4. Translate `allowed-tools`:
-   - Each entry `X` becomes `mcp__beidou__X` in `allowed_tools`.
-   - If `skills` is non-empty, each entry `Y` additionally becomes
-     `mcp__beidou__invoke_Y` in `allowed_tools`.
-5. Build the per-spawn MCP server (see `architecture.md`) with the subset of
-   primitives listed in `allowed-tools`, plus the `invoke_<name>` tools for
-   nested skills.
-6. Return:
-   ```
-   ClaudeAgentOptions(
-       system_prompt=<substituted body>,
-       mcp_servers={"beidou": server},
-       allowed_tools=<list from step 4>,
-       permission_mode="bypassPermissions",
-       ...
-   )
-   ```
+```python
+sdk_builtins_allowlist(allowed_tools: list[str]) -> list[str]
+```
+
+Given the raw `allowed-tools` list from a SKILL.md frontmatter, returns only
+the entries that map to SDK built-in tool names (`Bash`, `Read`, `Write`,
+`WebFetch`, `WebSearch`). Needed because `skills="all"` does NOT auto-add SDK
+builtins — those must be passed explicitly in `allowed_tools`.
 
 ## Validation rules
 

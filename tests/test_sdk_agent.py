@@ -45,6 +45,11 @@ class FakeOrchestrator:
         # test does (report_status only).
         self.inboxes: dict[str, asyncio.Queue] = {}
         self.statuses: list[tuple[str, str, Optional[str]]] = []
+        # Assistant text tracking (mirrors orchestrator.py).
+        self._assistant_text_by_tool: dict[str, dict[str, str]] = {}
+        self._most_recent_assistant_text: dict[str, str] = {}
+        # Delivery tracking for hook tests.
+        self.delivered: list[tuple[str, str, str, str]] = []  # (from, to, body, kind)
 
     # --- Events / termination --------------------------------------------
     def emit_event(self, name: str, payload: dict) -> None:
@@ -113,6 +118,24 @@ class FakeOrchestrator:
 
     def record_status(self, caller_id, state, detail):
         self.statuses.append((caller_id, state, detail))
+
+    # --- Assistant text tracking -----------------------------------------
+    def record_assistant_text(self, caller_id: str, text: str, tool_use_ids: list[str]) -> None:
+        if text:
+            self._most_recent_assistant_text[caller_id] = text
+            agent_map = self._assistant_text_by_tool.setdefault(caller_id, {})
+            for tid in tool_use_ids:
+                agent_map[tid] = text
+
+    def assistant_text_for_turn(self, caller_id: str, tool_use_id: str) -> Optional[str]:
+        agent_map = self._assistant_text_by_tool.get(caller_id, {})
+        text = agent_map.get(tool_use_id)
+        if text is not None:
+            return text
+        return self._most_recent_assistant_text.get(caller_id)
+
+    def deliver_message(self, from_id: str, to_id: str, body: str, kind: str = "message") -> None:
+        self.delivered.append((from_id, to_id, body, kind))
 
 
 # ---------------------------------------------------------------------------
@@ -327,11 +350,17 @@ def test_mechanical_happy_path_terminated(tmp_path, monkeypatch):
     assert completed["terminated"] is True
     assert completed["stop_reason"] == "end_turn"
 
-    # Options were assembled with the skill's namespaced allowed_tools and empty setting_sources.
+    # Options were assembled with the new four-section system prompt and setting_sources.
     opts = captured[0]["options"]
     assert "mcp__beidou__report_status" in opts.allowed_tools
-    assert opts.setting_sources == []
-    # system_prompt had template substitution applied.
+    assert opts.setting_sources == ["user", "project"]
+    assert opts.skills == "all"
+    # system_prompt is the new four-section structure: skill body first.
+    assert "[ASSIGNED SKILL" in opts.system_prompt
+    assert "[IDENTITY]" in opts.system_prompt
+    assert "[PERSISTENT-AGENT CONTRACT]" in opts.system_prompt
+    assert "[OTHER SKILLS]" in opts.system_prompt
+    # Template substitution was applied inside the skill body.
     assert "Role: tester" in opts.system_prompt
 
 
@@ -618,6 +647,102 @@ def test_tool_result_without_prior_tool_called_emits_none_duration(tmp_path, mon
     assert tr["tool_use_id"] == "toolu_orphan"
     assert tr["duration_ms"] is None
     assert tr["is_error"] is True
+
+
+# ---------------------------------------------------------------------------
+# Assistant text per-turn recording tests (drain loop binding for hook).
+# ---------------------------------------------------------------------------
+
+
+def test_drain_loop_records_assistant_text_bound_to_tool_use_id(tmp_path, monkeypatch):
+    """The drain loop calls record_assistant_text with text + tool_use_ids from the same turn.
+
+    Critically, the recording must happen IMMEDIATELY after processing the AssistantMessage
+    (not on the next message_id transition), so that a PostToolUse hook firing between
+    message yields can read the bound text. This test verifies the timing by checking the
+    text is available before any subsequent messages are processed.
+    """
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_txt")
+
+    # Capture: after the first AssistantMessage is yielded and before any other
+    # message, the text must be in the orchestrator (simulates the hook firing
+    # between yields). We verify this via an interleaved check in the fake query.
+    text_after_first_msg: list[Optional[str]] = []
+
+    async def recording_fake_query(*, prompt, options):
+        # Yield the AssistantMessage with text + tool_use.
+        yield AssistantMessage(
+            content=[
+                TextBlock("I finished the work."),
+                ToolUseBlock(name="mcp__beidou__report_status", input={"state": "done"}, id="toolu_report"),
+            ],
+            message_id="msg_done",
+            usage={"input_tokens": 5, "output_tokens": 3},
+            stop_reason="tool_use",
+        )
+        # At this point, the drain loop has processed the AssistantMessage.
+        # A real hook would fire here. Simulate by reading the text immediately.
+        text_after_first_msg.append(
+            orch.assistant_text_for_turn("ag_txt", "toolu_report")
+        )
+        yield UserMessage(content=[ToolResultBlock(tool_use_id="toolu_report")])
+        yield ResultMessage(total_cost_usd=0.001, usage={}, num_turns=1)
+
+    monkeypatch.setattr(sdk_agent, "query", recording_fake_query)
+
+    spec = SpawnSpec(
+        caller_id="ag_txt",
+        skill_name="fake_skill",
+        skill_root=skill_root,
+        task="t",
+    )
+    asyncio.run(run_agent(orch, spec))
+
+    # Verify the text was available immediately after the AssistantMessage yield
+    # (before any subsequent messages — this is the hook firing window).
+    assert text_after_first_msg, "Interleaved check was not reached"
+    assert text_after_first_msg[0] is not None, (
+        "record_assistant_text was not called before the next message yield — "
+        "PostToolUse hook would have seen an empty turn."
+    )
+    assert "I finished the work." in text_after_first_msg[0]
+
+    # Also verify the final state after run_agent completes.
+    text = orch.assistant_text_for_turn("ag_txt", "toolu_report")
+    assert text is not None
+    assert "I finished the work." in text
+
+
+def test_drain_loop_most_recent_fallback(tmp_path, monkeypatch):
+    """When exact binding not found, assistant_text_for_turn returns most recent text."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_fallback")
+
+    messages = [
+        AssistantMessage(
+            content=[TextBlock("Some prior summary.")],
+            message_id="msg_prior",
+            usage={"input_tokens": 3, "output_tokens": 2},
+            stop_reason="end_turn",
+        ),
+        ResultMessage(total_cost_usd=0.001, usage={}, num_turns=1),
+    ]
+    _install_fake_query(monkeypatch, messages)
+
+    spec = SpawnSpec(
+        caller_id="ag_fallback",
+        skill_name="fake_skill",
+        skill_root=skill_root,
+        task="t",
+    )
+    asyncio.run(run_agent(orch, spec))
+
+    # No specific tool_use_id was recorded; fallback to most-recent text.
+    text = orch.assistant_text_for_turn("ag_fallback", "toolu_nonexistent")
+    assert text == "Some prior summary."
 
 
 # ---------------------------------------------------------------------------

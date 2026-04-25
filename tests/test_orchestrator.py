@@ -612,3 +612,225 @@ def test_peer_snapshot_scopes(tmp_path):
 
     allp = {p.agent_id for p in o.peer_snapshot("A", "all")}
     assert allp == {"R", "B", "C"}
+
+
+# ---------------------------------------------------------------------------
+# deliver_message
+# ---------------------------------------------------------------------------
+
+
+def test_deliver_message_puts_to_inbox_and_emits_event(tmp_path):
+    """deliver_message lands in recipient's inbox and emits a message event."""
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "sender", ROOT_TEAM_ID)
+    _seed_agent(o, "recipient", ROOT_TEAM_ID)
+
+    async def body():
+        o.deliver_message(from_id="sender", to_id="recipient", body="hello", kind="completion_report")
+        await asyncio.sleep(0.05)  # let the async delivery task run
+
+        # Verify the message is in the inbox.
+        msgs = await o.inbox_drain("recipient")
+        assert len(msgs) == 1
+        assert msgs[0].content == "hello"
+        assert msgs[0].from_id == "sender"
+        assert msgs[0].kind == "completion_report"
+
+        # Verify a message event was emitted.
+        names = [c[0] for c in emitter.calls]
+        assert "message" in names
+
+    run(body())
+
+
+def test_deliver_message_unknown_recipient_is_silent(tmp_path):
+    """deliver_message to an unknown or sentinel recipient silently no-ops."""
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "sender", ROOT_TEAM_ID)
+
+    # Should not raise; USER_SENTINEL is not a registered agent.
+    o.deliver_message(from_id="sender", to_id=USER_SENTINEL, body="hi", kind="completion_report")
+    # No events emitted for this no-op.
+
+
+# ---------------------------------------------------------------------------
+# assistant_text_for_turn
+# ---------------------------------------------------------------------------
+
+
+def test_assistant_text_for_turn_exact_binding(tmp_path):
+    """assistant_text_for_turn returns text bound to the exact tool_use_id."""
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "ag1", ROOT_TEAM_ID)
+
+    # Populate via record_assistant_text (the public method sdk_agent uses).
+    o.record_assistant_text("ag1", "I finished the task.", ["toolu_abc"])
+    result = o.assistant_text_for_turn("ag1", "toolu_abc")
+    assert result == "I finished the task."
+
+
+def test_assistant_text_for_turn_fallback_to_most_recent(tmp_path):
+    """Falls back to most recent when no exact tool_use_id match."""
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "ag2", ROOT_TEAM_ID)
+
+    # Record text for a prior turn with a different tool_use_id.
+    o.record_assistant_text("ag2", "Prior turn summary.", ["toolu_prior"])
+    # Now ask for a tool_use_id that was never bound.
+    result = o.assistant_text_for_turn("ag2", "toolu_unknown")
+    assert result == "Prior turn summary."  # fallback
+
+
+def test_assistant_text_for_turn_returns_none_when_no_data(tmp_path):
+    """Returns None if no text has been recorded for the agent."""
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "ag3", ROOT_TEAM_ID)
+
+    assert o.assistant_text_for_turn("ag3", "toolu_xyz") is None
+
+
+# ---------------------------------------------------------------------------
+# build_hooks callback (unit test of hook branches)
+# ---------------------------------------------------------------------------
+
+
+def test_hook_success_path_delivers_message(tmp_path):
+    """Hook on_report_status delivers to leader when all guards pass."""
+    from beidou.sdk_agent import build_hooks
+
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader_ag", ROOT_TEAM_ID)
+    _seed_agent(o, "child_ag", ROOT_TEAM_ID)
+
+    # Pre-record assistant text bound to the report_status tool_use_id.
+    o.record_assistant_text("child_ag", "I completed the work.", ["toolu_done"])
+
+    hooks_dict = build_hooks(o, "child_ag", "leader_ag")
+    matchers = hooks_dict["PostToolUse"]
+    callback = matchers[0].hooks[0]
+
+    input_data = {
+        "tool_name": "mcp__beidou__report_status",
+        "tool_input": {"state": "done"},
+        "tool_response": {"is_error": False},
+    }
+
+    async def body():
+        result = await callback(input_data, "toolu_done", None)
+        assert result == {}
+
+        await asyncio.sleep(0.05)
+        # Verify completion.reported was emitted.
+        event_names = [c[0] for c in emitter.calls]
+        assert "completion.reported" in event_names
+
+    run(body())
+
+
+def test_hook_wrong_state_is_noop(tmp_path):
+    """Hook does nothing when state != 'done'."""
+    from beidou.sdk_agent import build_hooks
+
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader2", ROOT_TEAM_ID)
+    _seed_agent(o, "child2", ROOT_TEAM_ID)
+
+    hooks_dict = build_hooks(o, "child2", "leader2")
+    callback = hooks_dict["PostToolUse"][0].hooks[0]
+
+    input_data = {
+        "tool_name": "mcp__beidou__report_status",
+        "tool_input": {"state": "working"},
+        "tool_response": {},
+    }
+    run(callback(input_data, "toolu_1", None))
+    # No events should have been emitted.
+    assert not any(c[0].startswith("completion") for c in emitter.calls)
+
+
+def test_hook_is_error_is_skipped(tmp_path):
+    """Hook skips delivery when is_error=True on the tool response."""
+    from beidou.sdk_agent import build_hooks
+
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader3", ROOT_TEAM_ID)
+    _seed_agent(o, "child3", ROOT_TEAM_ID)
+
+    hooks_dict = build_hooks(o, "child3", "leader3")
+    callback = hooks_dict["PostToolUse"][0].hooks[0]
+
+    input_data = {
+        "tool_name": "mcp__beidou__report_status",
+        "tool_input": {"state": "done"},
+        "tool_response": {"is_error": True},
+    }
+    run(callback(input_data, "toolu_err", None))
+    # No completion events.
+    assert not any(c[0].startswith("completion") for c in emitter.calls)
+
+
+def test_hook_empty_summary_emits_completion_empty(tmp_path):
+    """Hook emits completion.empty when no summary text is available."""
+    from beidou.sdk_agent import build_hooks
+
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader4", ROOT_TEAM_ID)
+    _seed_agent(o, "child4", ROOT_TEAM_ID)
+
+    # No assistant text recorded — assistant_text_for_turn returns None.
+    hooks_dict = build_hooks(o, "child4", "leader4")
+    callback = hooks_dict["PostToolUse"][0].hooks[0]
+
+    input_data = {
+        "tool_name": "mcp__beidou__report_status",
+        "tool_input": {"state": "done"},
+        "tool_response": {},
+    }
+
+    async def body():
+        await callback(input_data, "toolu_empty", None)
+        await asyncio.sleep(0.05)
+        event_names = [c[0] for c in emitter.calls]
+        assert "completion.empty" in event_names
+
+    run(body())
+
+
+def test_hook_root_sentinel_emits_completion_empty(tmp_path):
+    """Hook emits completion.empty with root_no_leader for the root agent."""
+    from beidou.sdk_agent import build_hooks
+    from beidou.orchestrator import USER_SENTINEL
+
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "root_ag", ROOT_TEAM_ID)
+
+    o.record_assistant_text("root_ag", "Root finished.", ["toolu_root"])
+    hooks_dict = build_hooks(o, "root_ag", USER_SENTINEL)
+    callback = hooks_dict["PostToolUse"][0].hooks[0]
+
+    input_data = {
+        "tool_name": "mcp__beidou__report_status",
+        "tool_input": {"state": "done"},
+        "tool_response": {},
+    }
+
+    async def body():
+        await callback(input_data, "toolu_root", None)
+        await asyncio.sleep(0.05)
+        empty_events = [c for c in emitter.calls if c[0] == "completion.empty"]
+        assert empty_events, "Expected completion.empty for root agent"
+        # Verify reason is root_no_leader.
+        reasons = [c[3].get("reason") for c in empty_events]
+        assert "root_no_leader" in reasons
+
+    run(body())

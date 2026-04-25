@@ -34,10 +34,47 @@ ONE termination privilege: it can terminate the **root agent** on behalf of
 the user. Non-root termination is exclusively leader-driven via
 `terminate_child`.
 
-## 3. Prompt-side contract
+## 3. System prompt structure
 
-The system prompt delivered to each agent (from SKILL.md body, see
-`skills.md`) MUST include the following constraints:
+The `system_prompt` delivered to each agent is assembled once at spawn time by
+`build_system_prompt(skill, spawn_ctx)` in `beidou/skills/loader.py`. It is
+the same string on every turn (Anthropic prompt caching applies — full hit
+on turn 2+).
+
+**Section order (locked):**
+
+1. `[ASSIGNED SKILL]` — skill body with `{role}` / `{role_description}` /
+   `{team_name}` / `{workspace_path}` substituted. Goes first so agents
+   sharing the same skill share a cache prefix.
+2. `[IDENTITY]` — agent role, team name, workspace path, and leader id.
+3. `[PERSISTENT-AGENT CONTRACT]` — verbatim persistent-agent rules.
+4. `[OTHER SKILLS]` — note that the `Skill` tool lists other available skills.
+
+The per-turn `prompt=` argument carries only the task (first turn) or
+incoming leader/peer messages (subsequent turns). Skill instructions never
+appear in the user message.
+
+### Completion reporting
+
+A `PostToolUse` SDK hook fires when an agent calls
+`mcp__beidou__report_status(state="done")`. The hook reads the agent's most
+recent assistant text from that same turn (bound by `tool_use_id`) and
+delivers it to the leader's inbox as a `completion_report` message. This
+emits a `completion.reported` event.
+
+**Critical:** agents MUST emit a final summary assistant message **before**
+calling `report_status(state="done")`. The hook has no second chance — if the
+turn carries no assistant text, a `completion.empty` event is emitted instead
+and the leader receives no completion report.
+
+- Hook does NOT fire for the root agent (leader is the user sentinel);
+  `completion.empty` with `reason=root_no_leader` is emitted instead.
+- Hook is skipped if the `report_status` call itself errored (`is_error=True`).
+
+## 4. Prompt-side contract rules
+
+The `[PERSISTENT-AGENT CONTRACT]` section of the system prompt MUST include
+the following constraints:
 
 1. **Do not end your turn without a tool call.** If the SDK framework would
    otherwise emit `stop_reason="end_turn"` with no tool call, call
@@ -53,7 +90,7 @@ The system prompt delivered to each agent (from SKILL.md body, see
 Skill authors MUST NOT override these clauses. They can add role-specific
 content but may not weaken the lifecycle contract.
 
-## 4. Orchestrator recovery policy (contract violations)
+## 5. Orchestrator recovery policy (contract violations)
 
 The SDK hands control back whenever the model emits `stop_reason="end_turn"`.
 Beidou cannot prevent that from Python - it can only react.
@@ -77,7 +114,7 @@ NOT first consume a terminate sentinel:
 If the root agent is the violator, escalation goes to Beidou's user gateway
 (same mechanism as `ask_user`), because the root has no leader.
 
-## 5. The one allowed end_turn path
+## 6. The one allowed end_turn path
 
 An agent MAY end its turn if and only if:
 
@@ -87,9 +124,9 @@ An agent MAY end its turn if and only if:
    member and received final acks, AND
 3. It has written a one-line final acknowledgment.
 
-Any other `end_turn` is a contract violation (section 4).
+Any other `end_turn` is a contract violation (section 5).
 
-## 6. Model-routing caveat
+## 7. Model-routing caveat
 
 `claude-agent-sdk.query(...)` shells out to the local Claude Code CLI. The
 `model=` field passed in `ClaudeAgentOptions` is therefore a **hint to the
@@ -104,7 +141,7 @@ user's local CLI routing configuration. Prototype runs observed
 - Cost figures in `ResultMessage.total_cost_usd` are computed by the SDK/CLI
   against whatever model actually ran, not necessarily the one requested.
 
-## 7. Retries, timeouts, and blocking tools
+## 8. Retries, timeouts, and blocking tools
 
 - The SDK imposes **no per-tool timeout**. Verified in
   `proto_01_long_tool.py`: blocking tool calls at 60s and 180s completed
