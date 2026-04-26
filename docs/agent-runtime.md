@@ -51,7 +51,9 @@ on turn 2+).
    (`tm_root`) used for orchestrator-internal storage; these two paths differ
    only for the root agent.
 3. `[PERSISTENT-AGENT CONTRACT]` — verbatim persistent-agent rules.
-4. `[OTHER SKILLS]` — note that the `Skill` tool lists other available skills.
+4. `[COMPLETION HANDOFF CONTRACT]` — verbatim completion handoff rules,
+   including the nudge fallback if a summary is missing.
+5. `[OTHER SKILLS]` — note that the `Skill` tool lists other available skills.
 
 The per-turn `prompt=` argument carries only the task (first turn) or
 incoming leader/peer messages (subsequent turns). Skill instructions never
@@ -65,10 +67,26 @@ recent assistant text from that same turn (bound by `tool_use_id`) and
 delivers it to the leader's inbox as a `completion_report` message. This
 emits a `completion.reported` event.
 
-**Critical:** agents MUST emit a final summary assistant message **before**
-calling `report_status(state="done")`. The hook has no second chance — if the
-turn carries no assistant text, a `completion.empty` event is emitted instead
-and the leader receives no completion report.
+**Detail fallback:** if the assistant text is empty, the hook reads the
+`detail` parameter from the `report_status` tool call input. If `detail` is
+present and non-empty, it is used as the completion report body. This covers
+model providers that cannot emit a preceding text message after a tool call.
+
+**Harness nudge checkpoint:** after all tool results in a given drain cycle
+are processed, a checkpoint runs. If the agent has called
+`report_status(state="done")` but both the assistant text AND `detail` are
+empty or missing, the runtime injects a nudge message into the agent's inbox:
+
+> "You called report_status(state=\"done\") without a summary. Please emit a
+> final assistant message summarizing your work, then call
+> report_status(state=\"done\", detail=\"...\") again."
+
+The nudge is injected **at most once per agent session** to prevent loops.
+When a nudge is injected, a `completion.nudged` event is emitted.
+
+The completion handoff rules are also present in the system prompt as the
+`[COMPLETION HANDOFF CONTRACT]` block, appended after the persistent-agent
+contract (see section order above).
 
 - Hook does NOT fire for the root agent (leader is the user sentinel);
   `completion.empty` with `reason=root_no_leader` is emitted instead.

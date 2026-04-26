@@ -289,6 +289,10 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
         # Fallback: most recent assistant text for this agent (from any prior turn).
         summary = orch.assistant_text_for_turn(caller_id, tool_use_id or "")
         if not summary or not summary.strip():
+            # Fall back to the detail argument from the report_status call.
+            tool_input = input_data.get("tool_input") or {}
+            summary = tool_input.get("detail")
+        if not summary or not summary.strip():
             orch.emit_event(
                 "completion.empty",
                 {
@@ -465,6 +469,12 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     # tool_use_ids in that message.
     current_turn_text_parts: list[str] = []
     current_turn_tool_ids: list[str] = []
+    # Per-turn tool name/input tracking for the harness checkpoint.
+    _turn_tool_info: dict[str, tuple[str, dict]] = {}
+    # Per-turn tool result error tracking for the harness checkpoint.
+    _turn_result_info: dict[str, bool] = {}
+    # Agents already nudged by the harness (persists across turns to prevent duplicates).
+    _nudged_agents: set[str] = set()
 
     # Build the streaming-input generator that parks the agent between turns
     # on its per-agent queue. The generator owns terminate detection and sets
@@ -560,6 +570,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                     final_text_parts.clear()
                     current_turn_text_parts.clear()
                     current_turn_tool_ids.clear()
+                    _turn_tool_info.clear()
+                    _turn_result_info.clear()
                     last_message_id = mid
 
                 for block in (getattr(msg, "content", None) or []):
@@ -574,6 +586,10 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                         if tool_use_id:
                             current_turn_tool_ids.append(tool_use_id)
                             pending_tool_uses[tool_use_id] = time.monotonic()
+                            _turn_tool_info[tool_use_id] = (
+                                getattr(block, "name", ""),
+                                getattr(block, "input", {}),
+                            )
                             orch.emit_event(
                                 "tool_called",
                                 {
@@ -625,6 +641,47 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                                 "is_error": getattr(block, "is_error", False) or False,
                             },
                         )
+                        _turn_result_info[tool_use_id] = getattr(block, "is_error", False) or False
+
+                # --- HARNESS CHECKPOINT ---
+                # After all tool results are recorded, run the completion handoff
+                # repair check. Only runs when harness is installed and tool calls
+                # were made this turn.
+                if pending_tool_uses or current_turn_tool_ids:
+                    try:
+                        from beidou.harness import repair_completion_handoff
+                    except ImportError:
+                        pass
+                    else:
+                        turn_state = {
+                            "message_id": last_message_id,
+                            "text": "".join(current_turn_text_parts),
+                            "tools": [
+                                {
+                                    "name": name,
+                                    "input": inp,
+                                    "tool_use_id": tid,
+                                }
+                                for tid, (name, inp) in _turn_tool_info.items()
+                            ],
+                        }
+                        nudge = repair_completion_handoff(
+                            orch, spec.caller_id, turn_state, _nudged_agents
+                        )
+                        if nudge:
+                            orch.deliver_message(
+                                from_id="__harness__",
+                                to_id=spec.caller_id,
+                                body=nudge,
+                                kind="nudge",
+                            )
+                            orch.emit_event(
+                                "completion.nudged",
+                                {
+                                    "caller_id": spec.caller_id,
+                                    "ts": time.time(),
+                                },
+                            )
 
             elif cls == "ResultMessage":
                 result_data = {

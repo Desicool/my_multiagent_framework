@@ -61,8 +61,10 @@ When you have finished your task and are ready to mark yourself done:
    accomplished. Be specific — list the files you wrote, the conclusions
    you reached, the next-step pointers your leader needs. Beidou's runtime
    forwards exactly that text to your leader as the completion report.
-   An empty or terse final message means an empty handoff. There is no
-   second chance.
+   An empty or terse final message means an empty handoff.
+   If you cannot emit a preceding text message (some model providers
+   don't), include your summary in the `detail` parameter of
+   report_status instead.
 2. **Then** call `mcp__beidou__report_status(state="done", detail=<short status>)`.
 
 `send_message` is for mid-task progress updates only. It is NOT the

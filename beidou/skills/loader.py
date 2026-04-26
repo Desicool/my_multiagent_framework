@@ -422,6 +422,18 @@ mechanism.
 Inter-agent communication uses Beidou primitives only — never shell, files,
 or environment variables to talk to other agents."""
 
+_COMPLETION_HANDOFF_BLOCK = """\
+[COMPLETION HANDOFF CONTRACT]
+When your task is complete:
+1. Emit a final assistant message summarizing what you accomplished.
+   List files created, decisions made, and next-step pointers your
+   leader needs.
+2. Then call report_status(state="done", detail="brief summary").
+
+If you call report_status(state="done") without providing a summary,
+Beidou will ask you to provide one before your completion is forwarded
+to your leader."""
+
 _OTHER_SKILLS_BLOCK = """\
 [OTHER SKILLS]
 Other available skills are listed via the `Skill` tool. You MAY invoke them
@@ -430,7 +442,7 @@ authoritative for your role and approach."""
 
 
 def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
-    """Assemble the four-section system prompt with the skill body first.
+    """Assemble the five-section system prompt with the skill body first.
 
     Putting the skill body first is required for cross-agent prompt cache reuse:
     two agents using the same skill share a common cache prefix (the multi-KB
@@ -445,7 +457,8 @@ def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
         1. [ASSIGNED SKILL] — skill body with {role}/{role_description}/{team_name}/{workspace_path}/{project_workspace_path} substituted
         2. [IDENTITY] — per-agent identity filled from spawn_ctx
         3. [PERSISTENT-AGENT CONTRACT] — verbatim, no substitution
-        4. [OTHER SKILLS] — verbatim, no substitution
+        4. [COMPLETION HANDOFF CONTRACT] — verbatim, no substitution
+        5. [OTHER SKILLS] — verbatim, no substitution
     """
     # -- Section 1: skill body with substitutions (reuse existing helper) --
     skill_body = render_system_prompt(
@@ -481,9 +494,15 @@ def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
         f"Leader: {leader_id}."
     )
 
-    # -- Sections 3 and 4: verbatim blocks --
+    # -- Sections 3, 4, and 5: verbatim blocks --
     return "\n\n".join(
-        [skill_section, identity_section, _CONTRACT_BLOCK, _OTHER_SKILLS_BLOCK]
+        [
+            skill_section,
+            identity_section,
+            _CONTRACT_BLOCK,
+            _COMPLETION_HANDOFF_BLOCK,
+            _OTHER_SKILLS_BLOCK,
+        ]
     )
 
 
