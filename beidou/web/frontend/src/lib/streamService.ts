@@ -2,7 +2,7 @@ import { openTaskStream, type StreamHandle } from './ws';
 import { applyEvent, bumpCursor, resetEvents, events } from '../stores/events.svelte';
 import { setStatus, setCursor, setAttempts } from '../stores/connection.svelte';
 import { triggerRepoll } from '../stores/questions.svelte';
-import { getTaskSnapshot } from './api';
+import { getTaskSnapshot, fetchEvents } from './api';
 import type { BeidouEvent } from './types';
 
 let handle: StreamHandle | null = null;
@@ -62,21 +62,39 @@ export async function openTask(taskId: string): Promise<void> {
       if (a.ended_at) {
         applyEvent({ type: 'agent_completed', ts: a.ended_at, agent_id: a.agent_id } as BeidouEvent);
       }
-      const stub = events.agentsById[a.agent_id];
-      if (stub) {
-        stub.tokens_in = a.tokens_in ?? 0;
-        stub.tokens_out = a.tokens_out ?? 0;
-        stub.llm_calls = a.llm_calls ?? 0;
-        stub.tool_calls = a.tool_calls ?? 0;
-        stub.cost_usd = a.cost_usd ?? 0;
-      }
+      // Per-agent stats (tokens_in, tokens_out, etc.) and global stats are
+      // intentionally NOT pre-populated here. The backfill replay below will
+      // re-derive them from turn.usage / run.cost events, which is the single
+      // source of truth. Pre-populating and then replaying would double-count.
     }
-    if (snap.stats?.total_cost_usd) events.stats.total_cost_usd = snap.stats.total_cost_usd;
-    if (snap.stats?.total_tokens) events.stats.total_tokens = snap.stats.total_tokens;
     setCursor(initialCursor);
   } catch (e) {
     console.error('snapshot fetch failed', e);
   }
+
+  // Backfill historical events so a refreshed page shows the complete history.
+  // fetchEvents uses strict ts > since, so iterating with the previous cursor
+  // guarantees no duplicate, no skipped event.
+  setStatus('replaying');
+  let backfillCursor = 0;
+  let safetyBudget = 1000; // hard ceiling on pagination iterations
+  try {
+    while (safetyBudget-- > 0) {
+      try {
+        const { events: batch, cursor } = await fetchEvents(taskId, backfillCursor, 500);
+        for (const ev of batch) applyEvent(ev);
+        if (batch.length === 0 || cursor <= backfillCursor) break;
+        backfillCursor = cursor;
+      } catch (fetchErr) {
+        console.error('backfill fetch error', fetchErr);
+        break;
+      }
+    }
+  } catch (_) {
+    // Belt-and-suspenders: ensure we always proceed to WS open.
+  }
+  initialCursor = Math.max(initialCursor, backfillCursor);
+  setCursor(initialCursor);
 
   handle = openTaskStream(taskId, initialCursor, {
     onEvent(ev) {

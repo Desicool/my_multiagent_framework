@@ -240,7 +240,7 @@ export type AgentState = {
   tool_calls: number;
   cost_usd: number;
   _stream: StreamItem[];
-  _pendingTools: Map<string, ToolStreamItem>;     // never trimmed; see plan §4 Bootstrap
+  _pendingTools: Map<string, number>;     // maps tool_use_id → _stream index; entries evicted when stream is trimmed past their index
   _seenTurn: Set<string>;       // dedup key: agent_id|message_id
   _seenTool: Set<string>;       // dedup key: tool_use_id (for tool_called/tool_result pair)
 };

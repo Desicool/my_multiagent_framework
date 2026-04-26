@@ -28,11 +28,20 @@ function ensureAgent(state: ReducerState, agent_id: string): AgentState {
 function pushStream(agent: AgentState, item: StreamItem): void {
   agent._stream.push(item);
   if (agent._stream.length > STREAM_CAP) {
-    // Drop from head. _pendingTools survives independently so a tool
-    // dropped from _stream can still be patched (and re-rendered as a
-    // resurrected card if the consumer cares; default behavior is the
-    // map keeps the data, the visible stream loses the head item).
-    agent._stream.splice(0, agent._stream.length - STREAM_CAP);
+    // Drop from head. _pendingTools stores _stream indices, so we must
+    // adjust (decrement) all stored indices by the number of dropped items.
+    // Entries whose index becomes negative had their tool item trimmed away;
+    // patching them is no longer meaningful so we evict those entries.
+    const dropCount = agent._stream.length - STREAM_CAP;
+    for (const [id, oldIdx] of agent._pendingTools) {
+      const newIdx = oldIdx - dropCount;
+      if (newIdx < 0) {
+        agent._pendingTools.delete(id);
+      } else {
+        agent._pendingTools.set(id, newIdx);
+      }
+    }
+    agent._stream.splice(0, dropCount);
   }
 }
 
@@ -134,8 +143,10 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
       if (a._seenTool.has(e.tool_use_id)) break;  // dedup if replayed
       a._seenTool.add(e.tool_use_id);
       const item = makeToolPending(e);
-      a._pendingTools.set(e.tool_use_id, item);
       pushStream(a, item);
+      // Store the stream index (after push, it's the last element).
+      const idx = a._stream.length - 1;
+      a._pendingTools.set(e.tool_use_id, idx);
       a.tool_calls += 1;
       pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_start', label: `→ ${e.name}` });
       break;
@@ -144,17 +155,22 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
     case 'tool_result': {
       const e = ev as Extract<BeidouEvent, { type: 'tool_result' }>;
       const a = ensureAgent(state, e.caller_id);
-      const item = a._pendingTools.get(e.tool_use_id);
-      if (item) {
-        // Patch in place — the reference is shared with _stream (if not trimmed).
-        item.duration_ms = e.duration_ms;
-        item.is_error = e.is_error ?? false;
-        a._pendingTools.delete(e.tool_use_id);
-        if (e.is_error) {
-          pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_error', label: `✗ ${item.name} (${e.duration_ms ?? 0}ms)` });
+      const idx = a._pendingTools.get(e.tool_use_id);
+      if (idx !== undefined) {
+        const item = a._stream[idx];
+        if (item && item.kind === 'tool') {
+          // Replace the array element with a new object so the Svelte 5 $state
+          // proxy set-trap fires and subscribers (e.g. ToolCard derived) are
+          // notified. Mutating the old item in-place would bypass the proxy.
+          a._stream[idx] = { ...item, duration_ms: e.duration_ms, is_error: e.is_error ?? false };
+          if (e.is_error) {
+            pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_error', label: `✗ ${item.name} (${e.duration_ms ?? 0}ms)` });
+          }
         }
+        a._pendingTools.delete(e.tool_use_id);
       }
-      // If item not in _pendingTools (e.g. replay started after the tool_called),
+      // If idx not in _pendingTools (e.g. replay started after the tool_called,
+      // or the entry was evicted because _stream was trimmed past it),
       // we silently drop the patch — the stream item won't exist either.
       break;
     }

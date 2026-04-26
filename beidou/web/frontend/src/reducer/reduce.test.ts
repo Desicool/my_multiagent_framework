@@ -69,24 +69,65 @@ describe('send_message fan-out', () => {
   });
 });
 
-describe('tool span survives _stream trimming', () => {
-  it('tool_called → 600 texts → tool_result: patches via _pendingTools', () => {
+describe('tool span: index-based patching', () => {
+  it('tool_called → tool_result (stream not trimmed): patches via stream index, creates new object', () => {
     applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 't1', name: 'Bash' });
+    // Capture the original stream item reference
+    const before = s.agentsById.A._stream[0];
+    expect(before.kind).toBe('tool');
+    if (before.kind === 'tool') {
+      expect(before.duration_ms).toBeNull();
+    }
+    // _pendingTools stores an index, not an item reference
+    expect(s.agentsById.A._pendingTools.get('t1')).toBe(0);
+    // Apply tool_result
+    applyEvent(s, { type: 'tool_result', ts: 2, caller_id: 'A', tool_use_id: 't1', duration_ms: 42, is_error: false });
+    const after = s.agentsById.A._stream[0];
+    // The stream item at the same index must be a NEW object (triggers $state proxy set-trap)
+    expect(Object.is(before, after)).toBe(false);
+    // The new object has the patched values
+    expect(after.kind).toBe('tool');
+    if (after.kind === 'tool') {
+      expect(after.duration_ms).toBe(42);
+      expect(after.is_error).toBe(false);
+    }
+    // _pendingTools entry is removed after patching
+    expect(s.agentsById.A._pendingTools.has('t1')).toBe(false);
+  });
+
+  it('tool_called → 600 texts → _pendingTools entry is evicted (stream item trimmed away)', () => {
+    applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 't1', name: 'Bash' });
+    // Push enough text items to trim the tool item off the head
     for (let i = 0; i < 600; i++) {
       applyEvent(s, { type: 'assistant_text', ts: 2 + i, caller_id: 'A', message_id: 'm' + i, text: 'x' });
     }
     // Stream should be trimmed to STREAM_CAP
     expect(s.agentsById.A._stream.length).toBe(STREAM_CAP);
-    // _pendingTools must still have the tool item
-    expect(s.agentsById.A._pendingTools.has('t1')).toBe(true);
-    const pending = s.agentsById.A._pendingTools.get('t1')!;
-    expect(pending.duration_ms).toBeNull();
-    // Apply tool_result
+    // _pendingTools entry must have been evicted because the index went negative
+    expect(s.agentsById.A._pendingTools.has('t1')).toBe(false);
+    // Apply tool_result — must be a no-op (no throw)
     applyEvent(s, { type: 'tool_result', ts: 700, caller_id: 'A', tool_use_id: 't1', duration_ms: 42, is_error: false });
-    // The patch updates the same object (reference identity)
-    expect(pending.duration_ms).toBe(42);
-    expect(pending.is_error).toBe(false);
-    // _pendingTools entry is removed after patching
+    // Stream is still STREAM_CAP; nothing added or changed by the orphaned tool_result
+    expect(s.agentsById.A._stream.length).toBe(STREAM_CAP);
+  });
+
+  it('tool_called → few texts (within cap) → tool_result: index adjusted correctly, patch fires', () => {
+    // tool_called at index 0
+    applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 't1', name: 'Bash' });
+    // Add texts that don't push the tool item out
+    for (let i = 0; i < 10; i++) {
+      applyEvent(s, { type: 'assistant_text', ts: 2 + i, caller_id: 'A', message_id: 'm' + i, text: 'x' });
+    }
+    // Stream has 11 items, tool is at index 0 (no trim happened yet)
+    expect(s.agentsById.A._stream.length).toBe(11);
+    expect(s.agentsById.A._pendingTools.get('t1')).toBe(0);
+    // Apply tool_result
+    applyEvent(s, { type: 'tool_result', ts: 20, caller_id: 'A', tool_use_id: 't1', duration_ms: 99, is_error: false });
+    const item = s.agentsById.A._stream[0];
+    expect(item.kind).toBe('tool');
+    if (item.kind === 'tool') {
+      expect(item.duration_ms).toBe(99);
+    }
     expect(s.agentsById.A._pendingTools.has('t1')).toBe(false);
   });
 
