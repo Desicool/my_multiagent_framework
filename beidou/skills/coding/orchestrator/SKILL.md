@@ -85,6 +85,15 @@ PHASE 5 — SIGN-OFF
   Call terminate_child(<qa agent_id>).
   Gate: qa_report.md must exist before checking verdict.
 
+## Ambiguity routing (mandatory)
+
+Members must escalate ambiguity. When you receive an `ask_user` escalation from a member — delivered as a peer message starting with `ambiguity:` or via your inbox — you MUST route it to the human user via your own `mcp__beidou__ask_user(question=<the member's question>, context_hint=<which member and phase this came from>)`. Rules:
+
+1. Never answer on the user's behalf. You do not know the user's intent; the user does.
+2. After receiving the user's answer, forward it verbatim to the original member via `mcp__beidou__send_message(to=<that member's agent_id>, content=<the user's answer>)`.
+3. Do not advance the phase or call `create_team` while an ambiguity escalation from a member is unresolved.
+4. If multiple members escalate concurrently, batch-ask the user (one `ask_user` call per distinct question) and forward each answer to the respective member.
+
 DELIVERY GATE
   If qa_report.md contains "APPROVED":
     Follow the Completion handoff sequence (emit final summary message, then call

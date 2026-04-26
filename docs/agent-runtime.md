@@ -33,6 +33,23 @@ ONE termination privilege: it can terminate the **root agent** on behalf of
 the user. Non-root termination is exclusively leader-driven via
 `terminate_child`.
 
+## 2.5 Disambiguation duty
+
+Every agent role-skill (orchestrator, product_manager, software_architect,
+junior_engineer, test_engineer, deployment_engineer, qa_engineer) is bound by
+the same rule: do not silently resolve a user-relevant ambiguity. If the task
+or upstream artifact leaves a binding choice unspecified — framework variant,
+build chain, language version, persistence layer, auth model, deployment
+target, file layout, test framework, or any decision the user could plausibly
+care about — the agent MUST escalate via `ask_user` (leaders) or via
+`send_message` to the leader chain (members) and BLOCK on the answer. Writing
+an artifact (`requirements.md`, `SPEC.md`, `tasks.md`, code, deploy plan, qa
+verdict) that bakes in an unverified assumption on a binding choice is a
+contract violation.
+
+The orchestrator routes member-originated `ask_user` escalations to the human
+user via its own `ask_user`. It never answers on the user's behalf.
+
 ## 3. System prompt structure
 
 The `system_prompt` delivered to each agent is assembled once at spawn time by
