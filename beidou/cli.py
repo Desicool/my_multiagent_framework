@@ -396,20 +396,55 @@ def events(
     limit: int,
 ) -> None:
     """Stream or query events."""
-    _ensure_db()
 
     if follow and task_id:
         _tail_events(task_id, as_json)
         return
 
-    from beidou.db import get_events
+    # Read events from JSONL files
+    events_dir = Path.home() / ".beidou" / "events"
+    rows: list[dict] = []
+    if task_id:
+        event_files = [events_dir / f"{task_id}.jsonl"]
+    else:
+        event_files = sorted(events_dir.glob("*.jsonl"))
 
-    rows = get_events(task_id=task_id, team_id=team_id, agent_id=agent_id, limit=limit)
+    for fp in event_files:
+        if not fp.exists():
+            continue
+        with fp.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if team_id and ev.get("team_id") != team_id:
+                    continue
+                if agent_id and ev.get("agent_id") != agent_id:
+                    continue
+                rows.append(ev)
+
+    rows.sort(key=lambda r: r.get("ts", 0), reverse=True)
+    rows = rows[:limit]
     rows.reverse()  # chronological
 
     if as_json:
         for r in rows:
             click.echo(json.dumps(r))
+        return
+
+    if not rows:
+        if task_id:
+            fp = events_dir / f"{task_id}.jsonl"
+            if fp.exists():
+                console.print("[dim]No matching events found.[/dim]")
+            else:
+                console.print(f"[red]No event log for task:[/red] {task_id}")
+        else:
+            console.print("[dim]No events found.[/dim]")
         return
 
     table = Table(show_header=True, show_lines=False)
@@ -422,15 +457,15 @@ def events(
     table.add_column("cost_usd", justify="right")
 
     for r in rows:
-        ts_str = time.strftime("%H:%M:%S", time.localtime(r["ts"])) if r["ts"] else "?"
-        dur = f"{r['duration_ms']:.0f}" if r["duration_ms"] else "—"
-        cost = f"${r['cost_usd']:.4f}" if r["cost_usd"] else "—"
+        ts_str = time.strftime("%H:%M:%S", time.localtime(r["ts"])) if r.get("ts") else "?"
+        dur = f"{r['duration_ms']:.0f}" if r.get("duration_ms") else "—"
+        cost = f"${r['cost_usd']:.4f}" if r.get("cost_usd") else "—"
         table.add_row(
             ts_str,
-            r["event_type"] or "?",
-            (r["agent_id"] or "")[-10:],
-            (r["team_id"] or "")[-10:] if r["team_id"] else "—",
-            r["tool_name"] or "—",
+            r.get("event") or "?",
+            (r.get("agent_id") or "")[-10:],
+            (r.get("team_id") or "")[-10:] if r.get("team_id") else "—",
+            r.get("tool") or "—",
             dur,
             cost,
         )

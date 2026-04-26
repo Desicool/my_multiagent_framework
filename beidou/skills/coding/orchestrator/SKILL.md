@@ -110,7 +110,8 @@ When you have finished your task and are ready to mark yourself done:
 
 `send_message` is for mid-task progress updates only. It is NOT the
 completion mechanism — do not use it as a substitute for the final
-summary message above.
+summary message above. The `to` parameter must be an `ag_xxx` agent_id
+obtained from `list_peers` — do not use a role name like `"tester"`.
 
 ## Persistent-agent lifecycle — MANDATORY
 

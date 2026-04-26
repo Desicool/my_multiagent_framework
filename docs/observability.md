@@ -141,6 +141,13 @@ End of a tool span. Emitted by the drain loop when it observes the
 tool uses in a `pending_tool_uses: dict[str, float]` map (keyed by
 `tool_use_id`, value = monotonic arrival time) to compute `duration_ms`.
 
+**Caveat — parallel tool calls:** When multiple `ToolUseBlock`s are dispatched
+in a single `AssistantMessage`, their corresponding `ToolResultBlock`s arrive
+at roughly the same time (the drain loop processes them sequentially but the
+results are produced in parallel by the model). All `duration_ms` values will
+be approximately equal, reflecting the wall-clock time until the slowest tool
+completes. Individual per-tool timing is not measurable from the drain loop.
+
 ---
 
 ### `run.cost`
@@ -253,6 +260,21 @@ Emitted on every `report_status` call.
 | `agent_id` | Context. |
 | `state` | One of: `working`, `idle`, `blocked`, `done`. |
 | `detail` | Free-text from the call. |
+
+---
+
+### `liveness_check`
+
+Data-only event. Emitted by the orchestrator when an agent calls
+`report_status(state="done")`. JSONL-only -- no SQLite rollup. Leader agents
+observe member status via `list_peers`.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock. |
+| `agent_id` | The agent reporting done. |
+| `team_id` | The agent's team. |
+| `all_done` | `true` when every member of the team is also in `done` state; `false` otherwise. |
 
 ## Sinks
 
