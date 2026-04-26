@@ -52,6 +52,7 @@ WATCHDOG_INTERVAL_S = 30.0
 REVIEW_PING_INTERVAL_S = 60.0
 IDLE_NUDGE_S = 120.0
 MAX_PINGS_BEFORE_ESCALATION = 3
+TERMINATE_GRACE_S = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,7 @@ class AgentRecord:
     contract_strikes: int = 0
     run_task: Optional[asyncio.Task] = None
     terminate_consumed: bool = False
+    terminate_grace_deadline: Optional[float] = None
     total_tokens: int = 0
     # Completion-review state (Phase 2 foundation — bd issue 8z3).
     completion_pending: bool = False
@@ -260,6 +262,11 @@ class Orchestrator:
         # Terminate sentinel: possibly emit completion.approved if pending, then
         # cascade to children.
         if msg.kind == "terminate":
+            # Stamp grace deadline idempotently — re-posting terminate does NOT
+            # extend an already-running countdown.
+            if rec.terminate_grace_deadline is None:
+                rec.terminate_grace_deadline = time.time() + TERMINATE_GRACE_S
+
             if rec.completion_pending:
                 duration_ms: Optional[float] = (
                     (time.time() - rec.completion_pending_ts) * 1000
@@ -1005,6 +1012,36 @@ class Orchestrator:
                 "liveness.nudge",
                 {"agent_id": agent_id, "team_id": rec.team_id, "nudge_count": rec.idle_nudge_count, "delta_s": delta_s, "ts": now},
             )
+
+        # ------------------------------------------------------------------
+        # Pass C — terminate-grace cancel backstop.
+        # ------------------------------------------------------------------
+        for rec in agents:
+            if rec.agent_id == USER_SENTINEL:
+                continue
+            if rec.terminate_grace_deadline is None:
+                continue
+            if now < rec.terminate_grace_deadline:
+                continue
+            if rec.terminate_consumed:
+                continue
+            if rec.run_task is None or rec.run_task.done():
+                continue
+            # Grace period expired and agent has not yet consumed its terminate
+            # sentinel — cancel the run_task to unstick it.
+            rec.run_task.cancel()
+            self.emit_event(
+                "terminate.forced",
+                {
+                    "caller_id": "watchdog",
+                    "agent_id": rec.agent_id,
+                    "team_id": rec.team_id,
+                    "reason": "watchdog_grace",
+                    "ts": now,
+                },
+            )
+            # Clear the deadline to prevent re-firing on subsequent ticks.
+            rec.terminate_grace_deadline = None
 
     async def stop_watchdog(self) -> None:
         """Signal the watchdog to stop and await its cancellation.

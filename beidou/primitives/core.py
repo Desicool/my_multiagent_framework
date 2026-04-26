@@ -393,11 +393,17 @@ async def terminate_child(
     *,
     caller_id: str,
     agent_id: str,
+    force: bool = False,
 ) -> dict:
     """Post a terminate sentinel. See docs/tool-surface.md#terminate_child.
 
     Per orchestration.md: termination authority is leader -> direct child-team
     member. Crossing team boundaries (even for ancestor leaders) is rejected.
+
+    The plain (force=False) call requires the child to have called
+    report_status(state="done") first (completion_pending=True) or to already
+    have consumed a prior terminate (terminate_consumed=True).  Pass
+    force=True to override; an audited terminate.forced event is emitted.
     """
     if not orch.agent_exists(agent_id):
         raise PrimitiveError("unknown_agent", f"no such agent: {agent_id}", agent_id=agent_id)
@@ -409,6 +415,34 @@ async def terminate_child(
             f"{caller_id} does not lead team {target_team}",
             caller_id=caller_id,
             target_team=target_team,
+        )
+
+    # Completion gate: child must have reported done (or already been
+    # terminated) unless the caller explicitly passes force=True.
+    target_rec = orch._agents.get(agent_id)
+    # Defensive (target_rec should exist if agent_exists passed) — keep simple.
+    target_pending = bool(target_rec and target_rec.completion_pending)
+    target_terminated = bool(target_rec and target_rec.terminate_consumed)
+    if not force and not target_pending and not target_terminated:
+        raise PrimitiveError(
+            "child_not_pending_review",
+            f"{agent_id} has not called report_status(state='done'). "
+            f"Wait for completion review, send a rework message, or pass force=true.",
+            agent_id=agent_id,
+            caller_id=caller_id,
+        )
+
+    # Emit audited event when force overrides the gate.
+    if force and not target_pending and not target_terminated:
+        orch.emit_event(
+            "terminate.forced",
+            {
+                "caller_id": caller_id,
+                "agent_id": agent_id,
+                "team_id": target_team,
+                "reason": "leader_force",
+                "ts": time.time(),
+            },
         )
 
     # Idempotency: tool-surface.md defines an ``already_terminating`` code.

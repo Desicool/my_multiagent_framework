@@ -901,6 +901,11 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             )
 
     except asyncio.CancelledError:
+        # When the watchdog cancels run_task (terminate-grace backstop), the
+        # drain loop exits here.  Mark terminate_consumed so was_terminated()
+        # returns True and the resume-not-terminate policy is not triggered.
+        if _drain_rec is not None and not _drain_rec.terminate_consumed:
+            _drain_rec.terminate_consumed = True
         orch.emit_event(
             "agent_completed",
             {

@@ -49,6 +49,7 @@ class _AgentRec:
     completion_pending: bool = False
     completion_pending_ts: Optional[float] = None
     last_status_detail: str = ""
+    terminate_consumed: bool = False
 
 
 @dataclass
@@ -63,6 +64,9 @@ class _TeamRec:
 class FakeOrchestrator:
     def __init__(self) -> None:
         self.agents: dict[str, _AgentRec] = {}
+        # Alias so core.py's ``orch._agents.get(agent_id)`` works without
+        # hitting the real Orchestrator's private attribute name.
+        self._agents = self.agents
         self.teams: dict[str, _TeamRec] = {}
         self.inboxes: dict[str, asyncio.Queue] = {}
         self.events: list[tuple[str, dict]] = []
@@ -521,7 +525,10 @@ def test_create_team_concurrent_rejected():
 
 
 def test_terminate_child_happy_path():
+    """Happy path: child has reported done (completion_pending=True) → approve path."""
     o = _build()
+    # The gate requires the child to have called report_status(state="done") first.
+    o.agents["A"].completion_pending = True
 
     async def body():
         out = await terminate_child(o, caller_id="R", agent_id="A")
@@ -533,6 +540,8 @@ def test_terminate_child_happy_path():
         assert msgs[0].from_id == "beidou"
         assert msgs[0].content == "__terminate__"
         assert any(ev[0] == "terminate_posted" for ev in o.events)
+        # No terminate.forced event emitted on the approve path.
+        assert not any(ev[0] == "terminate.forced" for ev in o.events)
 
     run(body())
 
@@ -556,5 +565,88 @@ def test_terminate_child_unknown_agent():
         with pytest.raises(PrimitiveError) as ei:
             await terminate_child(o, caller_id="R", agent_id="ghost")
         assert ei.value.code == "unknown_agent"
+
+    run(body())
+
+
+def test_terminate_child_blocks_when_child_not_done():
+    """Completion gate: no force + no pending + not terminated → PrimitiveError."""
+    o = _build()
+    # completion_pending=False, terminate_consumed=False (defaults)
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await terminate_child(o, caller_id="R", agent_id="A")
+        assert ei.value.code == "child_not_pending_review"
+        # No terminate sentinel should have been posted.
+        assert o.inbox_size("A") == 0
+
+    run(body())
+
+
+def test_terminate_child_approve_path_works():
+    """Completion gate approve path: completion_pending=True passes without force."""
+    o = _build()
+    o.agents["A"].completion_pending = True
+
+    async def body():
+        out = await terminate_child(o, caller_id="R", agent_id="A")
+        assert out == {"sentinel_posted": True}
+        # Sentinel must land in inbox.
+        assert o.inbox_size("A") == 1
+        msgs = await o.inbox_drain("A")
+        assert msgs[0].kind == "terminate"
+        # No terminate.forced event on the approve path.
+        assert not any(ev[0] == "terminate.forced" for ev in o.events)
+
+    run(body())
+
+
+def test_terminate_child_force_overrides_gate_and_emits_event():
+    """force=True with a not-done child: gate bypassed, terminate.forced emitted."""
+    o = _build()
+    # completion_pending=False, terminate_consumed=False (defaults — gate would block)
+
+    async def body():
+        out = await terminate_child(o, caller_id="R", agent_id="A", force=True)
+        assert out == {"sentinel_posted": True}
+        # Sentinel must still land in inbox.
+        assert o.inbox_size("A") == 1
+        # terminate.forced event emitted with the correct payload.
+        forced_events = [ev for ev in o.events if ev[0] == "terminate.forced"]
+        assert len(forced_events) == 1
+        payload = forced_events[0][1]
+        assert payload["reason"] == "leader_force"
+        assert payload["caller_id"] == "R"
+        assert payload["agent_id"] == "A"
+        assert payload["team_id"] == o.agents["A"].team_id
+
+    run(body())
+
+
+def test_terminate_child_force_when_already_pending_does_not_emit_forced_event():
+    """force=True when completion_pending=True: gate is not blocked, no forced event."""
+    o = _build()
+    o.agents["A"].completion_pending = True
+
+    async def body():
+        out = await terminate_child(o, caller_id="R", agent_id="A", force=True)
+        assert out == {"sentinel_posted": True}
+        # Gate would not have blocked (pending=True), so no terminate.forced event.
+        assert not any(ev[0] == "terminate.forced" for ev in o.events)
+
+    run(body())
+
+
+def test_terminate_child_force_when_already_terminated_idempotent():
+    """force=True when terminate_consumed=True: succeeds, no terminate.forced event."""
+    o = _build()
+    o.agents["A"].terminate_consumed = True
+
+    async def body():
+        out = await terminate_child(o, caller_id="R", agent_id="A", force=True)
+        assert out == {"sentinel_posted": True}
+        # Gate would not have blocked (terminate_consumed=True), so no forced event.
+        assert not any(ev[0] == "terminate.forced" for ev in o.events)
 
     run(body())

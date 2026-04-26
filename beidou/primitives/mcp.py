@@ -284,10 +284,30 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
 
     @tool(
         "terminate_child",
-        "Post a terminate sentinel to a child agent's inbox. Only valid if "
-        "you lead the team that contains the target -- crossing team "
-        "boundaries is rejected even for ancestor leaders.",
-        {"agent_id": str},
+        "Post a terminate sentinel to a child agent's inbox. By default, only "
+        "valid when the child has called report_status(state='done') (the "
+        "approve path). Pass force=true to override; emits an audited "
+        "terminate.forced event. Only valid if you lead the team that contains "
+        "the target — crossing team boundaries is rejected even for ancestor "
+        "leaders.",
+        {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Target agent. Must be a member of a team you lead.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional. Default false. When true, bypasses the "
+                        "completion-review gate and emits an audited "
+                        "terminate.forced event with reason='leader_force'."
+                    ),
+                },
+            },
+            "required": ["agent_id"],
+        },
     )
     async def _terminate_child(args: dict[str, Any]) -> dict[str, Any]:
         return await _wrap(
@@ -297,6 +317,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             orch=orch,
             caller_id=caller_id,
             agent_id=args["agent_id"],
+            force=bool(args.get("force", False)),
         )
 
     @tool(

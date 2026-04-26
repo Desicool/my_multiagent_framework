@@ -19,6 +19,7 @@ import pytest
 from beidou import orchestrator as orch_module
 from beidou.orchestrator import (
     ROOT_TEAM_ID,
+    TERMINATE_GRACE_S,
     TOKEN_CEILING,
     USER_SENTINEL,
     AgentRecord,
@@ -391,9 +392,12 @@ def test_cascade_leader_terminates_members_then_exits(tmp_path, monkeypatch):
             msg = await asyncio.wait_for(q.get(), timeout=5.0)
             if msg.kind == "terminate":
                 # Cascade: terminate each member, await ack via sentinel receipt.
+                # Use force=True because leaves haven't called report_status(state="done")
+                # in this test — this models a user-signal-driven force-cascade, not the
+                # standard approve path.
                 from beidou.primitives.core import terminate_child
                 for mid in member_ids:
-                    await terminate_child(orch, caller_id=spec.caller_id, agent_id=mid)
+                    await terminate_child(orch, caller_id=spec.caller_id, agent_id=mid, force=True)
                 # Wait for leaves to exit.
                 while any(
                     orch._agents[mid].run_task is not None
@@ -849,5 +853,81 @@ def test_hook_root_sentinel_emits_completion_empty(tmp_path):
         # Verify reason is root_no_leader.
         reasons = [c[3].get("reason") for c in empty_events]
         assert "root_no_leader" in reasons
+
+
+# ---------------------------------------------------------------------------
+# Watchdog backstop: terminate-grace cancel.
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_cancels_run_task_after_grace_deadline(tmp_path):
+    """Pass C of _watchdog_tick cancels a non-consuming agent after grace expires.
+
+    Scenario:
+      1. Agent is seeded with a long-running fake run_task (asyncio.sleep(3600)).
+      2. A terminate sentinel is delivered via inbox_put, stamping grace deadline.
+      3. Deadline is backdated to simulate expiry.
+      4. _watchdog_tick is invoked once.
+      5. Assert: run_task is cancelled, terminate.forced(reason="watchdog_grace")
+         emitted, deadline cleared.
+      6. A second _watchdog_tick does NOT emit a duplicate terminate.forced event.
+    """
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
+    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    rec = _seed_agent(o, "A", "tm_child")
+
+    async def body():
+        # Step 1: attach a non-completing fake run_task to the agent.
+        rec.run_task = asyncio.create_task(asyncio.sleep(3600))
+
+        # Step 2: post a terminate sentinel, which stamps terminate_grace_deadline.
+        sentinel = Message(
+            from_id="beidou",
+            content="__terminate__",
+            ts=time.time(),
+            message_id="sentinel_wg_1",
+            kind="terminate",
+        )
+        await o.inbox_put("A", sentinel)
+        assert rec.terminate_grace_deadline is not None, (
+            "inbox_put should stamp terminate_grace_deadline on terminate sentinel"
+        )
+
+        # Step 3: backdate the deadline so it looks expired.
+        rec.terminate_grace_deadline = time.time() - 1.0
+
+        # Step 4: invoke one watchdog tick.
+        await o._watchdog_tick()
+
+        # Let the cancellation propagate.
+        await asyncio.sleep(0)
+
+        # Step 5a: run_task should be cancelled (done and cancelled).
+        assert rec.run_task.done(), "run_task must be done after watchdog cancel"
+        assert rec.run_task.cancelled(), "run_task must be cancelled by watchdog"
+
+        # Step 5b: terminate.forced event with reason="watchdog_grace" and caller_id="watchdog".
+        await asyncio.sleep(0)  # flush any async emit tasks
+        forced = [c for c in emitter.calls if c[0] == "terminate.forced"]
+        assert len(forced) == 1, f"expected 1 terminate.forced event, got {len(forced)}"
+        _event, _agent_id, _team_id, kw = forced[0]
+        assert kw.get("reason") == "watchdog_grace"
+        assert kw.get("caller_id") == "watchdog"
+        assert _agent_id == "A"
+
+        # Step 5c: deadline cleared to prevent re-fire.
+        assert rec.terminate_grace_deadline is None, (
+            "terminate_grace_deadline must be cleared after watchdog cancel"
+        )
+
+        # Step 6: second tick produces no new terminate.forced event.
+        await o._watchdog_tick()
+        await asyncio.sleep(0)
+        forced2 = [c for c in emitter.calls if c[0] == "terminate.forced"]
+        assert len(forced2) == 1, (
+            "second _watchdog_tick must not re-fire terminate.forced after deadline cleared"
+        )
 
     run(body())

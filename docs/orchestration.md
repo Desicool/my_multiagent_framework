@@ -92,6 +92,19 @@ agent, and emits `agent_completed` with `terminate_consumed=True`.
 3. Each agent's SDK session is ended by the runtime as its sentinel is
    consumed. Leaves terminate first; root terminates last.
 
+**Backstop: terminate-grace watchdog cancel.** When a terminate sentinel is
+enqueued for an agent (`inbox_put` with `kind="terminate"`), the runtime
+stamps a deadline at `now + TERMINATE_GRACE_S` (in-code constant in
+`beidou/orchestrator.py`, alongside the other watchdog constants per
+`agent-runtime.md` §3.1). If the deadline elapses with `terminate_consumed`
+still false (e.g., the SDK is mid-agentic-tool-loop and never re-awaits its
+input queue), the watchdog cancels the agent's `run_task`. The drain loop's
+cancellation path sets `terminate_consumed=true`, and a `terminate.forced`
+event is emitted with `reason="watchdog_grace"`. This is a runtime backstop
+for genuinely livelocked children — it does not replace the leader's
+authority via `terminate_child`; it only guarantees an enqueued terminate
+actually unwinds within bounded time.
+
 ## Liveness checks
 
 **Goal:** a leader knows when all its direct children report `done` so it

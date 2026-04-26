@@ -161,9 +161,10 @@ construction.
 inbox.
 
 **Input schema**
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `agent_id` | string | yes | Target agent. Must be a member of a team the caller leads. |
+| Field      | Type   | Required | Notes |
+|------------|--------|----------|-------|
+| `agent_id` | string | yes      | Target agent. Must be a member of a team the caller leads. |
+| `force`    | bool   | no       | Default `false`. When `true`, bypass the completion-review gate. Audited via a `terminate.forced` event with `reason="leader_force"`. |
 
 **Output schema**
 ```
@@ -172,18 +173,26 @@ inbox.
 
 **Error cases**
 - `not_leader`: caller does not lead the team that contains `agent_id`.
-  Beidou validates against its team registry.
 - `unknown_agent`: `agent_id` not resolvable.
 - `already_terminating`: a terminate sentinel is already in the target's
   inbox (idempotent; structured error indicating no-op).
+- `child_not_pending_review`: `target.completion_pending == false` AND
+  `target.terminate_consumed == false` AND `force != true`. The leader
+  must wait for the child to call `report_status(state="done")`, send a
+  rework message via `send_message`, or pass `force=true` to override.
 
 **Validation rules**
+- `terminate_child` is the leader's APPROVE verdict on a child's
+  `report_status(state="done")` request. The plain (`force=false`) call
+  requires the child to be in completion-review state.
+- `force=true` is the explicit override. It emits a `terminate.forced`
+  audit event with `reason="leader_force"`. Use sparingly.
 - `terminate_child` is only valid if the caller leads the **parent team**
-  of the target. Crossing team boundaries is not allowed, even for ancestor
-  leaders - termination is always leader -> direct-child-team-member.
-- Beidou does NOT itself call this tool. Beidou's ONE termination privilege
-  applies only to the root agent, via an internal path (see
-  `orchestration.md`).
+  of the target. Crossing team boundaries is not allowed, even for
+  ancestor leaders — termination is always leader -> direct-child-team-member.
+- Beidou does NOT itself call this tool. Beidou's ONE termination
+  privilege applies only to the root agent, via an internal path
+  (see `orchestration.md`).
 
 ---
 

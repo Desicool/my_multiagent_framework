@@ -136,6 +136,14 @@ empty or missing, the runtime injects a nudge message into the agent's inbox:
 The nudge is injected **at most once per agent session** to prevent loops.
 When a nudge is injected, a `completion.nudged` event is emitted.
 
+The plain `terminate_child(agent_id)` call is the leader's APPROVE verdict
+on the child's `report_status(state="done")` request. If the child has not
+reported done, the call fails with `child_not_pending_review`. The leader
+may pass `force=true` to override (rare, audited via `terminate.forced`
+with `reason="leader_force"`). The watchdog terminate-grace cancel (§3.1)
+is the runtime backstop for genuinely livelocked children and emits the
+same event with `reason="watchdog_grace"`.
+
 The completion handoff rules are also present in the system prompt as the
 `[COMPLETION HANDOFF CONTRACT]` block, appended after the persistent-agent
 contract (see section order above). The leader-side obligation is in the

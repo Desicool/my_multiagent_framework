@@ -19,7 +19,7 @@ from beidou.orchestrator import (
     Orchestrator,
     TeamRecord,
 )
-from beidou.primitives.core import Message, PrimitiveError
+from beidou.primitives.core import Message, PrimitiveError, terminate_child
 from beidou.sdk_agent import build_hooks
 
 
@@ -373,10 +373,12 @@ def test_terminate_child_clears_completion_pending(tmp_path):
     run(body())
 
 
-def test_terminate_child_no_event_when_not_pending(tmp_path):
-    """Terminating an agent with completion_pending=False must NOT emit completion.approved.
+def test_terminate_child_blocks_when_not_pending(tmp_path):
+    """Completion gate: terminate_child without force on a not-done child raises PrimitiveError.
 
-    Existing behaviour preserved (mirrors test_terminate_no_completion_approved_when_not_pending).
+    Replaces the old test_terminate_child_no_event_when_not_pending which tested
+    inbox_put behaviour directly; this test exercises the completion gate via the
+    primitive surface the leader actually calls.
     """
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
@@ -386,20 +388,40 @@ def test_terminate_child_no_event_when_not_pending(tmp_path):
     # completion_pending defaults to False — leave it.
 
     async def body():
-        await o.inbox_put(
-            "A",
-            Message(
-                from_id="beidou",
-                content="__terminate__",
-                ts=time.time(),
-                message_id="t_ql2_b",
-                kind="terminate",
-            ),
-        )
+        with pytest.raises(PrimitiveError) as ei:
+            await terminate_child(o, caller_id="L", agent_id="A")
+        assert ei.value.code == "child_not_pending_review"
+        # No completion.approved event should have been emitted.
+        assert len(emitter.events_named("completion.approved")) == 0
+
+    run(body())
+
+
+def test_terminate_child_force_emits_forced_event(tmp_path):
+    """force=True on a not-done child: succeeds and emits terminate.forced."""
+    o, emitter = _make_orchestrator(tmp_path)
+    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
+    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_agent(o, "A", "tm_child")
+    # completion_pending=False, terminate_consumed=False (defaults — gate would block without force)
+
+    async def body():
+        out = await terminate_child(o, caller_id="L", agent_id="A", force=True)
+        assert out == {"sentinel_posted": True}
+        # Flush any background emit tasks.
         await asyncio.sleep(0)
-        assert len(emitter.events_named("completion.approved")) == 0, (
-            "No completion.approved event expected when completion_pending was False"
-        )
+        # terminate.forced must be emitted via the orchestrator's emit_event, which
+        # schedules an async task. The real Orchestrator emits synchronously to the
+        # _FakeEmitter via asyncio task — give the loop a tick to process it.
+        forced = emitter.events_named("terminate.forced")
+        assert len(forced) == 1
+        _agent_id, _team_id, kw = forced[0]
+        assert kw.get("reason") == "leader_force"
+        assert kw.get("caller_id") == "L"
+        # agent_id is extracted as the first positional by emit_event, confirm via _agent_id.
+        assert _agent_id == "A"
+        assert _team_id == "tm_child"
 
     run(body())
 

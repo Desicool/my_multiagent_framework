@@ -300,6 +300,31 @@ This event is NOT emitted when the body already contains `[REVIEW REQUIRED]`
 
 ---
 
+### `terminate.forced`
+
+Audited override of the completion-review gate or runtime backstop
+cancellation. Always paired with a subsequent `agent_completed` (or
+equivalent) event when the SDK session ends.
+
+Emitted in two situations:
+
+1. A leader called `terminate_child(force=true)`, bypassing the
+   completion-review gate for a member that had not yet
+   acknowledged its terminate sentinel.
+2. The runtime watchdog cancelled an agent's `run_task` because the
+   agent did not consume its terminate sentinel within
+   `TERMINATE_GRACE_S` (see `agent-runtime.md` §3.1).
+
+| Field | Source |
+|---|---|
+| `ts` | Unix timestamp at forced termination. |
+| `caller_id` | The actor that triggered the forced terminate. `"watchdog"` when emitted by the runtime watchdog; the leader's `agent_id` when emitted by `terminate_child(force=true)`. |
+| `agent_id` | Target agent being forcibly terminated. |
+| `team_id` | The team containing the target. |
+| `reason` | One of: `"leader_force"` (leader passed `force=true` to bypass the completion-review gate) or `"watchdog_grace"` (target did not consume its terminate sentinel within `TERMINATE_GRACE_S`; runtime cancelled `run_task`). |
+
+---
+
 ## Sinks
 
 - **JSONL** `~/.beidou/events/{task_id}.jsonl`: one JSON object per line,

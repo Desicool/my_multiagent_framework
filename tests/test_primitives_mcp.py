@@ -285,10 +285,14 @@ def test_create_team_fanout_exceeded_is_structured_error():
 
 
 def test_terminate_child_happy_path():
+    """Happy path via MCP: child has reported done (approve path)."""
     o = _build()
+    # Set completion_pending=True so the completion gate allows the call.
+    o.agents["A"].completion_pending = True
     cfg = build_mcp_server_for(o, caller_id="R")
 
     async def body():
+        # force is optional in the MCP schema; omit it for the default approve path.
         result = await _call(cfg, "terminate_child", {"agent_id": "A"})
         payload = _text_payload(result)
         assert payload == {"sentinel_posted": True}
