@@ -147,6 +147,15 @@ class FakeOrchestrator:
             raise GatewayDeclined("nope")
         return self.gateway_answer
 
+    async def gateway_ask_user_structured(self, caller_id: str, questions: list,
+                                          context: Optional[str]) -> dict:
+        if self.gateway_decline:
+            raise GatewayDeclined("nope")
+        return {
+            "answers": [{"selected_labels": [], "text": self.gateway_answer}],
+            "answer_text": self.gateway_answer,
+        }
+
     def is_gateway_available(self) -> bool:
         return self.gateway_available
 

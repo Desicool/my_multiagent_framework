@@ -74,21 +74,48 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 **Input schema**
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `question` | string | yes | The question. |
-| `context` | string | no | Optional background. |
+| `questions` | array of objects | yes | 1..4 sub-questions. Each item described below. |
+| `context` | string | no | Optional shared background, surfaced verbatim if present. |
+
+**Each `questions[i]`**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `question` | string | yes | The question text. |
+| `header` | string | yes | <=12 chars. Used as a chip/label in the UI. May be empty. |
+| `multiSelect` | bool | yes | camelCase. False=radio (single-select), True=checkbox (multi-select). |
+| `options` | array of objects | yes | Length 0 (free-text only) or 2..4 (choice). Each option: `{label: string, description: string}`. |
 
 **Output schema**
 ```
-{ "answer": "<user response>" }
+{
+  "answers": [
+    {"selected_labels": ["..."], "text": null},           // single-select
+    {"selected_labels": ["a", "b"], "text": null},        // multi-select
+    {"selected_labels": [], "text": "free-text reply"},   // free-text or "Other" path
+    ...
+  ],
+  "answer_text": "<human-readable rendering joined by newlines>"
+}
 ```
+
+`answer_text` rendering rules:
+- Free-text only: the typed text.
+- Single-select: the chosen `label`. If "Other" was chosen, the typed text.
+- Multi-select: comma-joined chosen labels. If "Other" was selected (only on
+  single-select), append the typed text.
+- Grouped: one rendered line per sub-question, prefixed with `<header>: ` if
+  header is non-empty, joined by newlines.
 
 **Error cases**
 - `gateway_unavailable`: no human gateway registered. Returns structured
   error; agent decides whether to fall back or block.
 - `user_declined`: user explicitly refused. Returns the refusal as a
   structured error.
+- `invalid_input`: schema violation. The error message names the offending
+  question index and field. Examples: questions list length not in 1..4,
+  header > 12 chars, options length not in {0, 2, 3, 4}, malformed option dict.
 
-ask_user blocks indefinitely until the user (or an escalating leader via the inbox question broker) supplies an answer. There is no timeout.
+ask_user blocks indefinitely until the user (or an escalating leader via the inbox question broker) supplies an answer. There is no timeout. Internal escalation paths (watchdog, contract-violation review) wrap their plain-text prompts as a single free-text question (`options: []`).
 
 ---
 

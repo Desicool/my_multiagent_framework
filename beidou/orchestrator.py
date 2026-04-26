@@ -626,6 +626,28 @@ class Orchestrator:
             raise PrimitiveError("gateway_unavailable", "gateway has no ask() method")
         return await ask(caller_id, question, context)
 
+    async def gateway_ask_user_structured(
+        self,
+        caller_id: str,
+        questions: list[dict],
+        context: Optional[str],
+    ) -> dict:
+        """Route a structured questions list through the QuestionBroker.
+
+        Delegates to ``_GatewayAdapter.ask_structured`` (or any object that
+        exposes that coroutine) so both SDK-builtin ``AskUserQuestion`` and
+        ``mcp__beidou__ask_user`` land at the same ``broker._pending`` entry.
+
+        Returns ``{"answers": [...], "answer_text": "..."}`` as produced by
+        ``QuestionBroker.resolve_answer``.
+        """
+        if self.gateway is None:
+            raise PrimitiveError("gateway_unavailable", "no human gateway registered")
+        ask_structured = getattr(self.gateway, "ask_structured", None)
+        if ask_structured is None:
+            raise PrimitiveError("gateway_unavailable", "gateway has no ask_structured() method")
+        return await ask_structured(caller_id, questions, context)
+
     def is_gateway_available(self) -> bool:
         return self.gateway is not None and hasattr(self.gateway, "ask")
 
@@ -924,13 +946,20 @@ class Orchestrator:
                 )
                 if self.is_gateway_available():
                     try:
-                        await self.gateway_ask_user(
+                        await self.gateway_ask_user_structured(
                             leader,
-                            (
-                                f"Root agent's leader {leader} has not decided on completion"
-                                f" review for {child_id} after 3 pings."
-                                f" Approve (terminate_child), rework, or abort?"
-                            ),
+                            [
+                                {
+                                    "question": (
+                                        f"Root agent's leader {leader} has not decided on completion"
+                                        f" review for {child_id} after 3 pings."
+                                        f" Approve (terminate_child), rework, or abort?"
+                                    ),
+                                    "header": "",
+                                    "multiSelect": False,
+                                    "options": [],
+                                }
+                            ],
                             None,
                         )
                     except Exception:
@@ -995,12 +1024,19 @@ class Orchestrator:
                 )
                 if self.is_gateway_available():
                     try:
-                        await self.gateway_ask_user(
+                        await self.gateway_ask_user_structured(
                             agent_id,
-                            (
-                                f"Agent {agent_id} has been idle {delta_s}s with no progress."
-                                f" Approve continuation, redirect, or abort?"
-                            ),
+                            [
+                                {
+                                    "question": (
+                                        f"Agent {agent_id} has been idle {delta_s}s with no progress."
+                                        f" Approve continuation, redirect, or abort?"
+                                    ),
+                                    "header": "",
+                                    "multiSelect": False,
+                                    "options": [],
+                                }
+                            ],
                             None,
                         )
                     except Exception:
@@ -1157,13 +1193,20 @@ class Orchestrator:
             )
             if self.is_gateway_available():
                 try:
-                    await self.gateway_ask_user(
+                    await self.gateway_ask_user_structured(
                         rec.agent_id,
-                        (
-                            f"Root agent {rec.agent_id} has violated the "
-                            f"no-self-exit contract {rec.contract_strikes} times. "
-                            f"Continue, or terminate the root?"
-                        ),
+                        [
+                            {
+                                "question": (
+                                    f"Root agent {rec.agent_id} has violated the "
+                                    f"no-self-exit contract {rec.contract_strikes} times. "
+                                    f"Continue, or terminate the root?"
+                                ),
+                                "header": "",
+                                "multiSelect": False,
+                                "options": [],
+                            }
+                        ],
                         None,
                     )
                 except Exception:

@@ -29,7 +29,7 @@ Steps:
 4. Write acceptance criteria — specific, testable conditions that define "done".
 5. When the task leaves any choice unspecified that the user could plausibly care about — project shape,
    framework variant, build chain, language version, persistence, auth, deployment target, file layout,
-   test framework — call `mcp__beidou__ask_user(question, context_hint)` and BLOCK on the answer.
+   test framework — call `mcp__beidou__ask_user(questions=[{"question": "<the choice>", "header": "<<=12 chars>", "multiSelect": false, "options": [{"label": "...", "description": "..."}, ...]}], context="<background>")` and BLOCK on the answer. Use `options: []` for free-text replies, or 2..4 options for a single-select choice. See `docs/tool-surface.md#ask_user`.
    - NEVER write an "Assumption" for these binding choices. Assumptions are reserved for trivial defaults
      the user genuinely would not care about (e.g., variable naming style).
    - Example: if the task says "用 react" and does not pin scaffold vs CDN vs build tool, you MUST

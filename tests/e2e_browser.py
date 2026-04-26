@@ -103,7 +103,14 @@ def _start_server_with_question(port: int):
             asker_agent_id="agt_btest",
             current_holder_agent_id=None,
             chain=["agt_btest", "USER"],
-            prompt="Which database should we use for this project?",
+            questions=[
+                {
+                    "question": "Which database should we use for this project?",
+                    "header": "",
+                    "multiSelect": False,
+                    "options": [],
+                }
+            ],
             context_hint="PostgreSQL or SQLite",
             state="at_user",
             future=future,

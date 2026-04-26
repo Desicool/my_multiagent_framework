@@ -33,6 +33,34 @@ the JSONL file or to the SQLite database.
 - **Right** — `TeamTree.svelte`: nested by `parent_team_id`; clicking an `AgentRow` pins that
   agent in the middle panel.
 
+### QuestionBanner — structured multi-part questions
+
+When a pending question is surfaced in the middle panel, `QuestionBanner.svelte` renders
+1..4 sub-questions from the raw `questions` array. Each sub-question is displayed with:
+
+- A **chip-style header** (the `header` field, ≤12 chars) labelling the sub-question.
+- The **question text** (`question` field) as the prompt.
+- An **input control** chosen by the sub-question's shape:
+  - `options.length == 0` → `<textarea>` (free-text only).
+  - `multiSelect == false` → radio buttons (single-select) with an implicit "Other" option
+    that reveals a free-text input when selected.
+  - `multiSelect == true` → checkboxes (multi-select).
+
+The submit button is **disabled** until every sub-question has a complete answer (a choice
+selected or, for free-text controls, a non-empty string typed).
+
+After submission, `/api/questions/{qid}/answer` accepts
+`{answers: [{selected_labels, text}, ...]}` and routes the response through
+`QuestionBroker.resolve_answer()`. The broker computes `answer_text` (one rendered line per
+sub-question, joined by newlines), persists the answer to SQLite, and emits a
+`question_answered` event carrying both `answers` and `answer_text`.
+
+The web reducer handles `question_answered` by synthesizing a `message_in` stream item on
+the asker agent's stream: `{kind: "message_in", from: "user", from_is_user: true,
+content: answer_text, message_id: qid}`. This creates a permanent inbound chat bubble in
+the asker's conversation trace — making the human answer visible in context, without
+inventing a fake inbox delivery event.
+
 ## StreamItem typed union
 
 Defined in `beidou/web/frontend/src/lib/types.ts`:

@@ -191,32 +191,6 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
                 }
             }
 
-        # Build a single composite question prompt covering all sub-questions and their options.
-        parts: list[str] = []
-        context_lines: list[str] = []
-        for i, q in enumerate(questions, start=1):
-            if not isinstance(q, dict):
-                continue
-            qtext = (q.get("question") or "").strip()
-            header = (q.get("header") or "").strip()
-            opts = q.get("options") or []
-            if header:
-                parts.append(f"Q{i} ({header}): {qtext}")
-            else:
-                parts.append(f"Q{i}: {qtext}")
-            if isinstance(opts, list) and opts:
-                for j, o in enumerate(opts, start=1):
-                    if isinstance(o, dict):
-                        label = o.get("label", "")
-                        desc = o.get("description", "")
-                        if desc:
-                            context_lines.append(f"  Q{i} option {j}: {label} — {desc}")
-                        else:
-                            context_lines.append(f"  Q{i} option {j}: {label}")
-
-        composite_question = "\n".join(parts) if parts else "(no question)"
-        context_hint: Optional[str] = "\n".join(context_lines) if context_lines else None
-
         # Use a fresh synthetic id so the hook-emitted pair is distinguishable
         # from any drain-loop pair on the original tool_use_id.
         synthetic_tool_use_id = f"hook_askuserquestion_{uuid.uuid4().hex[:8]}"
@@ -232,13 +206,15 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             },
         )
 
+        # TODO(post-m4g): gateway_ask_user (string-only) is now unused; remove from orchestrator.py in a cleanup pass.
         is_error = False
-        answer: str
+        answer_text: str
         try:
-            answer = await orch.gateway_ask_user(caller_id, composite_question, context_hint)
+            result = await orch.gateway_ask_user_structured(caller_id, questions, None)
+            answer_text = result.get("answer_text", "")
         except Exception as exc:  # noqa: BLE001 — gateway can be diverse
             is_error = True
-            answer = f"ask_user failed: {type(exc).__name__}: {exc}"
+            answer_text = f"ask_user failed: {type(exc).__name__}: {exc}"
 
         duration_ms = int(round((time.time() - started) * 1000))
         orch.emit_event(
@@ -256,7 +232,7 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": answer,
+                "permissionDecisionReason": answer_text,
             }
         }
 

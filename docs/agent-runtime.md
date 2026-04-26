@@ -335,6 +335,16 @@ terminate sentinels.
   cleanly with no SDK-level timeout.
 - `ask_user` has no timeout. The runtime parks the agent on the gateway
   response future and resumes it when an answer arrives.
+- **SDK-builtin `AskUserQuestion` passthrough.** When a model emits the
+  SDK-builtin `AskUserQuestion` tool call, the Beidou hook
+  (`on_ask_user_question` in `sdk_agent.py`) forwards the structured
+  `questions` array unchanged to `gateway_ask_user_structured`. The hook
+  does NOT flatten sub-questions into a composite text prompt — the gateway
+  and UI receive the same wire shape Claude Code uses natively. Both the
+  SDK-builtin path and the MCP `mcp__beidou__ask_user` path produce the
+  same enriched `Question` object via `QuestionBroker.ask(ctx, questions,
+  ...)`, so escalation, persistence, and `question_*` events are identical
+  regardless of which entry point the model uses.
 - Beidou does NOT layer its own retry on top of `query()`. Per-call retries
   are delegated to `ClaudeAgentOptions`.
 - The liveness watchdog (§3.1) is a separate `asyncio.Task` (`beidou-watchdog`)

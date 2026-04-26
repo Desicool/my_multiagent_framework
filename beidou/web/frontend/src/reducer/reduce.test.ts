@@ -200,12 +200,59 @@ describe('team_created lazy-creates leader', () => {
   });
 });
 
-describe('question events are no-ops in reducer', () => {
+describe('question_asked is no-op in reducer', () => {
   it('does not modify state', () => {
     applyEvent(s, { type: 'question_asked', ts: 1, qid: 'q1', asker: 'A', prompt: 'why' });
-    applyEvent(s, { type: 'question_answered', ts: 2, qid: 'q1' });
     expect(Object.keys(s.agentsById)).toHaveLength(0);
     expect(s.globalActivity.length).toBe(0);
+  });
+});
+
+describe('question_answered pushes answer bubble onto asker stream', () => {
+  it('creates a message_in item with from_is_user true and answer_text as content', () => {
+    // Pre-create the asker agent
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'agent-A', task_id: 'T', team_id: null });
+    // Dispatch question_answered
+    applyEvent(s, {
+      type: 'question_answered',
+      ts: 2,
+      agent_id: 'agent-A',
+      qid: 'q-42',
+      asker: 'agent-A',
+      chain_len: 0,
+      answers: [{ selected_labels: ['Yes'], text: null }],
+      answer_text: 'Yes',
+    });
+    const stream = s.agentsById['agent-A']._stream;
+    const last = stream[stream.length - 1];
+    expect(last.kind).toBe('message_in');
+    if (last.kind === 'message_in') {
+      expect(last.from).toBe('user');
+      expect(last.from_is_user).toBe(true);
+      expect(last.content).toBe('Yes');
+      expect(last.message_id).toBe('q-42');
+    }
+  });
+
+  it('lazy-creates the asker agent if not yet seen', () => {
+    applyEvent(s, {
+      type: 'question_answered',
+      ts: 3,
+      agent_id: 'sys',
+      qid: 'q-99',
+      asker: 'agent-B',
+      chain_len: 1,
+      answers: [{ selected_labels: [], text: 'free text answer' }],
+      answer_text: 'free text answer',
+    });
+    expect(s.agentsById['agent-B']).toBeDefined();
+    const stream = s.agentsById['agent-B']._stream;
+    expect(stream.length).toBe(1);
+    expect(stream[0].kind).toBe('message_in');
+    if (stream[0].kind === 'message_in') {
+      expect(stream[0].content).toBe('free text answer');
+      expect(stream[0].message_id).toBe('q-99');
+    }
   });
 });
 

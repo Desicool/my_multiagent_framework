@@ -254,9 +254,12 @@ if _textual_available:
             broker = self._current_broker
             self._current_q = None
             self._current_broker = None
-            # Resolve the future directly (at_user state bypasses broker.answer())
-            if not q.future.done():
-                q.future.set_result(answer)
+            # Route through the shared resolver so DB writes and question_answered
+            # event are consistent with the web/terminal/fallback paths.
+            broker.resolve_answer(
+                q.qid,
+                [{"selected_labels": [], "text": answer} for _ in q.questions],
+            )
             panel = self.query_one("#q_panel", QuestionPanel)
             panel.hide()
 

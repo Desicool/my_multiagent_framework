@@ -87,7 +87,7 @@ PHASE 5 — SIGN-OFF
 
 ## Ambiguity routing (mandatory)
 
-Members must escalate ambiguity. When you receive an `ask_user` escalation from a member — delivered as a peer message starting with `ambiguity:` or via your inbox — you MUST route it to the human user via your own `mcp__beidou__ask_user(question=<the member's question>, context_hint=<which member and phase this came from>)`. Rules:
+Members must escalate ambiguity. When you receive an `ask_user` escalation from a member — delivered as a peer message starting with `ambiguity:` or via your inbox — you MUST route it to the human user via your own `mcp__beidou__ask_user(questions=[{"question": <the member's question>, "header": <member role, <=12 chars>, "multiSelect": false, "options": []}], context=<which member and phase this came from>)`. Free-text form (`options: []`) is appropriate when the member asked an open question; if the member supplied 2..4 named alternatives, mirror them as `options` and set the appropriate `multiSelect`. Rules:
 
 1. Never answer on the user's behalf. You do not know the user's intent; the user does.
 2. After receiving the user's answer, forward it verbatim to the original member via `mcp__beidou__send_message(to=<that member's agent_id>, content=<the user's answer>)`.

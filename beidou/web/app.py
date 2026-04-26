@@ -12,8 +12,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 
+class StructuredAnswer(BaseModel):
+    selected_labels: list[str] = []
+    text: str | None = None
+
+
 class AnswerBody(BaseModel):
-    answer: str
+    answers: list[StructuredAnswer]
 
 
 class SendBody(BaseModel):
@@ -246,6 +251,7 @@ def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
             questions.append({
                 "qid": q.qid,
                 "asker_agent_id": q.asker_agent_id,
+                "questions": q.questions,
                 "prompt": q.prompt,
                 "context_hint": q.context_hint,
                 "chain": q.chain,
@@ -258,16 +264,19 @@ def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
         b = broker  # captured from create_app args
         if b is None:
             raise HTTPException(status_code=503, detail="no active gateway")
-        q = b._pending.get(qid)
-        if q is None:
-            raise HTTPException(status_code=404, detail="unknown_qid")
-        if q.future.done():
-            raise HTTPException(status_code=409, detail="already_answered")
-        # Questions in at_user state bypass broker.answer() (which checks for
-        # "pending" state).  Set result directly on the future, then clean up.
-        q.state = "answered"
-        b._pending.pop(qid, None)
-        q.future.set_result(body.answer)
+        # Convert pydantic models to plain dicts for the broker
+        answers = [{"selected_labels": a.selected_labels, "text": a.text} for a in body.answers]
+        result = b.resolve_answer(qid, answers)
+        if not result.get("ok"):
+            reason = result.get("reason", "unknown")
+            # Map known reasons to HTTP statuses
+            if reason == "unknown_qid":
+                raise HTTPException(status_code=404, detail="unknown_qid")
+            if reason == "already_answered":
+                raise HTTPException(status_code=409, detail="already_answered")
+            if reason == "answer_count_mismatch":
+                raise HTTPException(status_code=400, detail="answer_count_mismatch")
+            raise HTTPException(status_code=400, detail=reason)
         return {"ok": True}
 
     @app.post("/api/agents/{agent_id}/send")

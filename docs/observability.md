@@ -175,8 +175,8 @@ ground truth) and investigate the dedup logic.
 ### `question_asked`
 
 Emitted by `QuestionBroker` when an agent calls `ask_user`. The `prompt`
-field is **truncated to 200 characters**; the full record (full prompt,
-`context_hint`, `chain`) is only available via `GET /api/questions/pending`.
+field is **truncated to 200 characters**; the full record (full `questions`
+array, `context`, `chain`) is only available via `GET /api/questions/pending`.
 Treat this event as a ping and re-poll the API for rich data.
 
 | Field | Source |
@@ -185,7 +185,8 @@ Treat this event as a ping and re-poll the API for rich data.
 | `qid` | Unique question id (e.g. `q_abc12345`). |
 | `asker` | `agent_id` of the agent that called `ask_user`. |
 | `holder` | `agent_id` of the team-leader currently holding the question, or `null` if surfaced to the user. |
-| `prompt` | The question text, truncated to 200 chars. |
+| `prompt` | Derived flat-text summary of the question, truncated to 200 chars. |
+| `questions` | The raw `questions` array (Claude Code wire shape) as passed to the broker. Included alongside `prompt` for consumers that prefer the structured form. |
 
 ---
 
@@ -198,6 +199,9 @@ Emitted by `QuestionBroker` after the question future resolves.
 | `ts` | Wall clock at answer receipt. |
 | `qid` | Matches the corresponding `question_asked` event. |
 | `asker` | `agent_id` of the original asker. |
+| `chain_len` | Length of the audit chain (kept for back-compat). |
+| `answers` | Structured answer payload: `[{selected_labels: list[str], text: str|null}, ...]`, one entry per sub-question in order. |
+| `answer_text` | Single human-readable rendering used by the web UI to render an answer chat bubble in the asker's stream. |
 
 ---
 

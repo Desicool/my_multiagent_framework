@@ -2,7 +2,7 @@
  * Typed fetch wrappers for the Beidou REST API.
  * All response shapes are verified against beidou/web/app.py.
  */
-import type { BeidouEvent, PendingQuestion } from './types';
+import type { BeidouEvent, PendingQuestion, AnswerPayload } from './types';
 
 // ---------------------------------------------------------------------------
 // Response types (inline — not in types.ts which is reducer-state-only)
@@ -136,14 +136,18 @@ export async function getPendingQuestions(): Promise<PendingQuestion[]> {
   return data.questions ?? [];
 }
 
-/** POST /api/questions/{qid}/answer with body {answer} */
-export async function submitAnswer(qid: string, answer: string): Promise<void> {
-  const r = await fetch(`/api/questions/${encodeURIComponent(qid)}/answer`, {
+/** POST /api/questions/{qid}/answer with body {answers: StructuredAnswer[]} */
+export async function submitAnswer(qid: string, payload: AnswerPayload): Promise<void> {
+  const res = await fetch(`/api/questions/${encodeURIComponent(qid)}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answer }),
+    body: JSON.stringify(payload),   // { answers: [...] }
   });
-  await jsonOrThrow<{ ok: boolean }>(r);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch {}
+    throw new Error(`submitAnswer failed: ${res.status} ${detail}`);
+  }
 }
 
 /** POST /api/agents/{agent_id}/send with body {content} */

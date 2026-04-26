@@ -76,6 +76,7 @@ class FakeOrchestrator:
             self._agents[agent_id] = SimpleNamespace(
                 terminate_consumed=False,
                 inbox=q,
+                inflight_tools=0,
             )
         return self._agents[agent_id].inbox
 
@@ -135,6 +136,9 @@ class FakeOrchestrator:
 
     async def gateway_ask_user(self, caller_id, question, context):
         return "no gateway"
+
+    async def gateway_ask_user_structured(self, caller_id, questions, context):
+        return {"answers": [{"selected_labels": [], "text": "no gateway"}], "answer_text": "no gateway"}
 
     def is_gateway_available(self) -> bool:
         return False

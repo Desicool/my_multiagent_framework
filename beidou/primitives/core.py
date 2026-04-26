@@ -128,6 +128,14 @@ class Orchestrator(Protocol):
         question: str,
         context: Optional[str],
     ) -> str: ...
+    async def gateway_ask_user_structured(
+        self,
+        caller_id: str,
+        questions: list[dict],
+        context: Optional[str],
+    ) -> dict:
+        # TODO(issue-744): concrete impl wires this to QuestionBroker.ask().
+        ...
     def is_gateway_available(self) -> bool: ...
     def record_status(
         self,
@@ -267,10 +275,111 @@ async def ask_user(
     orch: Orchestrator,
     *,
     caller_id: str,
-    question: str,
+    questions: list[dict],
     context: Optional[str] = None,
 ) -> dict:
-    """Human gateway. See docs/tool-surface.md#ask_user."""
+    """Human gateway. See docs/tool-surface.md#ask_user.
+
+    questions: list[1..4] of {question:str, header:str(<=12 chars), multiSelect:bool,
+                              options: list[{label:str, description:str}] (length 0 or 2..4)}.
+    Returns: {"answers": [...], "answer_text": "..."} from the broker resolver.
+    """
+    # --- Input validation -------------------------------------------------
+    if not isinstance(questions, list) or not (1 <= len(questions) <= 4):
+        raise PrimitiveError(
+            "invalid_input",
+            "questions must be a list of 1..4 items",
+            provided_length=len(questions) if isinstance(questions, list) else None,
+        )
+
+    for i, sq in enumerate(questions):
+        if not isinstance(sq, dict):
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}] must be a dict",
+                index=i,
+            )
+
+        q_text = sq.get("question")
+        if not isinstance(q_text, str) or not q_text:
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}].question must be a non-empty string",
+                index=i,
+                field="question",
+            )
+
+        header = sq.get("header", "")
+        if not isinstance(header, str):
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}].header must be a string",
+                index=i,
+                field="header",
+            )
+        if len(header) > 12:
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}].header must be <= 12 characters (got {len(header)})",
+                index=i,
+                field="header",
+                length=len(header),
+            )
+
+        multi_select = sq.get("multiSelect", False)
+        if not isinstance(multi_select, bool):
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}].multiSelect must be a bool",
+                index=i,
+                field="multiSelect",
+            )
+
+        options = sq.get("options", [])
+        if not isinstance(options, list):
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}].options must be a list",
+                index=i,
+                field="options",
+            )
+        if len(options) not in (0, 2, 3, 4):
+            raise PrimitiveError(
+                "invalid_input",
+                f"questions[{i}].options length must be 0 (free-text) or 2..4 (choice), "
+                f"got {len(options)}",
+                index=i,
+                field="options",
+                length=len(options),
+            )
+        for j, opt in enumerate(options):
+            if not isinstance(opt, dict):
+                raise PrimitiveError(
+                    "invalid_input",
+                    f"questions[{i}].options[{j}] must be a dict",
+                    index=i,
+                    option_index=j,
+                )
+            label = opt.get("label")
+            description = opt.get("description")
+            if not isinstance(label, str):
+                raise PrimitiveError(
+                    "invalid_input",
+                    f"questions[{i}].options[{j}].label must be a string",
+                    index=i,
+                    option_index=j,
+                    field="label",
+                )
+            if not isinstance(description, str):
+                raise PrimitiveError(
+                    "invalid_input",
+                    f"questions[{i}].options[{j}].description must be a string",
+                    index=i,
+                    option_index=j,
+                    field="description",
+                )
+
+    # --- Gateway check ---------------------------------------------------
     if not orch.is_gateway_available():
         raise PrimitiveError(
             "gateway_unavailable",
@@ -278,10 +387,10 @@ async def ask_user(
         )
 
     try:
-        answer = await orch.gateway_ask_user(caller_id, question, context)
+        result = await orch.gateway_ask_user_structured(caller_id, questions, context)
     except GatewayDeclined as e:
         raise PrimitiveError("user_declined", str(e) or "user declined")
-    return {"answer": answer}
+    return result
 
 
 async def report_status(

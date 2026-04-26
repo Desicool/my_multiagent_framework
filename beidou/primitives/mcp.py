@@ -187,29 +187,66 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
 
     @tool(
         "ask_user",
-        "Route a question to Beidou's human gateway. Blocks until the user "
-        "answers. Returns a structured error if no gateway is available or "
-        "the user declines.",
+        "Route one or more questions to Beidou's human gateway. Blocks until "
+        "the user answers all sub-questions. Returns a structured error if no "
+        "gateway is available or the user declines.",
         {
             "type": "object",
             "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The question to ask the user.",
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "List of 1..4 sub-questions to ask the user.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The question text.",
+                            },
+                            "header": {
+                                "type": "string",
+                                "maxLength": 12,
+                                "description": "Short label (<=12 chars). Empty string to omit.",
+                            },
+                            "multiSelect": {
+                                "type": "boolean",
+                                "description": "Whether multiple options may be chosen.",
+                            },
+                            "options": {
+                                "type": "array",
+                                "description": "Choice options. Length 0 for free-text, 2..4 for choice.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {
+                                            "type": "string",
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                        },
+                                    },
+                                    "required": ["label", "description"],
+                                },
+                            },
+                        },
+                        "required": ["question", "header", "multiSelect", "options"],
+                    },
                 },
                 "context": {
                     "type": "string",
-                    "description": "Optional background to accompany the question.",
+                    "description": "Optional background context to accompany the questions.",
                 },
             },
-            "required": ["question"],
+            "required": ["questions"],
         },
     )
     async def _ask_user(args: dict[str, Any]) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "orch": orch,
             "caller_id": caller_id,
-            "question": args["question"],
+            "questions": args["questions"],
         }
         if "context" in args and args["context"] is not None:
             kwargs["context"] = args["context"]

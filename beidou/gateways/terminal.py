@@ -50,4 +50,7 @@ class TerminalGateway(BaseGateway):
                     q.future.set_exception(exc)
                 return
             if not q.future.done():
-                q.future.set_result(answer)
+                broker.resolve_answer(
+                    q.qid,
+                    [{"selected_labels": [], "text": answer} for _ in q.questions],
+                )

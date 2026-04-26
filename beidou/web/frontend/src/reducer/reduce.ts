@@ -242,8 +242,20 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
     // question_asked is consumed by stores/questions.svelte.ts (re-poll trigger).
     // The reducer does NOT push it onto any stream (intentional — see plan §5).
     case 'question_asked':
-    case 'question_answered':
       break;
+
+    case 'question_answered': {
+      const e = ev as Extract<BeidouEvent, { type: 'question_answered' }>;
+      const asker = ensureAgent(state, e.asker);
+      pushStream(asker, makeMessageIn({
+        ts: e.ts,
+        from: 'user',
+        from_is_user: true,
+        content: e.answer_text,
+        message_id: e.qid,
+      }));
+      break;
+    }
 
     default:
       // Unknown event types are tolerated and ignored.

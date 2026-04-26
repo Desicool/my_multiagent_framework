@@ -27,19 +27,32 @@ class FakeOrchForHooks:
         self.events: list[tuple[str, dict]] = []
         self._gateway_answer = gateway_answer
         self._gateway_called: bool = False
-        self._gateway_calls: list[tuple[str, str, Optional[str]]] = []
+        self._gateway_calls: list[tuple[str, list, Optional[str]]] = []
 
     def emit_event(self, name: str, payload: dict) -> None:
         self.events.append((name, payload))
 
+    async def gateway_ask_user_structured(
+        self,
+        caller_id: str,
+        questions: list,
+        context: Optional[str],
+    ) -> dict:
+        self._gateway_called = True
+        self._gateway_calls.append((caller_id, questions, context))
+        return {
+            "answers": [{"selected_labels": [], "text": self._gateway_answer}],
+            "answer_text": self._gateway_answer,
+        }
+
+    # Legacy stub — kept so tests that happen to reference it don't crash,
+    # but the SDK hook no longer calls it (m4g).
     async def gateway_ask_user(
         self,
         caller_id: str,
         question: str,
         context: Optional[str],
     ) -> str:
-        self._gateway_called = True
-        self._gateway_calls.append((caller_id, question, context))
         return self._gateway_answer
 
     # report_status hook path — not used by ask_user tests but build_hooks
@@ -123,38 +136,35 @@ class TestAskUserQuestionHook:
         assert hs_out.get("hookEventName") == "PreToolUse"
 
     def test_gateway_called_with_correct_args(self) -> None:
-        """Gateway receives the composite question and context hint."""
+        """Gateway receives the raw questions array unchanged (no flattening after m4g)."""
         orch = FakeOrchForHooks(gateway_answer="blue")
         hook = _get_pretooluse_hook(orch)
 
+        questions_in = [
+            {
+                "question": "Favourite color?",
+                "header": "Color",
+                "options": [
+                    {"label": "Red", "description": "rosy"},
+                    {"label": "Blue", "description": "calm"},
+                ],
+            }
+        ]
         input_data = {
             "tool_name": "AskUserQuestion",
-            "tool_input": {
-                "questions": [
-                    {
-                        "question": "Favourite color?",
-                        "header": "Color",
-                        "options": [
-                            {"label": "Red", "description": "rosy"},
-                            {"label": "Blue", "description": "calm"},
-                        ],
-                    }
-                ]
-            },
+            "tool_input": {"questions": questions_in},
         }
 
         asyncio.run(hook(input_data, tool_use_id=None, context=None))
 
         assert orch._gateway_called
         assert len(orch._gateway_calls) == 1
-        caller_id, question, context_hint = orch._gateway_calls[0]
+        caller_id, questions_received, context_received = orch._gateway_calls[0]
         assert caller_id == "test_agent"
-        assert "Favourite color?" in question
-        assert "Color" in question  # header incorporated
-        # Options should appear in the context hint.
-        assert context_hint is not None
-        assert "Red" in context_hint
-        assert "rosy" in context_hint
+        # The hook must NOT flatten — it passes the questions list through unchanged.
+        assert questions_received == questions_in
+        # No context argument in the input_data, so None is passed.
+        assert context_received is None
 
     def test_two_synthetic_events_emitted(self) -> None:
         """emit_event is called exactly twice: tool_called then tool_result."""
@@ -266,7 +276,7 @@ class TestAskUserQuestionHook:
         """When gateway raises, tool_result has is_error=True and answer is error string."""
 
         class ErrorOrch(FakeOrchForHooks):
-            async def gateway_ask_user(self, caller_id, question, context):
+            async def gateway_ask_user_structured(self, caller_id, questions, context):
                 raise RuntimeError("simulated gateway failure")
 
         orch = ErrorOrch()
@@ -286,23 +296,22 @@ class TestAskUserQuestionHook:
         hs_out = result.get("hookSpecificOutput", {})
         assert "RuntimeError" in hs_out.get("permissionDecisionReason", "")
 
-    def test_multi_question_composite(self) -> None:
-        """Multiple questions are combined into one composite prompt."""
+    def test_multi_question_passthrough(self) -> None:
+        """Multiple questions are passed to gateway unchanged — no composite flattening."""
         orch = FakeOrchForHooks(gateway_answer="both answered")
         hook = _get_pretooluse_hook(orch)
 
+        questions_in = [
+            {"question": "First question?", "header": "First", "options": []},
+            {"question": "Second question?", "header": "Second", "options": []},
+        ]
         input_data = {
             "tool_name": "AskUserQuestion",
-            "tool_input": {
-                "questions": [
-                    {"question": "First question?", "header": "First", "options": []},
-                    {"question": "Second question?", "header": "Second", "options": []},
-                ]
-            },
+            "tool_input": {"questions": questions_in},
         }
         asyncio.run(hook(input_data, tool_use_id=None, context=None))
 
         assert orch._gateway_called
-        _, question, _ = orch._gateway_calls[0]
-        assert "First question?" in question
-        assert "Second question?" in question
+        _, questions_received, _ = orch._gateway_calls[0]
+        # Both sub-questions must arrive as-is.
+        assert questions_received == questions_in

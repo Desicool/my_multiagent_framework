@@ -246,6 +246,21 @@ class FakeOrchestrator:
             raise self.gateway_raise_generic
         return self.gateway_answer
 
+    async def gateway_ask_user_structured(
+        self,
+        caller_id: str,
+        questions: list,
+        context: Optional[str],
+    ) -> dict:
+        if self.gateway_decline:
+            raise GatewayDeclined("nope")
+        if self.gateway_raise_generic is not None:
+            raise self.gateway_raise_generic
+        return {
+            "answers": [{"selected_labels": [], "text": self.gateway_answer}],
+            "answer_text": self.gateway_answer,
+        }
+
     def is_gateway_available(self) -> bool:
         return self.gateway_available
 
@@ -382,13 +397,26 @@ def test_list_peers_invalid_scope():
 # ---------------------------------------------------------------------------
 
 
+_FREE_TEXT_Q = [
+    {
+        "question": "proceed?",
+        "header": "",
+        "multiSelect": False,
+        "options": [],
+    }
+]
+
+
 def test_ask_user_happy_path():
     o = _build()
     o.gateway_answer = "yes go"
 
     async def body():
-        out = await ask_user(o, caller_id="A", question="proceed?")
-        assert out == {"answer": "yes go"}
+        out = await ask_user(o, caller_id="A", questions=_FREE_TEXT_Q)
+        assert out == {
+            "answers": [{"selected_labels": [], "text": "yes go"}],
+            "answer_text": "yes go",
+        }
 
     run(body())
 
@@ -399,8 +427,128 @@ def test_ask_user_gateway_unavailable():
 
     async def body():
         with pytest.raises(PrimitiveError) as ei:
-            await ask_user(o, caller_id="A", question="?")
+            await ask_user(o, caller_id="A", questions=_FREE_TEXT_Q)
         assert ei.value.code == "gateway_unavailable"
+
+    run(body())
+
+
+# ---------------------------------------------------------------------------
+# ask_user — validation tests
+# ---------------------------------------------------------------------------
+
+
+def test_ask_user_empty_questions_list():
+    o = _build()
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await ask_user(o, caller_id="A", questions=[])
+        assert ei.value.code == "invalid_input"
+
+    run(body())
+
+
+def test_ask_user_too_many_questions():
+    o = _build()
+    q = {"question": "x?", "header": "", "multiSelect": False, "options": []}
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await ask_user(o, caller_id="A", questions=[q, q, q, q, q])
+        assert ei.value.code == "invalid_input"
+
+    run(body())
+
+
+def test_ask_user_header_too_long():
+    o = _build()
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await ask_user(
+                o,
+                caller_id="A",
+                questions=[
+                    {
+                        "question": "proceed?",
+                        "header": "TooLongHeader",  # 13 chars > 12
+                        "multiSelect": False,
+                        "options": [],
+                    }
+                ],
+            )
+        assert ei.value.code == "invalid_input"
+
+    run(body())
+
+
+def test_ask_user_options_length_one():
+    o = _build()
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await ask_user(
+                o,
+                caller_id="A",
+                questions=[
+                    {
+                        "question": "choose?",
+                        "header": "",
+                        "multiSelect": False,
+                        "options": [{"label": "Only", "description": "sole option"}],
+                    }
+                ],
+            )
+        assert ei.value.code == "invalid_input"
+
+    run(body())
+
+
+def test_ask_user_options_length_five():
+    o = _build()
+    opt = {"label": "X", "description": "desc"}
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await ask_user(
+                o,
+                caller_id="A",
+                questions=[
+                    {
+                        "question": "choose?",
+                        "header": "",
+                        "multiSelect": False,
+                        "options": [opt, opt, opt, opt, opt],
+                    }
+                ],
+            )
+        assert ei.value.code == "invalid_input"
+
+    run(body())
+
+
+def test_ask_user_malformed_option_dict():
+    o = _build()
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await ask_user(
+                o,
+                caller_id="A",
+                questions=[
+                    {
+                        "question": "choose?",
+                        "header": "",
+                        "multiSelect": False,
+                        "options": [
+                            {"label": "Yes", "description": "affirmative"},
+                            "not_a_dict",  # malformed
+                        ],
+                    }
+                ],
+            )
+        assert ei.value.code == "invalid_input"
 
     run(body())
 

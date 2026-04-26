@@ -274,6 +274,13 @@ def insert_question(
 
 
 def update_question_answered(qid: str, answer: str, answered_at: float) -> None:
+    """Persist the resolved answer for a question.
+
+    ``answer`` is now a JSON-encoded list of structured answer entries
+    (one per sub-question), each shaped as
+    ``{"selected_labels": [...], "text": "..."}``.
+    The ``answer TEXT`` column accepts the JSON string without schema changes.
+    """
     with _connect() as conn:
         conn.execute(
             "UPDATE questions SET state='answered', answer=?, answered_at=? WHERE qid=?",

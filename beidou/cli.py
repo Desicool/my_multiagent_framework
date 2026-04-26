@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import click
 from dotenv import load_dotenv
@@ -133,30 +134,36 @@ def _build_gateway(
 
 class _GatewayAdapter:
     """Bridges :class:`~beidou.gateways.base.BaseGateway` to the orchestrator's
-    ``gateway_ask_user(caller_id, question, context) -> str`` contract.
+    ``gateway_ask_user(caller_id, question, context) -> str`` and
+    ``gateway_ask_user_structured(caller_id, questions, context) -> dict``
+    contracts.
 
-    The orchestrator calls ``await adapter.ask(caller_id, question, context)``.
-    We construct a :class:`~beidou.inbox.Question` with no holder (goes directly
-    to the user), register it in the broker so gateways can answer via
-    ``broker.answer(qid, text)``, surface it via the underlying gateway, and
-    block on the future.
+    ``ask()`` — legacy string-only path; used by ``sdk_agent.py``'s
+    ``AskUserQuestion`` hook (and ``gateway_ask_user``).  Builds its own
+    ``Question`` directly so that it can return a bare string.
 
-    NOTE: This path bypasses ``QuestionBroker.ask()``'s ``db.insert_question``
-    call, so ``ask_user`` questions are NOT persisted in the questions table.
-    This is acceptable for the current cutover pass; a follow-up should either
-    inline the DB write here or refactor ``QuestionBroker`` to expose a
-    context-free ask method.
+    ``ask_structured()`` — unified path for ``gateway_ask_user_structured``;
+    delegates to ``QuestionBroker.ask()`` so both the MCP ``ask_user``
+    primitive and the orchestrator-internal watchdog/review escalations land at
+    the same ``broker._pending`` entry, emit ``question_asked`` / ``question_answered``
+    events, and persist in the DB.
     """
 
     def __init__(
         self,
         gateway: "BaseGateway",
         broker: "QuestionBroker",
+        emitter: Any,
+        task_id: str,
     ) -> None:
         self._gw = gateway
         self._broker = broker
+        self._emitter = emitter
+        self._task_id = task_id
 
     async def ask(self, caller_id: str, question: str, context: str | None) -> str:
+        """Legacy string-only path.  Builds a Question without going through
+        broker.ask() so it can return a plain string to sdk_agent.py."""
         import asyncio as _asyncio
         from beidou.inbox import Question, _new_qid
 
@@ -166,7 +173,7 @@ class _GatewayAdapter:
             asker_agent_id=caller_id,
             current_holder_agent_id=None,
             chain=[caller_id, "USER"],
-            prompt=question,
+            questions=[{"question": question, "header": "", "multiSelect": False, "options": []}],
             context_hint=context,
             state="at_user",
             future=loop.create_future(),
@@ -175,9 +182,53 @@ class _GatewayAdapter:
         # Surface the question to the human via the registered gateway.
         await self._gw.surface_question(q, self._broker)
         try:
-            return await q.future
+            result = await q.future
+            # result is {"answers": [...], "answer_text": "..."} from resolve_answer
+            if isinstance(result, dict):
+                return result.get("answer_text", "")
+            # Fallback for legacy future.set_result(str) paths still in the wild.
+            return str(result)
         finally:
             self._broker._pending.pop(q.qid, None)
+
+    async def ask_structured(
+        self, caller_id: str, questions: list[dict], context: str | None
+    ) -> dict:
+        """Unified structured path.  Delegates to ``QuestionBroker.ask()`` so
+        all asks go through the same pending-question object, DB write, and
+        event sequence as MCP ``ask_user`` calls.
+
+        Returns ``{"answers": [...], "answer_text": "..."}`` from the broker.
+        """
+
+        class _BrokerCtx:
+            """Minimal duck-typed context satisfying ``QuestionBroker.ask``."""
+
+            def __init__(
+                self,
+                agent_id: str,
+                emitter: Any,
+                task_id: str,
+            ) -> None:
+                self.agent_id = agent_id
+                # parent=None means the question goes straight to the user
+                # (no leader-chain escalation), matching current semantics of
+                # gateway_ask_user / watchdog escalations.
+                self.parent = None
+                self._kv: dict[str, Any] = {
+                    "emitter": emitter,
+                    "task_id": task_id,
+                }
+
+            def get(self, k: str, default: Any = None) -> Any:
+                return self._kv.get(k, default)
+
+        ctx = _BrokerCtx(
+            agent_id=caller_id,
+            emitter=self._emitter,
+            task_id=self._task_id,
+        )
+        return await self._broker.ask(ctx, questions, context_hint=context)
 
 
 async def _run_task(
@@ -211,7 +262,7 @@ async def _run_task(
     broker = QuestionBroker()
     gw = _build_gateway(gateway, broker, task_id, web_host, web_port, open_browser, console)
     broker.set_gateway(gw)
-    gateway_adapter = _GatewayAdapter(gw, broker)
+    gateway_adapter = _GatewayAdapter(gw, broker, emitter=emitter, task_id=task_id)
 
     orch = Orchestrator(
         task_id=task_id,

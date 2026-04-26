@@ -123,11 +123,36 @@ export type QuestionAskedEvent = {
   prompt: string;       // truncated to 200 chars by inbox.py
 };
 
+export type StructuredAnswer = {
+  selected_labels: string[];
+  text: string | null;
+};
+
+export type QuestionOption = {
+  label: string;
+  description: string;
+};
+
+export type SubQuestion = {
+  question: string;
+  header: string;          // <=12 chars
+  multiSelect: boolean;    // camelCase — matches Claude Code wire shape
+  options: QuestionOption[];   // length 0 (free-text) or 2..4 (choice)
+};
+
+export type AnswerPayload = {
+  answers: StructuredAnswer[];
+};
+
 export type QuestionAnsweredEvent = {
   type: 'question_answered';
   ts: number;
+  agent_id: string;
   qid: string;
-  asker?: string;
+  asker: string;
+  chain_len: number;
+  answers: StructuredAnswer[];
+  answer_text: string;
 };
 
 export type ContractViolationEvent = {
@@ -271,7 +296,8 @@ export type TaskRecord = {
 export type PendingQuestion = {
   qid: string;
   asker_agent_id: string;
-  prompt: string;
+  questions: SubQuestion[];        // Claude Code wire shape
+  prompt: string;                  // derived plain-text fallback (still emitted by backend)
   context_hint?: string | null;
   chain?: string[];
   created_at: number;

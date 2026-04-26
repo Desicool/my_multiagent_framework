@@ -168,6 +168,16 @@ def test_list_peers_invalid_scope_rejected_by_schema():
 # ---------------------------------------------------------------------------
 
 
+_FREE_TEXT_Q = [
+    {
+        "question": "proceed?",
+        "header": "",
+        "multiSelect": False,
+        "options": [],
+    }
+]
+
+
 def test_ask_user_happy_path():
     o = _build()
     o.gateway_answer = "yes go"
@@ -175,11 +185,12 @@ def test_ask_user_happy_path():
 
     async def body():
         result = await _call(
-            cfg, "ask_user", {"question": "proceed?", "context": "bg"}
+            cfg, "ask_user", {"questions": _FREE_TEXT_Q, "context": "bg"}
         )
         assert result.isError in (False, None)
         payload = _text_payload(result)
-        assert payload == {"answer": "yes go"}
+        assert payload["answer_text"] == "yes go"
+        assert "answers" in payload
 
     run(body())
 
@@ -190,10 +201,44 @@ def test_ask_user_gateway_unavailable_is_structured_error():
     cfg = build_mcp_server_for(o, caller_id="A")
 
     async def body():
-        result = await _call(cfg, "ask_user", {"question": "?"})
+        result = await _call(cfg, "ask_user", {"questions": _FREE_TEXT_Q})
         assert result.isError is True
         payload = _text_payload(result)
         assert payload["error"] == "gateway_unavailable"
+
+    run(body())
+
+
+def test_ask_user_tool_schema_shape():
+    """The ask_user MCP tool exposes the Claude Code wire shape for questions."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        ask_user_tool = next(t for t in result.tools if t.name == "ask_user")
+        schema = ask_user_tool.inputSchema
+
+        # Top-level must require "questions" array.
+        assert "questions" in schema.get("required", [])
+        props = schema["properties"]
+        assert "questions" in props
+
+        questions_schema = props["questions"]
+        assert questions_schema["type"] == "array"
+
+        item_schema = questions_schema["items"]
+        item_props = item_schema["properties"]
+
+        # camelCase multiSelect on the wire.
+        assert "multiSelect" in item_props
+
+        # options items must require ["label", "description"].
+        options_items = item_props["options"]["items"]
+        assert set(options_items.get("required", [])) == {"label", "description"}
 
     run(body())
 
