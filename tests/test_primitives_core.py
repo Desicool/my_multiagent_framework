@@ -45,6 +45,10 @@ class _AgentRec:
     team_id: str          # parent team the agent is a member of
     role: str = "member"
     status: str = "working"
+    skill_name: str = ""
+    completion_pending: bool = False
+    completion_pending_ts: Optional[float] = None
+    last_status_detail: str = ""
 
 
 @dataclass
@@ -248,6 +252,20 @@ class FakeOrchestrator:
         # Test default: no terminate sentinel consumed. Tests that care flip
         # this via the ``_terminated`` set they manage directly.
         return False
+
+    # --- Completion-review accessors (used by list_pending_reviews) --------
+
+    def agent_skill_name(self, agent_id: str) -> str:
+        return self.agents[agent_id].skill_name
+
+    def agent_completion_pending(self, agent_id: str) -> bool:
+        return self.agents[agent_id].completion_pending
+
+    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
+        return self.agents[agent_id].completion_pending_ts
+
+    def agent_last_status_detail(self, agent_id: str) -> str:
+        return self.agents[agent_id].last_status_detail
 
 
 # ---------------------------------------------------------------------------

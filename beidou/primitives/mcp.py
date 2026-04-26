@@ -4,12 +4,13 @@ Each primitive in :mod:`beidou.primitives.core` is exposed to a single
 ``claude-agent-sdk`` agent as an in-process MCP tool under the ``beidou``
 server. The agent-visible names are (see ``docs/tool-surface.md``):
 
-* ``mcp__beidou__send_message``     -- A2A enqueue.
-* ``mcp__beidou__list_peers``       -- Peer snapshot (team/children/all).
-* ``mcp__beidou__ask_user``         -- Human gateway question.
-* ``mcp__beidou__report_status``    -- State update + observability.
-* ``mcp__beidou__create_team``      -- Spawn a sub-team; caller becomes leader.
-* ``mcp__beidou__terminate_child``  -- Post a terminate sentinel to a child.
+* ``mcp__beidou__send_message``         -- A2A enqueue.
+* ``mcp__beidou__list_peers``           -- Peer snapshot (team/children/all).
+* ``mcp__beidou__ask_user``             -- Human gateway question.
+* ``mcp__beidou__report_status``        -- State update + observability.
+* ``mcp__beidou__create_team``          -- Spawn a sub-team; caller becomes leader.
+* ``mcp__beidou__terminate_child``      -- Post a terminate sentinel to a child.
+* ``mcp__beidou__list_pending_reviews`` -- Read-only list of children awaiting review.
 
 Per ``docs/tool-surface.md``: ``caller_id`` is baked into the per-spawn MCP
 server via closure -- the model NEVER supplies it, and every primitive runs
@@ -31,6 +32,7 @@ from .core import (
     ask_user,
     create_team,
     list_peers,
+    list_pending_reviews,
     report_status,
     send_message,
     terminate_child,
@@ -80,6 +82,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                 "mcp__beidou__report_status",
                 "mcp__beidou__create_team",
                 "mcp__beidou__terminate_child",
+                "mcp__beidou__list_pending_reviews",
             ],
             ...,
         )
@@ -296,6 +299,31 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             agent_id=args["agent_id"],
         )
 
+    @tool(
+        "list_pending_reviews",
+        "Return the list of your direct child agents currently awaiting your "
+        "approve/rework decision (those that have called "
+        "report_status(state='done') and not yet been terminated or sent "
+        "rework). Use this if you are unsure which children still need a "
+        "decision from you.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    )
+    async def _list_pending_reviews(args: dict[str, Any]) -> dict[str, Any]:
+        async def _call(**kwargs: Any) -> list[dict]:
+            return list_pending_reviews(**kwargs)
+
+        return await _wrap(
+            "list_pending_reviews",
+            _call,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+        )
+
     return create_sdk_mcp_server(
         name="beidou",
         version="1.0.0",
@@ -306,6 +334,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             _report_status,
             _create_team,
             _terminate_child,
+            _list_pending_reviews,
         ],
     )
 

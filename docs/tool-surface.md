@@ -21,6 +21,7 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 | `report_status` | Agent-Beidou | No |
 | `create_team` | Agent-Beidou | No |
 | `terminate_child` | Agent-Beidou | No |
+| `list_pending_reviews` | Agent-Beidou | No |
 
 ---
 
@@ -183,3 +184,45 @@ inbox.
 - Beidou does NOT itself call this tool. Beidou's ONE termination privilege
   applies only to the root agent, via an internal path (see
   `orchestration.md`).
+
+---
+
+## list_pending_reviews
+
+**Kind:** Agent-Beidou. Read-only registry walk; no mutations.
+
+**Input schema**
+
+No input fields.
+
+**Output schema**
+```
+[
+  {
+    "agent_id": "<string>",
+    "role": "<skill_name string>",
+    "completion_pending_ts": <float | null>,
+    "age_s": <float | null>,
+    "summary": "<last_status_detail string>"
+  },
+  ...
+]
+```
+
+Returns the list of the caller's direct child agents (members of any team the
+caller leads) that currently have `completion_pending=True` — meaning they have
+called `report_status(state="done")` and the caller has not yet responded with
+`terminate_child` or a rework `send_message`.
+
+`age_s` is `now - completion_pending_ts` (positive float) or `null` if the
+timestamp is absent. Results are sorted ascending by `completion_pending_ts`
+(oldest pending review first); entries with no timestamp sort last.
+
+**Error cases:** none. Returns `[]` when there are no pending reviews.
+
+**Validation rules**
+- Read-only: no state is mutated. Safe to call as many times as needed.
+- "Direct children" means members of teams the caller directly leads (one hop).
+  Grandchildren and deeper descendants are not included.
+- The caller itself is excluded from results even if it somehow appears as a
+  member of one of its own teams.

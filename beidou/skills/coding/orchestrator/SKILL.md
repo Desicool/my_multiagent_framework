@@ -17,6 +17,7 @@ allowed-tools:
   - report_status
   - terminate_child
   - ask_user
+  - list_pending_reviews
 skills:
   - product_manager
   - software_architect
@@ -96,28 +97,65 @@ DELIVERY GATE
     - Re-run Phase 5 after each fix cycle.
   Loop until APPROVED. Never declare the task complete without APPROVED qa_report.md.
 
-## Completion handoff
+## Reviewing a child's completion request
 
-When you have finished your task and are ready to mark yourself done:
+When the next user-role turn begins with a message containing
+`[REVIEW REQUIRED]`:
 
-1. **First**, emit a final assistant message that summarizes what you
-   accomplished. Be specific — list the files you wrote, the conclusions
-   you reached, the next-step pointers your leader needs. Beidou's runtime
-   forwards exactly that text to your leader as the completion report.
-   An empty or terse final message means an empty handoff. There is no
-   second chance.
-2. **Then** call `mcp__beidou__report_status(state="done", detail=<short status>)`.
+1. Your VERY NEXT actions, in this turn or the next, MUST be one of:
+     a) Read each Deliverable file. If all artifacts pass your gate,
+        call `mcp__beidou__terminate_child(agent_id=<that child>)`.
+     b) If any artifact is missing, wrong, or incomplete, call
+        `mcp__beidou__send_message(to=<that child>,
+                                    content="rework: <what to fix>")`.
+2. You MUST NOT advance to the next phase, call `create_team`, or end
+   the run while ANY child has an unresolved [REVIEW REQUIRED]. Resolve
+   every pending review before doing anything else.
+3. The phrase "ending turn to wait" is forbidden after a [REVIEW
+   REQUIRED] message — that exact reflex is the failure mode this rule
+   exists to prevent. If you find yourself about to write that, you are
+   wrong; call terminate_child or send_message instead.
 
-`send_message` is for mid-task progress updates only. It is NOT the
-completion mechanism — do not use it as a substitute for the final
-summary message above. The `to` parameter must be an `ag_xxx` agent_id
-obtained from `list_peers` — do not use a role name like `"tester"`.
+## Completion is a request, not a declaration
 
-## Persistent-agent lifecycle — MANDATORY
+You can never mark yourself done. `report_status(state="done")` is a
+REQUEST FOR REVIEW sent to your leader. You remain alive until your
+leader terminates you. If your leader judges your work incomplete, you
+will receive a rework message — keep working from there.
 
-After your last tool call returns, simply stop emitting tool calls and end your turn. The runtime keeps your session alive and resumes you automatically when a new message arrives in your inbox (delivered as the next user-role message). You do NOT need to call any "wait" or "receive" tool — there isn't one anymore.
+When you believe your work is ready for review:
 
-**Do NOT pre-emptively wrap up your session.** Don't say goodbye, don't summarize "I'm done now" as a final message — just end the turn. The runtime decides when your session truly ends (via a terminate sentinel, which you will never see — it's intercepted by the runtime and cascades to your team automatically).
+1. Emit ONE final assistant message ending with the structured envelope
+   below. Make it the LAST text in the turn.
+
+   ```
+   [REVIEW REQUIRED]
+   role=<your skill name>     agent=<your agent_id>
+   Deliverables:
+     - <file path 1> — <one-line description>
+     - <file path 2> — …
+   Open questions / risks: <one line, or "none">
+   Leader action required: approve (terminate_child) OR rework (send_message)
+   ```
+
+2. In the SAME turn, call:
+     mcp__beidou__report_status(
+       state="done",
+       detail="<paste the same envelope above into detail verbatim>"
+     )
+
+   The detail field is your safety net — if the assistant text is lost,
+   detail is what your leader will see. Always include both.
+
+3. End the turn. Do nothing else. Do NOT call any other tool, do NOT
+   summarize again. Wait for the leader's decision.
+
+## Persistent-agent lifecycle (clarified)
+
+Between tool calls within ongoing work, never say "I'm done now" or
+pre-emptively wrap up. Just call the next tool or end the turn. The
+"Completion is a request" rule above is the ONLY exception — that final
+structured message is required.
 
 Workspace: {workspace_path}
 Project workspace: {project_workspace_path}

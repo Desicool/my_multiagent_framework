@@ -76,13 +76,16 @@ class TestAskUserQuestionHook:
     """Tests for the PreToolUse AskUserQuestion interceptor hook."""
 
     def test_hook_present_in_build_hooks(self) -> None:
-        """build_hooks includes a PreToolUse entry for AskUserQuestion."""
+        """build_hooks includes PreToolUse entries: AskUserQuestion + review_gate (match-all)."""
         orch = FakeOrchForHooks()
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PreToolUse" in hooks, "No PreToolUse key in hooks dict"
         matchers = hooks["PreToolUse"]
-        assert len(matchers) == 1
-        assert matchers[0].matcher == "AskUserQuestion"
+        # 2 PreToolUse matchers: AskUserQuestion hook (be3) + match-all review gate (be3).
+        assert len(matchers) == 2
+        matcher_names = [m.matcher for m in matchers]
+        assert "AskUserQuestion" in matcher_names, f"Expected AskUserQuestion in {matcher_names}"
+        assert None in matcher_names, f"Expected match-all (None) in {matcher_names}"
 
     def test_posttooluse_still_present(self) -> None:
         """build_hooks still includes the PostToolUse report_status hook."""

@@ -276,6 +276,30 @@ observe member status via `list_peers`.
 | `team_id` | The agent's team. |
 | `all_done` | `true` when every member of the team is also in `done` state; `false` otherwise. |
 
+---
+
+### `completion.envelope_synthesized`
+
+Emitted by the `on_report_status` PostToolUse hook when a child agent calls
+`report_status(state="done")` but the resolved summary body does NOT contain
+`[REVIEW REQUIRED]` (case-insensitive substring match). The hook synthesizes
+a standard envelope prepended to the original body so the leader receives the
+unmissable handoff signal even when the agent failed to embed it.
+
+JSONL-only — no SQLite rollup. Use to measure how often the prompt-side
+envelope rule fails.
+
+| Field | Source |
+|---|---|
+| `agent_id` | The child agent that reported done. |
+| `leader_id` | The leader the completion report was delivered to. |
+| `body_chars` | The first 200 characters of the synthesized body (truncated). |
+
+This event is NOT emitted when the body already contains `[REVIEW REQUIRED]`
+(passthrough path).
+
+---
+
 ## Sinks
 
 - **JSONL** `~/.beidou/events/{task_id}.jsonl`: one JSON object per line,

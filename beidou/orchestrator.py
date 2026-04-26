@@ -47,6 +47,12 @@ ROOT_TEAM_ID = "tm_root"
 # Limits.md #8: per-agent token ceiling.
 TOKEN_CEILING = 1_000_000
 
+# Watchdog tunables — implementation constants, NOT in docs/limits.md.
+WATCHDOG_INTERVAL_S = 30.0
+REVIEW_PING_INTERVAL_S = 60.0
+IDLE_NUDGE_S = 120.0
+MAX_PINGS_BEFORE_ESCALATION = 3
+
 
 # ---------------------------------------------------------------------------
 # Records.
@@ -69,6 +75,14 @@ class AgentRecord:
     run_task: Optional[asyncio.Task] = None
     terminate_consumed: bool = False
     total_tokens: int = 0
+    # Completion-review state (Phase 2 foundation — bd issue 8z3).
+    completion_pending: bool = False
+    completion_pending_ts: Optional[float] = None
+    last_progress_ts: float = field(default_factory=time.time)
+    review_ping_count: int = 0
+    # Watchdog fields (bd issue qj2).
+    inflight_tools: int = 0
+    idle_nudge_count: int = 0
 
 
 @dataclass
@@ -121,6 +135,10 @@ class Orchestrator:
         # Background emitter tasks — keep refs so they're not GC'd mid-flight.
         self._bg_tasks: set[asyncio.Task] = set()
 
+        # Watchdog (bd issue qj2).
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._shutting_down: bool = False
+
         # Lazily-created per-agent create_team locks.
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -154,6 +172,20 @@ class Orchestrator:
 
     def team_members(self, team_id: str) -> list[str]:
         return list(self._teams[team_id].member_ids)
+
+    # --- Completion-review accessors (used by list_pending_reviews) --------
+
+    def agent_skill_name(self, agent_id: str) -> str:
+        return self._agents[agent_id].skill_name
+
+    def agent_completion_pending(self, agent_id: str) -> bool:
+        return self._agents[agent_id].completion_pending
+
+    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
+        return self._agents[agent_id].completion_pending_ts
+
+    def agent_last_status_detail(self, agent_id: str) -> str:
+        return self._agents[agent_id].last_status_detail
 
     def peer_snapshot(self, agent_id: str, scope: str) -> list[Peer]:
         if agent_id not in self._agents:
@@ -221,7 +253,39 @@ class Orchestrator:
             )
         rec.inbox.put_nowait(msg)
 
+        # Update progress timestamp on every inbox arrival (agent is about to
+        # wake and act).
+        rec.last_progress_ts = time.time()
+
+        # Terminate sentinel: possibly emit completion.approved if pending, then
+        # cascade to children.
         if msg.kind == "terminate":
+            if rec.completion_pending:
+                duration_ms: Optional[float] = (
+                    (time.time() - rec.completion_pending_ts) * 1000
+                    if rec.completion_pending_ts is not None
+                    else None
+                )
+                leader_id_for_event = self.leader_of(rec.team_id)
+                self.emit_event(
+                    "completion.approved",
+                    {
+                        "agent_id": rec.agent_id,
+                        "leader_id": leader_id_for_event,
+                        "completion_pending_duration_ms": duration_ms,
+                        "ts": time.time(),
+                    },
+                )
+                # Clear the pending state AFTER emitting (so duration_ms is
+                # computed against the pre-cleared ts).  Without this, the
+                # AgentRecord persists with completion_pending=True after the
+                # child is terminated, and the leader's on_review_gate hook
+                # keeps denying every subsequent tool call (tsk_e92d672b repro).
+                rec.completion_pending = False
+                rec.completion_pending_ts = None
+                rec.review_ping_count = 0
+                rec.idle_nudge_count = 0
+
             for tid in self.teams_led_by(recipient):
                 for mid in list(self._teams[tid].member_ids):
                     if mid == recipient or mid not in self._agents:
@@ -234,6 +298,29 @@ class Orchestrator:
                         kind="terminate",
                     )
                     await self.inbox_put(mid, cascade)
+            return
+
+        # Non-terminate message: clear completion_pending when the sender is
+        # the agent's direct leader or the human user gateway ("user").
+        # Exclude system messages (from_id == "beidou") explicitly.
+        if msg.from_id != "beidou" and rec.completion_pending:
+            leader_id_for_msg = self.leader_of(rec.team_id)
+            is_from_leader = msg.from_id == leader_id_for_msg
+            is_from_user = msg.from_id == "user"
+            if is_from_leader or is_from_user:
+                rec.completion_pending = False
+                rec.completion_pending_ts = None
+                rec.review_ping_count = 0
+                content_preview = (msg.content or "")[:200]
+                self.emit_event(
+                    "completion.rework",
+                    {
+                        "agent_id": rec.agent_id,
+                        "leader_id": leader_id_for_msg,
+                        "content_preview": content_preview,
+                        "ts": time.time(),
+                    },
+                )
 
     def inbox_size(self, agent_id: str) -> int:
         return self._agents[agent_id].inbox.qsize()
@@ -321,7 +408,7 @@ class Orchestrator:
                 inbox=asyncio.Queue(),
                 create_team_lock=asyncio.Lock(),
             )
-            self._agents[agent_id] = rec
+            self._register_agent_record(rec)
             members_out.append({"agent_id": agent_id, "role": role_name})
 
             spec = SpawnSpec(
@@ -695,6 +782,245 @@ class Orchestrator:
         task.add_done_callback(self._bg_tasks.discard)
 
     # ------------------------------------------------------------------
+    # Agent registration helper.
+    # ------------------------------------------------------------------
+
+    def _register_agent_record(self, rec: AgentRecord) -> None:
+        """Register a new AgentRecord and lazily start the watchdog task.
+
+        Must be called from within a running event loop (i.e. from async
+        context) to allow asyncio.create_task. Guarded defensively so tests
+        that construct AgentRecord outside a loop aren't broken.
+        """
+        self._agents[rec.agent_id] = rec
+        if self._watchdog_task is None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return  # No loop — watchdog will start on first async call.
+            self._watchdog_task = asyncio.create_task(
+                self._watchdog_loop(),
+                name="beidou-watchdog",
+            )
+
+    # ------------------------------------------------------------------
+    # Watchdog — background liveness / review-escalation task.
+    # ------------------------------------------------------------------
+
+    async def _watchdog_loop(self) -> None:
+        """Background coroutine: tick every WATCHDOG_INTERVAL_S seconds.
+
+        Two passes per tick:
+        - Pass A: escalate agents with completion_pending=True that their
+          leader hasn't reviewed in time.
+        - Pass B: nudge idle agents that have made no progress.
+        """
+        while not self._shutting_down:
+            await asyncio.sleep(WATCHDOG_INTERVAL_S)
+            if self._shutting_down:
+                break
+            try:
+                await self._watchdog_tick()
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                tb = traceback.format_exc()[:500]
+                self._schedule_emit(
+                    "watchdog.exception",
+                    "",
+                    None,
+                    {"exception": type(exc).__name__, "msg": str(exc), "tb": tb, "ts": time.time()},
+                )
+
+    async def _watchdog_tick(self) -> None:
+        """One tick of the watchdog: Pass A (review escalation) + Pass B (liveness nudge).
+
+        Snapshot the agent list to avoid issues if _agents is mutated during iteration.
+        """
+        import traceback as _traceback
+
+        now = time.time()
+        agents = list(self._agents.values())
+
+        # ------------------------------------------------------------------
+        # Pass A — review-pending escalation.
+        # ------------------------------------------------------------------
+        for rec in agents:
+            if not rec.completion_pending:
+                continue
+            if rec.terminate_consumed:
+                continue
+            if rec.completion_pending_ts is None:
+                continue
+            delta = now - rec.completion_pending_ts
+            if delta < REVIEW_PING_INTERVAL_S:
+                continue
+            # Determine the leader of this child.
+            team = self._teams.get(rec.team_id)
+            if team is None:
+                continue
+            leader = team.leader_id
+            if leader == USER_SENTINEL:
+                # Root agent; no leader to ping.
+                continue
+
+            child_id = rec.agent_id
+            delta_s = int(delta)
+
+            if rec.review_ping_count == 0:
+                body = (
+                    f"[REVIEW REQUIRED — STILL PENDING {delta_s}s]"
+                    f" child={child_id} awaiting your decision."
+                    f" Call mcp__beidou__terminate_child(agent_id=\"{child_id}\") (approve)"
+                    f" OR mcp__beidou__send_message(to=\"{child_id}\", content=\"rework: ...\")."
+                    f" Do not end your turn before deciding."
+                )
+                self.deliver_message(
+                    from_id="beidou",
+                    to_id=leader,
+                    body=body,
+                    kind="ping",
+                )
+                rec.review_ping_count += 1
+                rec.completion_pending_ts = now
+                self.emit_event(
+                    "completion.reping",
+                    {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ping_count": rec.review_ping_count, "delta_s": delta_s, "ts": now},
+                )
+
+            elif rec.review_ping_count == 1:
+                body = (
+                    f"[REVIEW REQUIRED — STILL PENDING {delta_s}s]"
+                    f" child={child_id} awaiting your decision."
+                    f" Call mcp__beidou__terminate_child(agent_id=\"{child_id}\") (approve)"
+                    f" OR mcp__beidou__send_message(to=\"{child_id}\", content=\"rework: ...\")."
+                    f" Do not end your turn before deciding."
+                    f"\n\nIf you do not act on this ping, this will escalate to the user gateway in ~60s."
+                )
+                self.deliver_message(
+                    from_id="beidou",
+                    to_id=leader,
+                    body=body,
+                    kind="ping",
+                )
+                rec.review_ping_count += 1
+                rec.completion_pending_ts = now
+                self.emit_event(
+                    "completion.reping",
+                    {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ping_count": rec.review_ping_count, "delta_s": delta_s, "ts": now},
+                )
+
+            elif rec.review_ping_count == 2:
+                # Escalate to user gateway.
+                self.emit_event(
+                    "review.escalated_to_user",
+                    {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ts": now},
+                )
+                if self.is_gateway_available():
+                    try:
+                        await self.gateway_ask_user(
+                            leader,
+                            (
+                                f"Root agent's leader {leader} has not decided on completion"
+                                f" review for {child_id} after 3 pings."
+                                f" Approve (terminate_child), rework, or abort?"
+                            ),
+                            None,
+                        )
+                    except Exception:
+                        # Best-effort.
+                        pass
+                rec.review_ping_count += 1
+
+            # review_ping_count >= 3: user owns it; do nothing.
+
+        # ------------------------------------------------------------------
+        # Pass B — general liveness nudge.
+        # ------------------------------------------------------------------
+        for rec in agents:
+            agent_id = rec.agent_id
+            # Skip sentinels and terminated agents.
+            if agent_id == USER_SENTINEL:
+                continue
+            if rec.terminate_consumed:
+                continue
+            # Skip if recent progress.
+            if now - rec.last_progress_ts < IDLE_NUDGE_S:
+                continue
+            # Skip if a tool is currently running.
+            if rec.inflight_tools > 0:
+                continue
+            # Skip if completion is pending — Pass A handles it.
+            if rec.completion_pending:
+                continue
+            # Skip if already escalated.
+            if rec.idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION:
+                continue
+            # Skip pure workers (no direct children) that are not root.
+            teams_led = list(self.teams_led_by(agent_id))
+            if len(teams_led) == 0 and agent_id != self._root_id:
+                continue
+
+            delta_s = int(now - rec.last_progress_ts)
+
+            if rec.idle_nudge_count < 2:
+                body = (
+                    f"[BEIDOU LIVENESS CHECK] You have been idle {delta_s}s with no progress.\n"
+                    f"Either:\n"
+                    f"  (a) call terminate_child / send_message to a pending child, or\n"
+                    f"  (b) call create_team to start the next phase, or\n"
+                    f"  (c) emit a final completion message and call report_status(done) if this is your final state, or\n"
+                    f"  (d) call ask_user if you are blocked on missing input.\n"
+                    f"Choose one and act on this turn. Do not respond with \"still waiting\"."
+                )
+                if rec.idle_nudge_count == 1:
+                    body += "\n\nIf you do not act, this will escalate to the user gateway in ~120s."
+                self.deliver_message(
+                    from_id="beidou",
+                    to_id=agent_id,
+                    body=body,
+                    kind="ping",
+                )
+            elif rec.idle_nudge_count == 2:
+                # Escalate to user gateway.
+                self.emit_event(
+                    "liveness.escalated_to_user",
+                    {"agent_id": agent_id, "team_id": rec.team_id, "delta_s": delta_s, "ts": now},
+                )
+                if self.is_gateway_available():
+                    try:
+                        await self.gateway_ask_user(
+                            agent_id,
+                            (
+                                f"Agent {agent_id} has been idle {delta_s}s with no progress."
+                                f" Approve continuation, redirect, or abort?"
+                            ),
+                            None,
+                        )
+                    except Exception:
+                        pass
+
+            rec.idle_nudge_count += 1
+            rec.last_progress_ts = now
+            self.emit_event(
+                "liveness.nudge",
+                {"agent_id": agent_id, "team_id": rec.team_id, "nudge_count": rec.idle_nudge_count, "delta_s": delta_s, "ts": now},
+            )
+
+    async def stop_watchdog(self) -> None:
+        """Signal the watchdog to stop and await its cancellation.
+
+        Safe to call multiple times and when no watchdog was started.
+        """
+        self._shutting_down = True
+        task = self._watchdog_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    # ------------------------------------------------------------------
     # Resume-not-terminate policy.
     # ------------------------------------------------------------------
 
@@ -913,7 +1239,7 @@ class Orchestrator:
             inbox=asyncio.Queue(),
             create_team_lock=asyncio.Lock(),
         )
-        self._agents[root_agent_id] = rec
+        self._register_agent_record(rec)
         self._root_id = root_agent_id
 
         spec = SpawnSpec(

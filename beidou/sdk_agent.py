@@ -284,6 +284,14 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             )
             return {}
 
+        # Mark completion as pending on the AgentRecord (Phase 2 — bd issue k1q).
+        # Also update last_progress_ts: this IS the last meaningful agent action.
+        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
+        if rec is not None:
+            rec.completion_pending = True
+            rec.completion_pending_ts = time.time()
+            rec.last_progress_ts = time.time()
+
         # Retrieve the assistant text from the same turn as the report_status call.
         # Exact binding: tool_use_id -> text recorded by the drain loop in the same message.
         # Fallback: most recent assistant text for this agent (from any prior turn).
@@ -303,6 +311,34 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             )
             return {}
 
+        # Defensive envelope guard: ensure the body contains [REVIEW REQUIRED].
+        # If the child embedded the prompt-side envelope, pass through unchanged.
+        # If not, synthesize the envelope so the leader gets the unmissable signal.
+        if "[review required]" not in summary.lower():
+            # Read skill name from the AgentRecord for the synthetic header.
+            skill_name_for_envelope = (
+                rec.skill_name if rec is not None else caller_id
+            )
+            synthesized_body = (
+                f"[REVIEW REQUIRED]\n"
+                f"role={skill_name_for_envelope}     agent={caller_id}\n"
+                f"Deliverables: (none provided — child failed to embed envelope)\n"
+                f"Open questions / risks: (none provided)\n"
+                f"Leader action required: approve (terminate_child) OR rework (send_message)\n"
+                f"\n\n"
+                f"Original child body:\n"
+                f"{summary}"
+            )
+            orch.emit_event(
+                "completion.envelope_synthesized",
+                {
+                    "agent_id": caller_id,
+                    "leader_id": leader_id,
+                    "body_chars": synthesized_body[:200],
+                },
+            )
+            summary = synthesized_body
+
         orch.deliver_message(
             from_id=caller_id,
             to_id=leader_id,
@@ -319,11 +355,132 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
         )
         return {}
 
+    # Tools a leader may call even when it has children awaiting review.
+    # Read/grep/bash let the leader inspect artifacts before deciding.
+    # The beidou primitives listed here are the two valid resolution actions
+    # (terminate_child, send_message) plus informational/status tools.
+    #
+    # bd issue xq1: also include SDK-builtin classic names that skill
+    # allowed-tools entries may resolve to via _SDK_BUILTIN_MAP or directly.
+    # - SendMessage: SDK-builtin classic for inter-agent messaging
+    # - AskUserQuestion: SDK-builtin; on_ask_user_question handles review-gate
+    #   semantics when pending children exist — on_review_gate should pass through
+    # - Write, Edit: SDK-builtin file tools leaders may need during review
+    # - WebSearch, WebFetch: SDK-builtin web tools mapped from web_search/web_fetch
+    # MCP-namespaced versions are kept alongside for skills using lowercase MCP names.
+    ALLOWED_DURING_PENDING_REVIEW = {
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
+        # SDK-builtin classic names (bd issue xq1)
+        "Write",
+        "Edit",
+        "SendMessage",
+        "AskUserQuestion",
+        "WebSearch",
+        "WebFetch",
+        # MCP-namespaced beidou primitives
+        "mcp__beidou__terminate_child",
+        "mcp__beidou__send_message",
+        "mcp__beidou__list_pending_reviews",
+        "mcp__beidou__report_status",
+        "mcp__beidou__ask_user",
+    }
+
+    async def on_review_gate(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """Block a leader from advancing while it has direct children awaiting review.
+
+        Fires on EVERY tool call (matcher=None) for the leader agent. If no
+        children have completion_pending=True the hook is a transparent pass-through.
+        When pending children exist, only tools in ALLOWED_DURING_PENDING_REVIEW
+        are permitted; all others are denied with a directive explaining next steps.
+
+        Note: AskUserQuestion is now in the allowlist (bd issue xq1), so this hook
+        passes through for it. The on_ask_user_question hook handles review-gate
+        semantics when pending children exist (bd issue be3 scope).
+        """
+        # Defensive: if the agent isn't registered, allow.
+        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
+        if rec is None:
+            return {}
+
+        # Collect direct children with completion_pending=True.
+        # bd issue xq1: skip children whose SDK session has already ended
+        # (terminate_consumed=True) — a stale completion_pending flag on a
+        # terminated child must not gate the leader.
+        pending_ids: list[str] = []
+        for tid in orch.teams_led_by(caller_id):  # type: ignore[attr-defined]
+            team = orch._teams.get(tid)  # type: ignore[attr-defined]
+            if team is None:
+                continue
+            for member_id in team.member_ids:
+                child_rec = orch._agents.get(member_id)  # type: ignore[attr-defined]
+                if child_rec is None:
+                    continue
+                if child_rec.terminate_consumed:  # bd issue xq1: skip terminated children
+                    continue
+                if child_rec.completion_pending:
+                    pending_ids.append(member_id)
+
+        if not pending_ids:
+            return {}
+
+        tool_name = input_data.get("tool_name", "")
+
+        if tool_name in ALLOWED_DURING_PENDING_REVIEW:
+            return {}
+
+        # Deny: emit the gate event and return the deny shape.
+        orch.emit_event(  # type: ignore[attr-defined]
+            "review_gate.denied",
+            {
+                "agent_id": caller_id,
+                "tool_name": tool_name,
+                "pending_children": pending_ids,
+            },
+        )
+
+        if len(pending_ids) == 1:
+            pending_desc = f"child {pending_ids[0]} is awaiting your review"
+        else:
+            pending_desc = (
+                "children "
+                + ", ".join(pending_ids)
+                + " are awaiting your review"
+            )
+
+        pending_list = "\n".join(
+            f"  • mcp__beidou__terminate_child(agent_id=\"{pid}\")  to approve, OR\n"
+            f"    mcp__beidou__send_message(to=\"{pid}\", content=\"rework: <what>\")  to ask for changes."
+            for pid in pending_ids
+        )
+
+        reason = (
+            f"Cannot call {tool_name!r} — {pending_desc}.\n"
+            f"Resolve the pending review first by calling either:\n"
+            f"{pending_list}\n"
+            f"If you have multiple pending children, resolve all of them first."
+        )
+
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+
     return {
         "PreToolUse": [
             HookMatcher(
                 matcher="AskUserQuestion",
                 hooks=[on_ask_user_question],
+            ),
+            # matcher=None → fires for every tool call.
+            HookMatcher(
+                matcher=None,
+                hooks=[on_review_gate],
             ),
         ],
         "PostToolUse": [
@@ -517,6 +674,10 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 "session_id": session_id,
             }
 
+    # Obtain the AgentRecord once for the whole drain loop — used for
+    # inflight_tools tracking (bd issue qj2). Safe: everything is single-threaded asyncio.
+    _drain_rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
+
     try:
         async for msg in query(prompt=input_stream(), options=options):
             cls = type(msg).__name__
@@ -611,6 +772,10 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                                     "input": getattr(block, "input", {}),
                                 },
                             )
+                            # Track inflight tools (bd issue qj2).
+                            if _drain_rec is not None:
+                                _drain_rec.inflight_tools += 1
+                                _drain_rec.last_progress_ts = time.time()
 
                 # Record the current turn's text IMMEDIATELY after processing
                 # each AssistantMessage so the PostToolUse hook (which fires
@@ -652,6 +817,10 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                             },
                         )
                         _turn_result_info[tool_use_id] = getattr(block, "is_error", False) or False
+                        # Decrement inflight tools (bd issue qj2).
+                        if _drain_rec is not None:
+                            _drain_rec.inflight_tools = max(0, _drain_rec.inflight_tools - 1)
+                            _drain_rec.last_progress_ts = time.time()
 
                 # --- HARNESS CHECKPOINT ---
                 # After all tool results are recorded, run the completion handoff

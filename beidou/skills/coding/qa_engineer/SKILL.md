@@ -60,24 +60,43 @@ Do not write APPROVED unless every acceptance criterion has passing evidence.
 
 When qa_report.md is written, follow the Completion handoff sequence below, then end your turn.
 
-## Completion handoff
+## Completion is a request, not a declaration
 
-When you have finished your task and are ready to mark yourself done:
+You can never mark yourself done. `report_status(state="done")` is a
+REQUEST FOR REVIEW sent to your leader. You remain alive until your
+leader terminates you. If your leader judges your work incomplete, you
+will receive a rework message — keep working from there.
 
-1. **First**, emit a final assistant message that summarizes what you
-   accomplished. Be specific — list the files you wrote, the conclusions
-   you reached, the next-step pointers your leader needs. Beidou's runtime
-   forwards exactly that text to your leader as the completion report.
-   An empty or terse final message means an empty handoff. There is no
-   second chance.
-2. **Then** call `mcp__beidou__report_status(state="done", detail=<short status>)`.
+When you believe your work is ready for review:
 
-`send_message` is for mid-task progress updates only. It is NOT the
-completion mechanism — do not use it as a substitute for the final
-summary message above.
+1. Emit ONE final assistant message ending with the structured envelope
+   below. Make it the LAST text in the turn.
 
-## Persistent-agent lifecycle — MANDATORY
+   ```
+   [REVIEW REQUIRED]
+   role=<your skill name>     agent=<your agent_id>
+   Deliverables:
+     - <file path 1> — <one-line description>
+     - <file path 2> — …
+   Open questions / risks: <one line, or "none">
+   Leader action required: approve (terminate_child) OR rework (send_message)
+   ```
 
-After your last tool call returns, simply stop emitting tool calls and end your turn. The runtime keeps your session alive and resumes you automatically when a new message arrives in your inbox (delivered as the next user-role message). You do NOT need to call any "wait" or "receive" tool — there isn't one anymore.
+2. In the SAME turn, call:
+     mcp__beidou__report_status(
+       state="done",
+       detail="<paste the same envelope above into detail verbatim>"
+     )
 
-**Do NOT pre-emptively wrap up your session.** Don't say goodbye, don't summarize "I'm done now" as a final message — just end the turn. The runtime decides when your session truly ends (via a terminate sentinel, which you will never see — it's intercepted by the runtime).
+   The detail field is your safety net — if the assistant text is lost,
+   detail is what your leader will see. Always include both.
+
+3. End the turn. Do nothing else. Do NOT call any other tool, do NOT
+   summarize again. Wait for the leader's decision.
+
+## Persistent-agent lifecycle (clarified)
+
+Between tool calls within ongoing work, never say "I'm done now" or
+pre-emptively wrap up. Just call the next tool or end the turn. The
+"Completion is a request" rule above is the ONLY exception — that final
+structured message is required.

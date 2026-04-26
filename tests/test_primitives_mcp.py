@@ -71,7 +71,7 @@ def run(coro) -> object:
 # ---------------------------------------------------------------------------
 
 
-def test_server_lists_all_six_tools():
+def test_server_lists_all_tools():
     o = _build()
     cfg = build_mcp_server_for(o, caller_id="A")
 
@@ -88,6 +88,7 @@ def test_server_lists_all_six_tools():
             "report_status",
             "create_team",
             "terminate_child",
+            "list_pending_reviews",
         }
 
     run(body())

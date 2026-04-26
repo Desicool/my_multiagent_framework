@@ -101,6 +101,7 @@ _BEIDOU_MCP_TOOLS: frozenset[str] = frozenset(
         "report_status",
         "create_team",
         "terminate_child",
+        "list_pending_reviews",
     }
 )
 

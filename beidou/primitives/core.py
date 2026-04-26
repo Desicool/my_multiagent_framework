@@ -10,12 +10,13 @@ error codes. See ``docs/limits.md`` for the hard boundaries enforced here.
 
 Summary of primitives (full spec in ``docs/tool-surface.md``):
 
-* :func:`send_message`     -- A2A enqueue to recipient inbox.
-* :func:`list_peers`       -- Snapshot of peers in ``team``/``children``/``all`` scope.
-* :func:`ask_user`         -- Routes a question to the human gateway.
-* :func:`report_status`    -- Records agent state and emits a status event.
-* :func:`create_team`      -- Spawns a sub-team; caller becomes leader by construction.
-* :func:`terminate_child`  -- Posts a terminate sentinel to a direct child.
+* :func:`send_message`         -- A2A enqueue to recipient inbox.
+* :func:`list_peers`           -- Snapshot of peers in ``team``/``children``/``all`` scope.
+* :func:`ask_user`             -- Routes a question to the human gateway.
+* :func:`report_status`        -- Records agent state and emits a status event.
+* :func:`create_team`          -- Spawns a sub-team; caller becomes leader by construction.
+* :func:`terminate_child`      -- Posts a terminate sentinel to a direct child.
+* :func:`list_pending_reviews` -- Read-only list of direct children awaiting leader review.
 """
 
 from __future__ import annotations
@@ -141,6 +142,12 @@ class Orchestrator(Protocol):
     # to distinguish a valid terminate-driven end_turn from a contract
     # violation. See docs/agent-runtime.md section 5.
     def was_terminated(self, caller_id: str) -> bool: ...
+
+    # --- Completion-review accessors (used by list_pending_reviews) --------
+    def agent_skill_name(self, agent_id: str) -> str: ...
+    def agent_completion_pending(self, agent_id: str) -> bool: ...
+    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]: ...
+    def agent_last_status_detail(self, agent_id: str) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +441,57 @@ async def terminate_child(
     return {"sentinel_posted": True}
 
 
+def list_pending_reviews(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+) -> list[dict]:
+    """Return direct children of ``caller_id`` that are awaiting review.
+
+    "Direct children" are members of any team that ``caller_id`` leads
+    (via ``orch.teams_led_by``). Only those with ``completion_pending=True``
+    are returned. The caller itself is excluded even if it somehow appears
+    as a member of one of its own teams.
+
+    Each entry is a dict with:
+      - ``agent_id``              -- the child's agent id
+      - ``role``                  -- skill name (from ``agent_skill_name``)
+      - ``completion_pending_ts`` -- unix float when the child called done, or null
+      - ``age_s``                 -- seconds since completion_pending_ts, or null
+      - ``summary``               -- ``last_status_detail`` text (may be empty string)
+
+    Results are sorted ascending by ``completion_pending_ts`` (oldest first).
+    A ``None`` ts sorts after all timestamped entries.
+
+    Returns ``[]`` if no direct children have ``completion_pending=True``.
+    See ``docs/tool-surface.md#list_pending_reviews``.
+    """
+    now = time.time()
+    pending: list[dict] = []
+
+    for team_id in orch.teams_led_by(caller_id):
+        for member_id in orch.team_members(team_id):
+            if member_id == caller_id:
+                continue
+            if not orch.agent_completion_pending(member_id):
+                continue
+            ts = orch.agent_completion_pending_ts(member_id)
+            age_s = (now - ts) if ts is not None else None
+            pending.append(
+                {
+                    "agent_id": member_id,
+                    "role": orch.agent_skill_name(member_id),
+                    "completion_pending_ts": ts,
+                    "age_s": age_s,
+                    "summary": orch.agent_last_status_detail(member_id),
+                }
+            )
+
+    # Sort by ts ascending; None ts sorts last.
+    pending.sort(key=lambda d: (d["completion_pending_ts"] is None, d["completion_pending_ts"] or 0))
+    return pending
+
+
 __all__ = [
     # constants
     "INBOX_CAP",
@@ -453,4 +511,5 @@ __all__ = [
     "report_status",
     "create_team",
     "terminate_child",
+    "list_pending_reviews",
 ]
