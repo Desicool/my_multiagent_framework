@@ -426,6 +426,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             {
                 "caller_id": spec.caller_id,
                 "warning": "empty_allowed_tools",
+                "message": "empty_allowed_tools",
                 "skill": skill.name,
                 "ts": time.time(),
             },
@@ -451,6 +452,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             "caller_id": spec.caller_id,
             "skill": skill.name,
             "model_requested": spec.model,
+            "model": spec.model,
             "ts": time.time(),
         },
     )
@@ -544,6 +546,14 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                                 "cache_creation_input_tokens"
                             ),
                             "cache_read_input_tokens": usage_payload.get(
+                                "cache_read_input_tokens"
+                            ),
+                            "in_tok": usage_payload.get("input_tokens"),
+                            "out_tok": usage_payload.get("output_tokens"),
+                            "cache_create": usage_payload.get(
+                                "cache_creation_input_tokens"
+                            ),
+                            "cache_read": usage_payload.get(
                                 "cache_read_input_tokens"
                             ),
                             "ts": time.time(),
@@ -739,6 +749,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 "caller_id": spec.caller_id,
                 "exception": type(exc).__name__,
                 "msg": str(exc),
+                "error": str(exc),
                 "ts": time.time(),
             },
         )

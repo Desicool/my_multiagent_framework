@@ -403,6 +403,7 @@ class Orchestrator:
             or kwargs.pop("caller_id", None)
             or ""
         )
+        kwargs.setdefault("caller_id", agent_id)
         team_id = kwargs.pop("team_id", None)
         if not team_id and agent_id in self._agents:
             team_id = self._agents[agent_id].team_id

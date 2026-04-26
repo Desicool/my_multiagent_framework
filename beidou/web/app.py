@@ -228,7 +228,7 @@ def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
         try:
             for jsonl_path in _EVENTS_DIR.glob("*.jsonl"):
                 for evt in _read_jsonl_events(jsonl_path):
-                    if evt.get("type") == "question_answered":
+                    if evt.get("event") == "question_answered":
                         qid = evt.get("qid")
                         if qid:
                             answered_qids.add(qid)
