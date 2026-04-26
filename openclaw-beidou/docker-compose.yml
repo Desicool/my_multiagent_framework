@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  openclaw-beidou:
+    build: .
+    image: openclaw-beidou:latest
+    container_name: openclaw-beidou
+    restart: unless-stopped
+
+    ports:
+      - "18789:18789"
+
+    environment:
+      - HOME=/home/node
+      - NODE_ENV=production
+      - TERM=xterm-256color
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+
+    volumes:
+      - openclaw-beidou-config:/home/node/.openclaw
+      - openclaw-beidou-workspace:/home/node/.openclaw/workspace
+
+    # Gateway mode — user will add channel configs later
+    command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
+
+volumes:
+  openclaw-beidou-config:
+  openclaw-beidou-workspace:
