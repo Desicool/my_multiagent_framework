@@ -157,7 +157,13 @@ When you believe your work is ready for review:
    detail is what your leader will see. Always include both.
 
 3. End the turn. Do nothing else. Do NOT call any other tool, do NOT
-   summarize again. Wait for the leader's decision.
+   summarize again. Wait for the leader's (or, when you are the root, the
+   user's) decision.
+
+If your reviewer (leader or user) sends a message starting with
+`rework: …`, treat it as a continuation directive on the same task —
+resume the prior work, address the feedback, and re-submit for review;
+do not start a new task.
 
 ## Persistent-agent lifecycle (clarified)
 

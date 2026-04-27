@@ -14,6 +14,9 @@
   let otherSelected = $state<Record<number, boolean>>({});          // "Other" radio chosen
   let otherText     = $state<Record<number, string>>({});
   let multiChecked  = $state<Record<number, Record<string, boolean>>>({});
+  // Per-option free-text for options flagged with requires_text=true.
+  // Outer key: sub-question index. Inner key: option label.
+  let optionText    = $state<Record<number, Record<string, string>>>({});
 
   let submitting    = $state(false);
   let error         = $state<string | null>(null);
@@ -34,6 +37,7 @@
     otherSelected = {};
     otherText     = {};
     multiChecked  = {};
+    optionText    = {};
     error         = null;
   });
 
@@ -48,7 +52,13 @@
       if (!sq.multiSelect) {
         // Single-select
         if (otherSelected[i]) return (otherText[i] ?? '').trim().length > 0;
-        return !!radioChoice[i];
+        if (!radioChoice[i]) return false;
+        // Gate on the option's own textarea when the option requires text.
+        const chosen = sq.options.find((o) => o.label === radioChoice[i]);
+        if (chosen?.requires_text) {
+          return (optionText[i]?.[chosen.label] ?? '').trim().length > 0;
+        }
+        return true;
       }
       // Multi-select
       return Object.values(multiChecked[i] ?? {}).some(Boolean);
@@ -75,7 +85,13 @@
           if (otherSelected[i]) {
             return { selected_labels: [], text: (otherText[i] ?? '').trim() };
           }
-          return { selected_labels: [radioChoice[i]!], text: null };
+          const label = radioChoice[i]!;
+          const chosen = sq.options.find((o) => o.label === label);
+          // If the chosen option requires_text, surface that text alongside the label.
+          if (chosen?.requires_text) {
+            return { selected_labels: [label], text: (optionText[i]?.[label] ?? '').trim() };
+          }
+          return { selected_labels: [label], text: null };
         }
         // Multi-select: preserve option order
         const selected = sq.options
@@ -191,6 +207,17 @@
                       {/if}
                     </span>
                   </label>
+                  {#if opt.requires_text && radioChoice[i] === opt.label && !otherSelected[i]}
+                    <textarea
+                      class="w-full rounded bg-surface/80 border border-pending/30 p-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-pending/60 focus:ring-1 focus:ring-pending/30 resize-y"
+                      rows="2"
+                      placeholder={`Details for "${opt.label}"…`}
+                      value={optionText[i]?.[opt.label] ?? ''}
+                      oninput={(e) => {
+                        optionText[i] = { ...(optionText[i] ?? {}), [opt.label]: (e.target as HTMLTextAreaElement).value };
+                      }}
+                    ></textarea>
+                  {/if}
                 {/each}
                 <!-- Implicit "Other" option -->
                 <label class="flex items-start gap-2.5 cursor-pointer group">

@@ -1,12 +1,14 @@
 """Tests for the completion envelope guard and completion_pending flag in on_report_status.
 
 bd issue k1q: Phase 1 envelope guard + Phase 2 step 2.
+bd issue xw4: root completion review now routes through the user gateway.
 
 Tests:
 - test_envelope_present_passthrough: body already has [REVIEW REQUIRED] → no synthesis.
 - test_envelope_missing_synthesizes: body lacks [REVIEW REQUIRED] → synthesis fires.
 - test_state_not_done_no_pending_flag: state='working' → no completion_pending set.
-- test_root_no_leader_skips: root agent (leader_id == USER_SENTINEL) → completion_pending stays False.
+- test_root_routes_through_user_gateway_approve: root → gateway question, approve → terminate_root.
+- test_root_routes_through_user_gateway_rework: root → gateway question, rework → rework message.
 """
 from __future__ import annotations
 
@@ -48,6 +50,9 @@ class FakeOrchForEnvelope:
     - assistant_text_for_turn(): returns configurable text.
     - deliver_message(): records calls.
     - _agents: dict keyed by caller_id, values are FakeAgentRecord.
+    - gateway_ask_user_structured(): returns a configurable canned answer and
+      records the call args.
+    - terminate_root(): records that it was called.
     """
 
     def __init__(
@@ -56,10 +61,16 @@ class FakeOrchForEnvelope:
         assistant_text: Optional[str] = None,
         agent_id: str = "ag_child",
         skill_name: str = "junior_engineer",
+        gateway_answer: Optional[dict] = None,
+        gateway_raises: Optional[BaseException] = None,
     ) -> None:
         self.events: list[tuple[str, dict]] = []
         self._assistant_text = assistant_text
         self._delivered: list[dict] = []
+        self._gateway_calls: list[dict] = []
+        self._gateway_answer = gateway_answer
+        self._gateway_raises = gateway_raises
+        self.terminate_root_called: int = 0
 
         # Seed the agents dict with the caller's record.
         self._agents: dict[str, FakeAgentRecord] = {
@@ -73,8 +84,21 @@ class FakeOrchForEnvelope:
     def assistant_text_for_turn(self, caller_id: str, tool_use_id: str) -> Optional[str]:
         return self._assistant_text
 
-    def deliver_message(self, *, from_id: str, to_id: str, body: str, kind: str) -> None:
+    def deliver_message(self, *, from_id: str, to_id: str, body: str, kind: str = "user") -> None:
         self._delivered.append({"from_id": from_id, "to_id": to_id, "body": body, "kind": kind})
+
+    async def gateway_ask_user_structured(
+        self, caller_id: str, questions: list[dict], context: Optional[str]
+    ) -> dict:
+        self._gateway_calls.append(
+            {"caller_id": caller_id, "questions": questions, "context": context}
+        )
+        if self._gateway_raises is not None:
+            raise self._gateway_raises
+        return self._gateway_answer or {"answers": [{"selected_values": ["approve"], "selected_labels": ["Approve"], "text": None}]}
+
+    async def terminate_root(self) -> None:
+        self.terminate_root_called += 1
 
     # Convenience helpers for assertions.
     def events_named(self, name: str) -> list[dict]:
@@ -233,29 +257,84 @@ class TestEnvelopeGuard:
         assert orch.events == []
         assert orch.delivered_bodies() == []
 
-    def test_root_no_leader_skips(self) -> None:
-        """Root agent (leader_id == USER_SENTINEL) → completion.empty(root_no_leader) emitted,
-        completion_pending stays False (no AgentRecord update for root path)."""
-        orch = FakeOrchForEnvelope(agent_id="ag_root")
+    def test_root_routes_through_user_gateway_approve(self) -> None:
+        """Root agent (leader_id == USER_SENTINEL) → gateway question; approve → terminate_root."""
+        orch = FakeOrchForEnvelope(
+            agent_id="ag_root",
+            gateway_answer={
+                "answers": [{"selected_values": ["approve"], "selected_labels": ["Approve"], "text": None}],
+                "answer_text": "Approve",
+            },
+        )
         hook = _get_posttooluse_hook(orch, caller_id="ag_root", leader_id=USER_SENTINEL)
 
         asyncio.run(
             hook(_make_input(state="done", detail="root done"), tool_use_id="toolu_5", context=None)
         )
 
-        # completion.empty with root_no_leader reason.
-        empty_events = orch.events_named("completion.empty")
-        assert len(empty_events) == 1
-        assert empty_events[0]["reason"] == "root_no_leader"
-        assert empty_events[0]["agent_id"] == "ag_root"
+        # Gateway was asked.
+        assert len(orch._gateway_calls) == 1
+        call = orch._gateway_calls[0]
+        assert call["caller_id"] == "ag_root"
+        questions = call["questions"]
+        assert len(questions) == 1
+        opts = questions[0]["options"]
+        values = [o.get("value") for o in opts]
+        assert "approve" in values and "rework" in values
+        # Rework option must be flagged as requiring text.
+        rework_opt = next(o for o in opts if o.get("value") == "rework")
+        assert rework_opt.get("requires_text") is True
 
-        # completion_pending stays False (hook returns early before setting it).
-        rec = orch._agents.get("ag_root")
-        if rec is not None:
-            assert rec.completion_pending is False
-
-        # No delivery to any leader.
+        # terminate_root was called once.
+        assert orch.terminate_root_called == 1
+        # No rework message delivered.
         assert orch.delivered_bodies() == []
+        # completion_pending was set (root reuses the same state transitions).
+        rec = orch._agents.get("ag_root")
+        assert rec is not None and rec.completion_pending is True
+        # completion.reported emitted with decision=approve.
+        reported = orch.events_named("completion.reported")
+        assert len(reported) == 1 and reported[0]["decision"] == "approve"
+
+    def test_root_routes_through_user_gateway_rework(self) -> None:
+        """Root agent → gateway question; rework → rework message delivered, no terminate."""
+        orch = FakeOrchForEnvelope(
+            agent_id="ag_root",
+            gateway_answer={
+                "answers": [{"selected_values": ["rework"], "selected_labels": ["Rework"], "text": "fix the typo"}],
+                "answer_text": "fix the typo",
+            },
+        )
+        hook = _get_posttooluse_hook(orch, caller_id="ag_root", leader_id=USER_SENTINEL)
+
+        asyncio.run(
+            hook(_make_input(state="done", detail="root done"), tool_use_id="toolu_6", context=None)
+        )
+
+        assert orch.terminate_root_called == 0
+        bodies = orch.delivered_bodies()
+        assert len(bodies) == 1
+        assert bodies[0].startswith("rework: ")
+        assert "fix the typo" in bodies[0]
+        reported = orch.events_named("completion.reported")
+        assert len(reported) == 1 and reported[0]["decision"] == "rework"
+
+    def test_root_gateway_failure_falls_back_to_completion_empty(self) -> None:
+        """If the gateway raises, on_report_status emits completion.empty(gateway_failure: ...)."""
+        orch = FakeOrchForEnvelope(
+            agent_id="ag_root",
+            gateway_raises=RuntimeError("gateway down"),
+        )
+        hook = _get_posttooluse_hook(orch, caller_id="ag_root", leader_id=USER_SENTINEL)
+
+        asyncio.run(
+            hook(_make_input(state="done", detail="root done"), tool_use_id="toolu_7", context=None)
+        )
+
+        assert orch.terminate_root_called == 0
+        empty = orch.events_named("completion.empty")
+        assert len(empty) == 1
+        assert empty[0]["reason"].startswith("gateway_failure:")
 
     def test_envelope_body_chars_truncated_to_200(self) -> None:
         """body_chars field in synthesis event is at most 200 characters."""

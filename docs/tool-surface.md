@@ -142,8 +142,17 @@ trigger liveness evaluation.
 
 **Side effects**
 - Emits a `status` event to the observability sinks.
-- If `state="done"`, triggers a liveness re-evaluation on the caller's
-  parent leader (see `orchestration.md`).
+- If `state="done"`, the orchestrator's `on_report_status` PostToolUse
+  hook fires (see `architecture.md`):
+  - For non-root agents, the synthesized `[REVIEW REQUIRED]` body is
+    delivered to the leader's inbox as a `completion_report` message.
+  - For the root agent, the same body is routed through the human
+    gateway (`Orchestrator.gateway_ask_user_structured`). The user
+    chooses **Approve** (→ `terminate_root`) or **Rework** (→ a
+    `from_id="user"`, `body="rework: …"` message delivered back to
+    the root's inbox so the next turn continues).
+- Triggers a liveness re-evaluation on the caller's reviewer (leader or,
+  for the root, the user) — see `orchestration.md`.
 
 ---
 

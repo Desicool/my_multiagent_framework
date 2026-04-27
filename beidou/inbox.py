@@ -151,6 +151,9 @@ class QuestionBroker:
 
         answers: one entry per sub-question, in order, each
             {selected_labels: list[str], text: str | None}.
+        Each entry is enriched in-place with selected_values: list[str] derived
+        from the matching option's `value` field (or the label as fallback) so
+        downstream callers can discriminate without string-matching display copy.
         Returns {ok: bool, reason?: str}.
         """
         q = self._pending.get(qid)
@@ -168,6 +171,20 @@ class QuestionBroker:
             text: str | None = ans.get("text")
             options: list[dict] = sq.get("options") or []
             multi_select: bool = bool(sq.get("multiSelect", False))
+
+            # Derive selected_values from the matching option's `value` (or label
+            # fallback) so callers can match on a stable machine discriminator.
+            label_to_value: dict[str, str] = {}
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                lbl = opt.get("label")
+                if lbl is None:
+                    continue
+                label_to_value[lbl] = opt.get("value") or lbl
+            ans["selected_values"] = [
+                label_to_value.get(lbl, lbl) for lbl in selected_labels
+            ]
 
             if not options:
                 # Free-text-only question

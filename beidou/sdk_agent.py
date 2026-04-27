@@ -45,6 +45,10 @@ from .primitives.core import Message, Orchestrator
 from .primitives.mcp import build_mcp_server_for
 from claude_agent_sdk.types import HookMatcher
 
+# Hook execution cap for hooks that block on a human gateway round-trip.
+# Default in claude-code is 60s, which silently truncates real reviews.
+HOOK_REVIEW_TIMEOUT_S: float = 1800.0
+
 from .skills.loader import (
     LoadedSkill,
     SkillError,
@@ -248,20 +252,10 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
         if isinstance(tool_response, dict) and tool_response.get("is_error"):
             return {}
 
-        # Root agent has no leader to deliver to.
-        if leader_id == USER_SENTINEL:
-            orch.emit_event(
-                "completion.empty",
-                {
-                    "agent_id": caller_id,
-                    "leader_id": leader_id,
-                    "reason": "root_no_leader",
-                },
-            )
-            return {}
-
-        # Mark completion as pending on the AgentRecord (Phase 2 — bd issue k1q).
-        # Also update last_progress_ts: this IS the last meaningful agent action.
+        # Mark completion as pending on the AgentRecord BEFORE branching on
+        # leader/root, so root reuses the same approved/rework state transitions
+        # as children. last_progress_ts also bumps: this IS the last meaningful
+        # agent action.
         rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
         if rec is not None:
             rec.completion_pending = True
@@ -289,7 +283,7 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
 
         # Defensive envelope guard: ensure the body contains [REVIEW REQUIRED].
         # If the child embedded the prompt-side envelope, pass through unchanged.
-        # If not, synthesize the envelope so the leader gets the unmissable signal.
+        # If not, synthesize the envelope so the reviewer gets the unmissable signal.
         if "[review required]" not in summary.lower():
             # Read skill name from the AgentRecord for the synthetic header.
             skill_name_for_envelope = (
@@ -314,6 +308,81 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
                 },
             )
             summary = synthesized_body
+
+        # Root agent: route the review through the human gateway instead of an
+        # agent leader. Approve → terminate_root; Rework → deliver a rework
+        # message back to the root inbox so the next turn can continue.
+        if leader_id == USER_SENTINEL:
+            try:
+                answer = await orch.gateway_ask_user_structured(
+                    caller_id,
+                    [
+                        {
+                            "question": summary,
+                            "header": "Review",
+                            "multiSelect": False,
+                            "options": [
+                                {
+                                    "label": "Approve",
+                                    "description": "Accept the deliverable and end the run.",
+                                    "value": "approve",
+                                },
+                                {
+                                    "label": "Rework",
+                                    "description": "Send feedback back to the agent and continue.",
+                                    "value": "rework",
+                                    "requires_text": True,
+                                },
+                            ],
+                        }
+                    ],
+                    "Root completion review",
+                )
+            except Exception as e:
+                orch.emit_event(
+                    "completion.empty",
+                    {
+                        "agent_id": caller_id,
+                        "leader_id": leader_id,
+                        "reason": f"gateway_failure: {type(e).__name__}",
+                    },
+                )
+                return {}
+
+            sub = (answer.get("answers") or [{}])[0]
+            selected = sub.get("selected_values") or sub.get("selected_labels") or []
+            decision = (selected[0] if selected else "").lower()
+
+            if decision in ("approve", "approved"):
+                orch.emit_event(
+                    "completion.reported",
+                    {
+                        "agent_id": caller_id,
+                        "leader_id": leader_id,
+                        "via": "user_gateway",
+                        "decision": "approve",
+                    },
+                )
+                await orch.terminate_root()
+            else:
+                # Treat anything that isn't "approve" as rework so the user can
+                # send free-text guidance even if they pick the "Other" path.
+                rework_text = sub.get("text") or "(no rework details provided)"
+                orch.deliver_message(
+                    from_id="user",
+                    to_id=caller_id,
+                    body=f"rework: {rework_text}",
+                )
+                orch.emit_event(
+                    "completion.reported",
+                    {
+                        "agent_id": caller_id,
+                        "leader_id": leader_id,
+                        "via": "user_gateway",
+                        "decision": "rework",
+                    },
+                )
+            return {}
 
         orch.deliver_message(
             from_id=caller_id,
@@ -452,6 +521,7 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             HookMatcher(
                 matcher="AskUserQuestion",
                 hooks=[on_ask_user_question],
+                timeout=HOOK_REVIEW_TIMEOUT_S,
             ),
             # matcher=None → fires for every tool call.
             HookMatcher(
@@ -463,6 +533,7 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             HookMatcher(
                 matcher="mcp__beidou__report_status",
                 hooks=[on_report_status],
+                timeout=HOOK_REVIEW_TIMEOUT_S,
             ),
         ],
     }

@@ -167,8 +167,23 @@ contract (see section order above). The leader-side obligation is in the
 orchestrator skill's "Reviewing a child's completion request" section —
 that is the prompt-side half of the contract.
 
-- Hook does NOT fire for the root agent (leader is the user sentinel);
-  `completion.empty` with `reason=root_no_leader` is emitted instead.
+- For the root agent (leader is `USER_SENTINEL`), the same hook fires and
+  performs the same envelope synthesis, then routes the review through the
+  human gateway via `Orchestrator.gateway_ask_user_structured`. The user is
+  presented with **Approve** and **Rework** options:
+  - **Approve** → `Orchestrator.terminate_root()` is awaited; the run unwinds
+    via the existing terminate-sentinel path. A `completion.reported` event
+    with `via=user_gateway, decision=approve` is emitted.
+  - **Rework** → a `from_id="user"` rework message is delivered to the root's
+    inbox (body prefixed with `rework: `) so the next turn can continue.
+    `completion.reported` with `via=user_gateway, decision=rework` is emitted.
+  If the gateway round-trip raises, the hook falls back to
+  `completion.empty(reason="gateway_failure: <ExcType>")` and returns so the
+  tool call does not deadlock. The hook execution timeout for both
+  `AskUserQuestion` (PreToolUse) and `mcp__beidou__report_status` (PostToolUse)
+  is `HOOK_REVIEW_TIMEOUT_S = 1800.0` (30 minutes), set in
+  `beidou/sdk_agent.py`; this overrides claude-code's 60s default so a real
+  human review is not silently truncated.
 - Hook is skipped if the `report_status` call itself errored (`is_error=True`).
 
 ## 3.1 Liveness watchdog

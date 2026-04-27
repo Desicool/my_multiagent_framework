@@ -128,11 +128,20 @@ export type QuestionAskedEvent = {
 export type StructuredAnswer = {
   selected_labels: string[];
   text: string | null;
+  // Server-derived from the matched option's value (defaults to label).
+  // Present on question_answered events; clients send only selected_labels + text.
+  selected_values?: string[];
 };
 
 export type QuestionOption = {
   label: string;
   description: string;
+  // Machine discriminator. Defaults to label when absent. Backend mirrors
+  // the matched option's value into StructuredAnswer.selected_values.
+  value?: string;
+  // When true, the banner reveals a free-text textarea and gates submission
+  // on a non-empty value once this option is selected.
+  requires_text?: boolean;
 };
 
 export type SubQuestion = {

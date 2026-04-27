@@ -137,6 +137,8 @@ REQUEST FOR REVIEW sent to your leader. You remain alive until your
 leader terminates you. If your leader judges your work incomplete, you
 will receive a rework message — keep working from there.
 
+A rework reply arrives as a normal user-role inbox message whose body starts with `rework: …`. Treat it as a continuation directive on the same task: address the feedback, then re-submit for review using the same envelope. Do not start a new task.
+
 When you believe your work is ready for review:
 
 1. Emit ONE final assistant message ending with the structured envelope

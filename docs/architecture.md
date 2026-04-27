@@ -119,19 +119,36 @@ skills="all",
 ## PostToolUse hook — completion reporting
 
 The orchestrator registers a `PostToolUse` hook on `mcp__beidou__report_status`
-for every non-root agent. The hook:
+for every agent (including the root). The hook:
 
 1. Fires when the agent calls `report_status(state="done")`.
 2. Reads the agent's last assistant text (bound to the same turn's `tool_use_id`)
-   via `Orchestrator.assistant_text_for_turn()`.
-3. Delivers that text to the leader's inbox as a `completion_report` message
-   via `Orchestrator.deliver_message()`.
-4. Emits `completion.reported` on success, or `completion.empty` if no text
-   was found or the root sentinel check fires.
+   via `Orchestrator.assistant_text_for_turn()`; falls back to the `detail`
+   tool-input argument; emits `completion.empty(reason="no summary in report_status turn")`
+   if both are empty.
+3. Synthesizes a `[REVIEW REQUIRED]` envelope if the body lacks one, so the
+   reviewer always gets the unmissable signal.
+4. **Routing depends on `leader_id`:**
+   - **Non-root** (`leader_id != USER_SENTINEL`): delivers the body to the
+     leader's inbox as a `completion_report` message via
+     `Orchestrator.deliver_message()` and emits
+     `completion.reported(via="hook")`.
+   - **Root** (`leader_id == USER_SENTINEL`): awaits
+     `Orchestrator.gateway_ask_user_structured()` to ask the human reviewer
+     **Approve / Rework**. Approve → `Orchestrator.terminate_root()` is
+     awaited; Rework → a `from_id="user"` `rework: …` message is delivered
+     to the root's own inbox so the next turn continues. Either branch
+     emits `completion.reported(via="user_gateway", decision=...)`. A
+     gateway exception is caught and downgraded to
+     `completion.empty(reason="gateway_failure: <ExcType>")` so the tool
+     call does not deadlock.
 
 The hook is **owned by the orchestrator**, not by any agent. It is built in
 `beidou/sdk_agent.py::build_hooks(orch, caller_id, leader_id)` and passed to
-`ClaudeAgentOptions.hooks`.
+`ClaudeAgentOptions.hooks`. Both `AskUserQuestion` (PreToolUse) and
+`mcp__beidou__report_status` (PostToolUse) HookMatchers are constructed with
+`timeout=HOOK_REVIEW_TIMEOUT_S` (1800s) so human review round-trips are not
+truncated by claude-code's 60s default.
 
 ## Context propagation
 

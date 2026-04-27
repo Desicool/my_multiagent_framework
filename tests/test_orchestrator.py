@@ -829,14 +829,28 @@ def test_hook_empty_summary_emits_completion_empty(tmp_path):
     run(body())
 
 
-def test_hook_root_sentinel_emits_completion_empty(tmp_path):
-    """Hook emits completion.empty with root_no_leader for the root agent."""
+def test_hook_root_sentinel_routes_through_user_gateway(tmp_path):
+    """Root completion-report (USER_SENTINEL) routes through gateway_ask_user_structured.
+
+    Approve → terminate_root() is called; no completion.empty(root_no_leader) is emitted.
+    """
+    from unittest.mock import AsyncMock
+
     from beidou.sdk_agent import build_hooks
     from beidou.orchestrator import USER_SENTINEL
 
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_agent(o, "root_ag", _TM_TOP)
+
+    # Stub the orchestrator's gateway round-trip and root terminate.
+    o.gateway_ask_user_structured = AsyncMock(  # type: ignore[assignment]
+        return_value={
+            "answers": [{"selected_values": ["approve"], "selected_labels": ["Approve"], "text": None}],
+            "answer_text": "Approve",
+        }
+    )
+    o.terminate_root = AsyncMock()  # type: ignore[assignment]
 
     o.record_assistant_text("root_ag", "Root finished.", ["toolu_root"])
     hooks_dict = build_hooks(o, "root_ag", USER_SENTINEL)
@@ -851,11 +865,20 @@ def test_hook_root_sentinel_emits_completion_empty(tmp_path):
     async def body():
         await callback(input_data, "toolu_root", None)
         await asyncio.sleep(0.05)
-        empty_events = [c for c in emitter.calls if c[0] == "completion.empty"]
-        assert empty_events, "Expected completion.empty for root agent"
-        # Verify reason is root_no_leader.
-        reasons = [c[3].get("reason") for c in empty_events]
-        assert "root_no_leader" in reasons
+
+        # Gateway was asked once.
+        o.gateway_ask_user_structured.assert_awaited_once()
+        # Approve outcome → terminate_root awaited.
+        o.terminate_root.assert_awaited_once()
+        # No legacy root_no_leader event.
+        for ev in emitter.calls:
+            if ev[0] == "completion.empty":
+                assert ev[3].get("reason") != "root_no_leader"
+        # completion.reported(decision=approve) emitted.
+        reported = [c for c in emitter.calls if c[0] == "completion.reported"]
+        assert reported and reported[-1][3].get("decision") == "approve"
+
+    run(body())
 
 
 # ---------------------------------------------------------------------------

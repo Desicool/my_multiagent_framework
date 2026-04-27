@@ -305,6 +305,41 @@ This event is NOT emitted when the body already contains `[REVIEW REQUIRED]`
 
 ---
 
+### `completion.reported`
+
+Emitted by the `on_report_status` PostToolUse hook after the completion
+review has been routed. JSONL-only.
+
+| Field | Source |
+|---|---|
+| `agent_id` | The agent that reported done. |
+| `leader_id` | The reviewer. Either the agent's leader id, or `USER_SENTINEL` for the root. |
+| `via` | Routing path: `"hook"` (delivered to leader inbox) or `"user_gateway"` (root review surfaced through the human gateway). |
+| `decision` | Present only when `via == "user_gateway"`. One of `"approve"` (root will be terminated) or `"rework"` (a rework message was delivered back to the root's own inbox). |
+
+For non-root agents the leader's resolution (terminate-child vs.
+send-message) still emits the existing `completion.approved` / `completion.rework`
+events (see `agent-runtime.md`). For the root, those are replaced by the
+gateway decision recorded above.
+
+---
+
+### `completion.empty`
+
+Emitted when the hook can't produce a usable review body. JSONL-only.
+
+| Field | Source |
+|---|---|
+| `agent_id` | The agent that reported done. |
+| `leader_id` | The reviewer (leader id or `USER_SENTINEL`). |
+| `reason` | `"no summary in report_status turn"` when both the same-turn assistant text and the `detail` argument are empty; or `"gateway_failure: <ExcType>"` when the root's gateway round-trip raised. |
+
+The legacy `reason="root_no_leader"` value is retired — root completion is
+now routed through the gateway and either reports a decision or downgrades
+to `gateway_failure`.
+
+---
+
 ### `terminate.forced`
 
 Audited override of the completion-review gate or runtime backstop
