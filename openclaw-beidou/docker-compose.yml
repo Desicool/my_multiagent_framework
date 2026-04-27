@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   openclaw-beidou:
     build: .
@@ -10,20 +8,32 @@ services:
     ports:
       - "18789:18789"
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     environment:
       - HOME=/home/node
       - NODE_ENV=production
       - TERM=xterm-256color
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - OPENCLAW_CONFIG_PATH=/home/desico/.openclaw/openclaw.json
+      - HTTP_PROXY=http://host.docker.internal:7890
+      - HTTPS_PROXY=http://host.docker.internal:7890
+      - NO_PROXY=localhost,127.0.0.1
 
     volumes:
-      - openclaw-beidou-config:/home/node/.openclaw
-      - openclaw-beidou-workspace:/home/node/.openclaw/workspace
+      # Docker-out-of-Docker: sibling sandbox containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Host path parity: gateway and sandbox containers share the same absolute paths
+      - /home/desico/.openclaw:/home/desico/.openclaw
+      # Plugin cache: persist npm deps across container rebuilds
+      - openclaw-plugins:/home/node/.openclaw/plugins
 
-    # Gateway mode — user will add channel configs later
+    group_add:
+      - "1001"  # docker group on host, needed for docker.sock access
     command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
 
 volumes:
-  openclaw-beidou-config:
-  openclaw-beidou-workspace:
+  openclaw-plugins:
