@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtNum, fmtMoney, shortId } from './format';
+import { fmtNum, fmtMoney, shortId, displayToolName } from './format';
 import { ago, elapsed, hhmmss } from './time';
 
 describe('fmtNum', () => {
@@ -33,5 +33,26 @@ describe('elapsed', () => {
 describe('hhmmss', () => {
   it('returns HH:MM:SS', () => {
     expect(hhmmss(3600 * 5 + 60 * 7 + 9)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+});
+
+describe('displayToolName', () => {
+  it('strips mcp__beidou__ prefix', () => {
+    expect(displayToolName('mcp__beidou__create_team')).toBe('create_team');
+  });
+  it('strips mcp__beidou__ prefix for send_message', () => {
+    expect(displayToolName('mcp__beidou__send_message')).toBe('send_message');
+  });
+  it('passes through plain tool names unchanged', () => {
+    expect(displayToolName('Bash')).toBe('Bash');
+  });
+  it('strips mcp__ prefix with dashed server name', () => {
+    expect(displayToolName('mcp__some-server__weird_tool')).toBe('weird_tool');
+  });
+  it('strips mcp__ prefix with multi-segment server name', () => {
+    expect(displayToolName('mcp__multi_seg__tool')).toBe('tool');
+  });
+  it('returns empty string for empty input', () => {
+    expect(displayToolName('')).toBe('');
   });
 });

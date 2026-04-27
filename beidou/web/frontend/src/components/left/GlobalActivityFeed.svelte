@@ -3,17 +3,18 @@
   import { hhmmss } from '../../lib/time';
   import { shortId } from '../../lib/format';
 
+  // Semantic dot colors using the new token set
   const dotColor: Record<string, string> = {
-    turn: 'bg-sky-400',
-    tool_start: 'bg-amber-400',
-    tool_error: 'bg-rose-400',
-    team_created: 'bg-violet-400',
-    agent_started: 'bg-emerald-400',
-    agent_completed: 'bg-slate-400',
-    agent_error: 'bg-rose-500',
-    contract_violation: 'bg-rose-500',
-    run_cost: 'bg-amber-300',
-    config_warning: 'bg-amber-300',
+    turn:               'bg-info',
+    tool_start:         'bg-pending',
+    tool_error:         'bg-error',
+    team_created:       'bg-accent',
+    agent_started:      'bg-success',
+    agent_completed:    'bg-muted',
+    agent_error:        'bg-error',
+    contract_violation: 'bg-error',
+    run_cost:           'bg-pending/70',
+    config_warning:     'bg-pending/70',
   };
 
   // Render newest-first, last 80
@@ -22,28 +23,33 @@
   );
 </script>
 
-<div class="mt-4 px-3">
-  <h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Activity</h3>
-  <div class="overflow-y-auto max-h-[calc(100vh-22rem)] pr-1 space-y-1">
+<div class="mt-3 px-3">
+  <h3 class="text-[10px] uppercase tracking-wider text-muted mb-2 px-1">Activity</h3>
+  <div class="overflow-y-auto max-h-[calc(100vh-18rem)] pr-1">
     {#each visible as item}
-      <div class="flex items-start gap-2 text-xs leading-tight">
-        <span class={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${dotColor[item.kind] ?? 'bg-slate-500'}`}></span>
+      <div class="flex items-start gap-2 py-1 border-b border-surface-border/60">
+        <!-- Event type dot -->
+        <span class={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${dotColor[item.kind] ?? 'bg-muted'}`}></span>
         <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-1 text-slate-500 font-mono">
-            <span>{hhmmss(item.ts)}</span>
+          <!-- Meta row: time + agent chip -->
+          <div class="flex items-center gap-1 mb-0.5">
+            <span class="text-xs text-muted font-mono">{hhmmss(item.ts)}</span>
             {#if item.agent_id}
-              {#if events.agentsById[item.agent_id]?.role}
-                <span class="text-slate-400">[{events.agentsById[item.agent_id].role} · {shortId(item.agent_id, 4)}]</span>
+              {#if events.agentsById[item.agent_id]?.name || events.agentsById[item.agent_id]?.role}
+                <span class="inline-flex items-center rounded bg-surface-raised px-1.5 py-px text-xs text-slate-300 border border-surface-border/80">
+                  {events.agentsById[item.agent_id]?.name ?? events.agentsById[item.agent_id]?.role}
+                </span>
               {:else}
-                <span class="text-slate-400">[{shortId(item.agent_id, 6)}]</span>
+                <span class="text-xs text-muted font-mono">[{shortId(item.agent_id, 6)}]</span>
               {/if}
             {/if}
           </div>
-          <div class="text-slate-300 truncate">{item.label}</div>
+          <!-- Activity label -->
+          <div class="text-xs text-slate-300 line-clamp-2 break-words leading-snug">{item.label}</div>
         </div>
       </div>
     {:else}
-      <p class="text-xs text-slate-600 italic">No activity yet…</p>
+      <p class="text-xs text-muted italic px-1">No activity yet…</p>
     {/each}
   </div>
 </div>

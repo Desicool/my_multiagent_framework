@@ -2,6 +2,7 @@
   import type { AgentState } from '../../lib/types';
   import { ui, setDraft, setSendStatus } from '../../stores/ui.svelte';
   import { sendMessage } from '../../lib/api';
+  import { shortId } from '../../lib/format';
 
   let { agent }: { agent: AgentState } = $props();
 
@@ -43,7 +44,7 @@
       data-composer-textarea
       class="flex-1 rounded bg-slate-900 border border-slate-700 p-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 resize-y"
       rows="2"
-      placeholder={`Message ${agent.role ?? 'agent'} (Cmd/Ctrl+Enter to send)`}
+      placeholder={`Message ${agent.name ?? agent.role ?? shortId(agent.agent_id, 4)} (Cmd/Ctrl+Enter to send)`}
       value={draft}
       oninput={onInput}
       onkeydown={onKey}

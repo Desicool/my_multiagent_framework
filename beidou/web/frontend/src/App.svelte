@@ -62,7 +62,7 @@
     for (const q of list) {
       if (!prevQids.has(q.qid)) {
         const asker = events.agentsById[q.asker_agent_id];
-        const askerLabel = asker?.role ?? q.asker_agent_id.slice(0, 6);
+        const askerLabel = asker?.name ?? asker?.role ?? q.asker_agent_id.slice(0, 6);
         notifications.notifyNewQuestion(q, askerLabel);
       }
     }

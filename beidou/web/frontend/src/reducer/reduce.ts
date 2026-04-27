@@ -9,6 +9,7 @@ import {
 import {
   makeText, makeToolPending, makeMessageIn, makeMessageOut, makeTurnDivider,
 } from './streamItem';
+import { displayToolName } from '../lib/format';
 
 /** Lazy-create or fetch the agent slot. Always returns a non-null AgentState. */
 function ensureAgent(state: ReducerState, agent_id: string): AgentState {
@@ -64,14 +65,16 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
         role: e.role ?? a.role,
         model: e.model ?? a.model,
         skill: e.skill ?? a.skill,
+        name: e.name ?? a.name,
         system_prompt: e.system_prompt ?? a.system_prompt,
         tools: e.tools ?? a.tools,
         skills: e.skills ?? a.skills,
         started_at: e.ts,
         status: a.status === 'unknown' ? 'working' : a.status,
       });
-      // Track root: first agent with team_id == null and parent_team_id null is root.
-      if (state.rootAgentId == null && (e.team_id == null || e.team_id === null)) {
+      // Track root: detect via role='root' or team_id='tm_root' (live root spawns
+      // always have team_id='tm_root', not null — see orchestrator.py).
+      if (state.rootAgentId == null && (e.role === 'root' || e.team_id === 'tm_root')) {
         state.rootAgentId = e.agent_id;
       }
       // Add to team membership if known.
@@ -125,6 +128,13 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
         } satisfies TeamState;
         // Also lazy-create the leader agent if not yet seen.
         ensureAgent(state, e.leader_agent_id);
+        // Persist name from members[] entries onto each member's AgentState.
+        if (e.members) {
+          for (const m of e.members) {
+            const ma = ensureAgent(state, m.agent_id);
+            ma.name = m.name ?? ma.name;
+          }
+        }
         pushGlobalActivity(state, { ts: e.ts, team_id: e.team_id, kind: 'team_created', label: `team ${e.name ?? e.team_id.slice(0,6)} created` });
       }
       break;
@@ -148,7 +158,7 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
       const idx = a._stream.length - 1;
       a._pendingTools.set(e.tool_use_id, idx);
       a.tool_calls += 1;
-      pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_start', label: `→ ${e.name}` });
+      pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_start', label: `→ ${displayToolName(e.name)}` });
       break;
     }
 
@@ -164,7 +174,7 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
           // notified. Mutating the old item in-place would bypass the proxy.
           a._stream[idx] = { ...item, duration_ms: e.duration_ms, is_error: e.is_error ?? false };
           if (e.is_error) {
-            pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_error', label: `✗ ${item.name} (${e.duration_ms ?? 0}ms)` });
+            pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_error', label: `✗ ${displayToolName(item.name)} (${e.duration_ms ?? 0}ms)` });
           }
         }
         a._pendingTools.delete(e.tool_use_id);

@@ -34,6 +34,7 @@ export type TaskAgent = {
   role?: string;
   model?: string;
   skill?: string;
+  name?: string;
   started_at?: number;
   ended_at?: number | null;
   tokens_in?: number;
@@ -63,6 +64,7 @@ export type AgentMetadata = {
   role?: string;
   model?: string;
   skill?: string;
+  name?: string;
   system_prompt?: string;
   tools?: string[];
   skills?: string[];

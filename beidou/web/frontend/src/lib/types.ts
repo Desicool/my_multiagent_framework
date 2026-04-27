@@ -14,6 +14,7 @@ export type AgentStartedEvent = {
   system_prompt?: string;
   tools?: string[];
   skills?: string[];
+  name?: string;
 };
 
 export type AgentCompletedEvent = {
@@ -112,6 +113,7 @@ export type TeamCreatedEvent = {
   name?: string;
   leader_agent_id: string;
   workspace_path?: string;
+  members?: Array<{ agent_id: string; role?: string; skill?: string; name?: string }>;
 };
 
 export type QuestionAskedEvent = {
@@ -255,6 +257,7 @@ export type AgentState = {
   system_prompt?: string;
   tools?: string[];
   skills?: string[];
+  name?: string;
   started_at?: number;
   ended_at?: number | null;
   status: AgentStatusState;

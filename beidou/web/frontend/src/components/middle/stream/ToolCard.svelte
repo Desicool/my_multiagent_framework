@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import type { ToolStreamItem } from '../../../lib/types';
   import { hhmmss } from '../../../lib/time';
+  import { displayToolName } from '../../../lib/format';
 
   let { item }: { item: ToolStreamItem } = $props();
 
@@ -31,49 +32,68 @@
     item.expanded = !item.expanded;
   }
 
+  // Semantic token classes per state
   let borderClass = $derived(
-    pending ? 'border-l-4 border-amber-400' :
-    isError ? 'border-l-4 border-rose-500' :
-    'border-l-4 border-emerald-500'
+    pending ? 'border-l-2 border-pending' :
+    isError ? 'border-l-2 border-error' :
+    'border-l-2 border-success'
   );
   let bgClass = $derived(
-    pending ? 'bg-amber-500/5' : isError ? 'bg-rose-500/5' : 'bg-emerald-500/5'
+    pending ? 'bg-pending/5' : isError ? 'bg-error/5' : 'bg-success/5'
+  );
+
+  let nameClass = $derived(
+    pending ? 'text-pending/90' :
+    isError ? 'text-error/80' :
+    'text-success/90'
+  );
+  let durationClass = $derived(
+    pending ? 'text-pending/60' :
+    isError ? 'text-error/60' :
+    'text-success/60'
   );
 </script>
 
-<div class={`my-2 rounded ${borderClass} ${bgClass}`}>
+<div class={`my-1.5 rounded ${borderClass} ${bgClass}`}>
   <button
     type="button"
     class="w-full flex items-center gap-2 px-3 py-2 text-left text-sm cursor-pointer disabled:cursor-default"
     onclick={toggle}
     disabled={pending}
   >
-    <span class="text-[10px] text-slate-500 font-mono">{hhmmss(item.ts)}</span>
+    <span class="text-xs text-muted font-mono shrink-0">{hhmmss(item.ts)}</span>
+
     {#if pending}
-      <svg class="w-3 h-3 animate-spin text-amber-400" viewBox="0 0 24 24" fill="none">
+      <!-- Spinner icon -->
+      <svg class="w-3 h-3 animate-spin text-pending shrink-0" viewBox="0 0 24 24" fill="none">
         <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="40 40" />
       </svg>
-      <span class="text-amber-200 font-mono">running: {item.name}</span>
-      <span class="text-amber-300/80 font-mono">{elapsedLabel}</span>
-      <span class="text-slate-500 font-mono truncate ml-auto">{inputPreview}</span>
+      <span class={`font-mono text-sm ${nameClass}`}>{displayToolName(item.name)}</span>
+      <span class={`font-mono text-xs ${durationClass}`}>{elapsedLabel}</span>
+      <span class="text-muted font-mono text-xs truncate ml-auto">{inputPreview}</span>
     {:else if isError}
-      <span class="text-rose-300">✗ {item.name}</span>
-      <span class="text-rose-400/80 font-mono">{item.duration_ms}ms</span>
-      <span class={`ml-auto text-slate-500 transition-transform ${item.expanded ? 'rotate-90' : ''}`}>▸</span>
+      <span class={`text-xs font-semibold shrink-0 ${nameClass}`}>✗</span>
+      <span class={`font-mono text-sm ${nameClass}`}>{displayToolName(item.name)}</span>
+      <span class={`font-mono text-xs ${durationClass}`}>{item.duration_ms}ms</span>
+      <span class={`ml-auto text-muted transition-transform ${item.expanded ? 'rotate-90' : ''}`}>▸</span>
     {:else}
-      <span class="text-emerald-300">✓ {item.name}</span>
-      <span class="text-emerald-400/80 font-mono">{item.duration_ms}ms</span>
-      <span class={`ml-auto text-slate-500 transition-transform ${item.expanded ? 'rotate-90' : ''}`}>▸</span>
+      <span class={`text-xs font-semibold shrink-0 ${nameClass}`}>✓</span>
+      <span class={`font-mono text-sm ${nameClass}`}>{displayToolName(item.name)}</span>
+      <span class={`font-mono text-xs ${durationClass}`}>{item.duration_ms}ms</span>
+      <span class={`ml-auto text-muted transition-transform ${item.expanded ? 'rotate-90' : ''}`}>▸</span>
     {/if}
   </button>
+
   {#if pending || item.expanded}
     {#if inputJson}
-      <pre class="mx-3 mb-2 p-2 max-h-96 overflow-auto bg-slate-950 border border-slate-800 rounded text-xs text-slate-300 font-mono whitespace-pre-wrap">{inputJson}</pre>
+      <pre class="mx-3 mb-2 p-2 max-h-96 overflow-auto bg-surface border border-surface-border rounded text-xs text-slate-300 font-mono whitespace-pre-wrap">{inputJson}</pre>
     {:else}
-      <p class="mx-3 mb-2 text-xs text-slate-600 italic">(no input)</p>
+      <p class="mx-3 mb-2 text-xs text-muted italic">(no input)</p>
     {/if}
     {#if !pending && isError}
-      <p class="mx-3 mb-2 text-[11px] text-rose-300/80 italic">Tool errored. The result body is not in the event stream — see JSONL or pinned-agent terminal.</p>
+      <div class="mx-3 mb-2 px-3 py-2 rounded bg-error/10 border border-error/20">
+        <p class="text-xs text-error/80 italic">Tool errored. The result body is not in the event stream — see JSONL or pinned-agent terminal.</p>
+      </div>
     {/if}
   {/if}
 </div>

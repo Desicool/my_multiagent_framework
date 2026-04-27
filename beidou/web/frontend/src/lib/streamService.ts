@@ -55,6 +55,7 @@ export async function openTask(taskId: string): Promise<void> {
         role: a.role,
         model: a.model,
         skill: a.skill,
+        name: a.name,
         system_prompt: a.system_prompt,
         tools: a.tools,
         skills: a.skills,

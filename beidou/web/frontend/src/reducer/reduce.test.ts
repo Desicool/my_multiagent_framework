@@ -8,16 +8,27 @@ beforeEach(() => { s = createInitialState(); });
 
 describe('agent_started', () => {
   it('creates the agent with metadata', () => {
-    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: null, role: 'engineer', model: 'opus' });
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root', model: 'opus' });
     expect(s.agentsById.A).toBeDefined();
-    expect(s.agentsById.A.role).toBe('engineer');
+    expect(s.agentsById.A.role).toBe('root');
     expect(s.agentsById.A.status).toBe('working');
     expect(s.rootAgentId).toBe('A');
   });
 
-  it('does not set rootAgentId when team_id is non-null', () => {
+  it('does not set rootAgentId when team_id is non-null (non-root team)', () => {
     applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'B', task_id: 'T', team_id: 'team-1', role: 'member' });
     expect(s.rootAgentId).toBeNull();
+  });
+
+  it('stores name from agent_started onto agent state', () => {
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root', name: 'root-ab12' });
+    expect(s.agentsById.A.name).toBe('root-ab12');
+  });
+
+  it('preserves existing name when agent_started fires without name', () => {
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root', name: 'root-ab12' });
+    applyEvent(s, { type: 'agent_started', ts: 2, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root' });
+    expect(s.agentsById.A.name).toBe('root-ab12');
   });
 
   it('preserves _stream and _pendingTools when agent already lazy-created', () => {
@@ -319,5 +330,29 @@ describe('unknown event types', () => {
     applyEvent(s, { type: 'future_event_type', ts: 1, foo: 'bar' } as BeidouEvent);
     expect(Object.keys(s.agentsById)).toHaveLength(0);
     expect(s.globalActivity.length).toBe(0);
+  });
+});
+
+describe('tool_called globalActivity label strips mcp__ prefix', () => {
+  it('renders → create_team (not → mcp__beidou__create_team)', () => {
+    applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 't1', name: 'mcp__beidou__create_team' });
+    const activity = s.globalActivity.find(e => e.kind === 'tool_start');
+    expect(activity).toBeDefined();
+    expect(activity!.label).toBe('→ create_team');
+  });
+
+  it('tool_error label also strips mcp__ prefix', () => {
+    applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 't2', name: 'mcp__beidou__send_message' });
+    applyEvent(s, { type: 'tool_result', ts: 2, caller_id: 'A', tool_use_id: 't2', duration_ms: 10, is_error: true });
+    const activity = s.globalActivity.find(e => e.kind === 'tool_error');
+    expect(activity).toBeDefined();
+    expect(activity!.label).toBe('✗ send_message (10ms)');
+  });
+
+  it('plain tool names pass through unchanged in globalActivity', () => {
+    applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 't3', name: 'Bash' });
+    const activity = s.globalActivity.find(e => e.kind === 'tool_start');
+    expect(activity).toBeDefined();
+    expect(activity!.label).toBe('→ Bash');
   });
 });

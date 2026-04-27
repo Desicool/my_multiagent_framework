@@ -22,3 +22,10 @@ export function shortId(id: string, len: number = 6): string {
   if (!id) return '';
   return id.length <= len ? id : id.slice(0, len);
 }
+
+/** Strip mcp__<server>__ prefix from tool names for display.
+ *  e.g. mcp__beidou__create_team → create_team, Bash → Bash. */
+export function displayToolName(name: string): string {
+  const m = name.match(/^mcp__[^_]+(?:_[^_]+)*__(.+)$/);
+  return m ? m[1] : name;
+}
