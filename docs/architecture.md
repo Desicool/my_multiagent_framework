@@ -85,11 +85,12 @@ the team workspace. For the root agent, `cwd` equals the project workspace
 substitution on disk. This populates the project-scope skill directory so the
 SDK's `setting_sources=["project"]` discovery can find them.
 
-**Root agent cwd vs. team workspace:** the root agent's cwd is the project
-workspace itself (so user files live in their natural place), while its team
-workspace (`{project}/.beidou/tasks/{task_id}/teams/tm_root/`) is used
-internally by Beidou for inbox files and artifacts. This is the only case where
-agent cwd differs from team workspace.
+**Root agent is teamless.** The root agent has no team — it is just the first
+agent. Its cwd is the project workspace itself (so user files live in their
+natural place), and its scratch dir for inbox files and artifacts is
+`{project}/.beidou/tasks/{task_id}/agents/{agent_id}/`. Real teams the root
+spawns get team workspaces under `{project}/.beidou/tasks/{task_id}/teams/{team_id}/`
+as usual.
 
 **Known limitation — concurrent runs:** running two `beidou run` instances
 against the same `--workspace` directory is not safe. Both processes race on
@@ -140,7 +141,7 @@ must be set before any spawn:
 | Key | Provenance | Consumed by |
 |---|---|---|
 | `task_id` | Top-level CLI invocation | Event emitter, workspace path, JSONL filename |
-| `workspace` | Orchestrator per team (team workspace dir; `tm_root` dir for the root team) | File tools inside the SDK agent (scoped writes); `{workspace_path}` substitution in system prompt |
+| `workspace` | Orchestrator per team for spawned members; per-agent scratch dir for the teamless root | File tools inside the SDK agent (scoped writes); `{workspace_path}` substitution in system prompt |
 | `project_workspace` | Top-level CLI `--workspace PATH` | `{project_workspace_path}` substitution in system prompt; cross-team file sharing via absolute paths |
 | `emitter` | Root orchestrator construction | Drain loop in `sdk_agent.py` |
 | `caller_id` | Orchestrator at spawn time | Bound into every primitive closure for validation |

@@ -24,9 +24,9 @@ Lifecycle. Emitted before the first SDK message for a spawn.
 |---|---|
 | `ts` | Wall clock at spawn. |
 | `task_id` | Context. |
-| `team_id` | Context. |
+| `team_id` | Context. **Nullable.** The root agent emits `team_id: null` because it starts teamless (no synthetic root team exists). Any subsequent `team_created` event (if any) is the first one a real agent emits when it explicitly calls `create_team`. Non-root agents always have a non-null `team_id`. |
 | `agent_id` | Assigned by orchestrator. Stable join key across all events. |
-| `role` | From `create_team` roles entry. |
+| `role` | From `create_team` roles entry. `null` for the root agent (it is not spawned via `create_team`). |
 | `name` | Human-readable display name, e.g. `frontend-engineer-a3b2`. `agent_id` is the stable join key; `name` is a convenience label for UIs and logs. |
 | `template` | Skill name (e.g. `junior_engineer`). |
 | `model_requested` | The `model=` passed to `ClaudeAgentOptions` (HINT, see `agent-runtime.md` section 6). |
@@ -278,8 +278,8 @@ observe member status via `list_peers`.
 |---|---|
 | `ts` | Wall clock. |
 | `agent_id` | The agent reporting done. |
-| `team_id` | The agent's team. |
-| `all_done` | `true` when every member of the team is also in `done` state; `false` otherwise. |
+| `team_id` | The agent's team. `null` for the root agent (it is teamless). |
+| `all_done` | `true` when every member of the team is also in `done` state; `false` otherwise. `null` for the root agent (no team). |
 
 ---
 

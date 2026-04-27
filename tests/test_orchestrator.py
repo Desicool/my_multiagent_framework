@@ -18,7 +18,6 @@ import pytest
 
 from beidou import orchestrator as orch_module
 from beidou.orchestrator import (
-    ROOT_TEAM_ID,
     TERMINATE_GRACE_S,
     TOKEN_CEILING,
     USER_SENTINEL,
@@ -33,6 +32,10 @@ from beidou.primitives.core import (
     PrimitiveError,
 )
 from beidou.sdk_agent import RunResult, SpawnSpec
+
+# A generic top-level team id used in tests that need a named team but
+# don't care about the root-agent teamless semantics.
+_TM_TOP = "tm_top"
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +82,7 @@ def _make_orchestrator(tmp_path: Path) -> tuple[Orchestrator, _FakeEmitter]:
 def _seed_agent(
     o: Orchestrator,
     agent_id: str,
-    team_id: str,
+    team_id: str | None,
     *,
     role: str = "member",
     skill: str = "fake_skill",
@@ -95,7 +98,7 @@ def _seed_agent(
         create_team_lock=asyncio.Lock(),
     )
     o._agents[agent_id] = rec
-    if team_id in o._teams and agent_id not in o._teams[team_id].member_ids:
+    if team_id is not None and team_id in o._teams and agent_id not in o._teams[team_id].member_ids:
         o._teams[team_id].member_ids.append(agent_id)
     return rec
 
@@ -134,8 +137,8 @@ def run(coro) -> Any:
 def test_spawn_team_sets_leader_depth_and_members(tmp_path, monkeypatch):
     o, _ = _make_orchestrator(tmp_path)
     # Seed a caller on a depth-0 team.
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "R", ROOT_TEAM_ID, role="root")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "R", _TM_TOP, role="root")
 
     # Skip the skill-loader check — no real SKILL.md on disk.
     monkeypatch.setattr(
@@ -197,8 +200,8 @@ def test_spawn_team_sets_leader_depth_and_members(tmp_path, monkeypatch):
 
 def test_spawn_team_unknown_skill_raises(tmp_path, monkeypatch):
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "R", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "R", _TM_TOP)
 
     import beidou.skills.loader as loader_mod
 
@@ -228,8 +231,8 @@ def test_spawn_team_unknown_skill_raises(tmp_path, monkeypatch):
 
 def test_inbox_put_enforces_cap_for_non_beidou_senders(tmp_path):
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id="R", depth=0)
-    _seed_agent(o, "R", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id="R", depth=0)
+    _seed_agent(o, "R", _TM_TOP)
     rec = o._agents["R"]
 
     # Fill the inbox up to the cap.
@@ -251,8 +254,8 @@ def test_inbox_put_enforces_cap_for_non_beidou_senders(tmp_path):
 
 def test_inbox_put_bypasses_cap_for_beidou_senders(tmp_path):
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id="R", depth=0)
-    _seed_agent(o, "R", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id="R", depth=0)
+    _seed_agent(o, "R", _TM_TOP)
     rec = o._agents["R"]
 
     for _ in range(INBOX_CAP):
@@ -280,8 +283,8 @@ def test_inbox_put_bypasses_cap_for_beidou_senders(tmp_path):
 def test_queue_for_returns_per_agent_inbox(tmp_path):
     """queue_for returns the same asyncio.Queue that inbox_put pushes onto."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id="R", depth=0)
-    _seed_agent(o, "R", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id="R", depth=0)
+    _seed_agent(o, "R", _TM_TOP)
 
     async def body():
         q = o.queue_for("R")
@@ -493,9 +496,9 @@ def test_contract_violation_three_strikes_escalates_to_leader(tmp_path, monkeypa
     monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
 
     # Pre-seed a leader team with a non-root member we can drive directly.
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "LEADER", ROOT_TEAM_ID, role="leader")
-    _seed_team(o, "tm_child", leader_id="LEADER", depth=1, parent=ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "LEADER", _TM_TOP, role="leader")
+    _seed_team(o, "tm_child", leader_id="LEADER", depth=1, parent=_TM_TOP)
     rec = _seed_agent(o, "VIOLATOR", "tm_child", role="coder")
 
     async def always_violate(orch, spec):
@@ -537,10 +540,10 @@ def test_contract_violation_three_strikes_escalates_to_leader(tmp_path, monkeypa
 def test_token_ceiling_recommends_to_leader(tmp_path):
     o, _ = _make_orchestrator(tmp_path)
     # Leader at root.
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "LEADER", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "LEADER", _TM_TOP, role="leader")
     # Child team led by LEADER with one member.
-    _seed_team(o, "tm_kid", leader_id="LEADER", depth=1, parent=ROOT_TEAM_ID)
+    _seed_team(o, "tm_kid", leader_id="LEADER", depth=1, parent=_TM_TOP)
     rec = _seed_agent(o, "CHILD", "tm_kid")
 
     async def body():
@@ -568,8 +571,8 @@ def test_token_ceiling_recommends_to_leader(tmp_path):
 
 def test_token_ceiling_root_emits_event(tmp_path, monkeypatch):
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    rec = _seed_agent(o, "ROOT", ROOT_TEAM_ID, role="root")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "ROOT", _TM_TOP, role="root")
     o._root_id = "ROOT"
 
     async def body():
@@ -594,8 +597,8 @@ def test_token_ceiling_root_emits_event(tmp_path, monkeypatch):
 
 def test_record_status_updates_and_emits(tmp_path):
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    rec = _seed_agent(o, "A", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "A", _TM_TOP)
 
     async def body():
         o.record_status("A", "done", "shipped")
@@ -615,11 +618,11 @@ def test_record_status_updates_and_emits(tmp_path):
 
 def test_peer_snapshot_scopes(tmp_path):
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id="R", depth=0)
-    _seed_agent(o, "R", ROOT_TEAM_ID, role="leader")
-    _seed_agent(o, "A", ROOT_TEAM_ID)
-    _seed_agent(o, "B", ROOT_TEAM_ID)
-    _seed_team(o, "tm_sub", leader_id="A", depth=1, parent=ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id="R", depth=0)
+    _seed_agent(o, "R", _TM_TOP, role="leader")
+    _seed_agent(o, "A", _TM_TOP)
+    _seed_agent(o, "B", _TM_TOP)
+    _seed_team(o, "tm_sub", leader_id="A", depth=1, parent=_TM_TOP)
     _seed_agent(o, "C", "tm_sub")
 
     team = {p.agent_id for p in o.peer_snapshot("A", "team")}
@@ -640,9 +643,9 @@ def test_peer_snapshot_scopes(tmp_path):
 def test_deliver_message_puts_to_inbox_and_emits_event(tmp_path):
     """deliver_message lands in recipient's inbox and emits a message event."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "sender", ROOT_TEAM_ID)
-    _seed_agent(o, "recipient", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "sender", _TM_TOP)
+    _seed_agent(o, "recipient", _TM_TOP)
 
     async def body():
         o.deliver_message(from_id="sender", to_id="recipient", body="hello", kind="completion_report")
@@ -668,8 +671,8 @@ def test_deliver_message_puts_to_inbox_and_emits_event(tmp_path):
 def test_deliver_message_unknown_recipient_is_silent(tmp_path):
     """deliver_message to an unknown or sentinel recipient silently no-ops."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "sender", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "sender", _TM_TOP)
 
     # Should not raise; USER_SENTINEL is not a registered agent.
     o.deliver_message(from_id="sender", to_id=USER_SENTINEL, body="hi", kind="completion_report")
@@ -684,8 +687,8 @@ def test_deliver_message_unknown_recipient_is_silent(tmp_path):
 def test_assistant_text_for_turn_exact_binding(tmp_path):
     """assistant_text_for_turn returns text bound to the exact tool_use_id."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "ag1", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "ag1", _TM_TOP)
 
     # Populate via record_assistant_text (the public method sdk_agent uses).
     o.record_assistant_text("ag1", "I finished the task.", ["toolu_abc"])
@@ -696,8 +699,8 @@ def test_assistant_text_for_turn_exact_binding(tmp_path):
 def test_assistant_text_for_turn_fallback_to_most_recent(tmp_path):
     """Falls back to most recent when no exact tool_use_id match."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "ag2", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "ag2", _TM_TOP)
 
     # Record text for a prior turn with a different tool_use_id.
     o.record_assistant_text("ag2", "Prior turn summary.", ["toolu_prior"])
@@ -709,8 +712,8 @@ def test_assistant_text_for_turn_fallback_to_most_recent(tmp_path):
 def test_assistant_text_for_turn_returns_none_when_no_data(tmp_path):
     """Returns None if no text has been recorded for the agent."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "ag3", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "ag3", _TM_TOP)
 
     assert o.assistant_text_for_turn("ag3", "toolu_xyz") is None
 
@@ -725,9 +728,9 @@ def test_hook_success_path_delivers_message(tmp_path):
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "leader_ag", ROOT_TEAM_ID)
-    _seed_agent(o, "child_ag", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader_ag", _TM_TOP)
+    _seed_agent(o, "child_ag", _TM_TOP)
 
     # Pre-record assistant text bound to the report_status tool_use_id.
     o.record_assistant_text("child_ag", "I completed the work.", ["toolu_done"])
@@ -759,9 +762,9 @@ def test_hook_wrong_state_is_noop(tmp_path):
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "leader2", ROOT_TEAM_ID)
-    _seed_agent(o, "child2", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader2", _TM_TOP)
+    _seed_agent(o, "child2", _TM_TOP)
 
     hooks_dict = build_hooks(o, "child2", "leader2")
     callback = hooks_dict["PostToolUse"][0].hooks[0]
@@ -781,9 +784,9 @@ def test_hook_is_error_is_skipped(tmp_path):
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "leader3", ROOT_TEAM_ID)
-    _seed_agent(o, "child3", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader3", _TM_TOP)
+    _seed_agent(o, "child3", _TM_TOP)
 
     hooks_dict = build_hooks(o, "child3", "leader3")
     callback = hooks_dict["PostToolUse"][0].hooks[0]
@@ -803,9 +806,9 @@ def test_hook_empty_summary_emits_completion_empty(tmp_path):
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "leader4", ROOT_TEAM_ID)
-    _seed_agent(o, "child4", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "leader4", _TM_TOP)
+    _seed_agent(o, "child4", _TM_TOP)
 
     # No assistant text recorded — assistant_text_for_turn returns None.
     hooks_dict = build_hooks(o, "child4", "leader4")
@@ -832,8 +835,8 @@ def test_hook_root_sentinel_emits_completion_empty(tmp_path):
     from beidou.orchestrator import USER_SENTINEL
 
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "root_ag", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "root_ag", _TM_TOP)
 
     o.record_assistant_text("root_ag", "Root finished.", ["toolu_root"])
     hooks_dict = build_hooks(o, "root_ag", USER_SENTINEL)
@@ -873,9 +876,9 @@ def test_watchdog_cancels_run_task_after_grace_deadline(tmp_path):
       6. A second _watchdog_tick does NOT emit a duplicate terminate.forced event.
     """
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
     async def body():

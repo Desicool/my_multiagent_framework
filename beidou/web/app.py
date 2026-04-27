@@ -105,8 +105,9 @@ def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
         task = db.get_task(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="task not found")
-        # Flat team list — root team is the one where parent_team_id is null.
-        # The client builds the tree; the server does not synthesize a root node.
+        # Flat team list — top-level teams have parent_team_id=null.
+        # The root agent is teamless (team_id=null in agents list); there is no
+        # synthetic root team.  The client builds the tree from agents + teams.
         teams = db.get_teams(task_id)
         agents_raw = db.get_agents(task_id=task_id)
         agents = [

@@ -33,17 +33,16 @@ from beidou.primitives.core import (
     PrimitiveError,
 )
 from beidou.sdk_agent import RunResult, SpawnSpec
-from beidou.workspace import team_workspace
+from beidou.workspace import agent_workspace, team_workspace
 
 if TYPE_CHECKING:  # pragma: no cover
     from beidou.gateways.base import BaseGateway
 
 
-# Sentinel "leader" for the root team. No actual agent by this id is
-# registered; it only serves as the ``leader_of("tm_root")`` answer so the
-# team graph is structurally uniform.
+# Sentinel leader-id for the root agent.  The root agent has no team and no
+# leader; USER_SENTINEL is stored as ``leader_id`` in any context object that
+# needs a "who leads the root?" answer (e.g. spawn context template_vars).
 USER_SENTINEL = "__user__"
-ROOT_TEAM_ID = "tm_root"
 
 # Limits.md #8: per-agent token ceiling.
 TOKEN_CEILING = 1_000_000
@@ -85,7 +84,7 @@ def _slug_role(role: str) -> str:
 class AgentRecord:
     agent_id: str
     task_id: str
-    team_id: str                      # team this agent is a MEMBER of
+    team_id: str | None                # team this agent is a MEMBER of; None for teamless root
     role: str
     skill_name: str
     model: Optional[str]
@@ -201,7 +200,8 @@ class Orchestrator:
     def agent_task(self, agent_id: str) -> str:
         return self._agents[agent_id].task_id
 
-    def agent_team(self, agent_id: str) -> str:
+    def agent_team(self, agent_id: str) -> str | None:
+        """Return the team_id for agent_id, or None for teamless agents (e.g. root)."""
         return self._agents[agent_id].team_id
 
     def leader_of(self, team_id: str) -> str:
@@ -210,10 +210,16 @@ class Orchestrator:
     def teams_led_by(self, agent_id: str) -> list[str]:
         return [tid for tid, t in self._teams.items() if t.leader_id == agent_id]
 
-    def team_depth(self, team_id: str) -> int:
+    def team_depth(self, team_id: str | None) -> int:
+        """Return the depth of team_id, or 0 for None (teamless = depth 0)."""
+        if team_id is None:
+            return 0
         return self._teams[team_id].depth
 
-    def team_members(self, team_id: str) -> list[str]:
+    def team_members(self, team_id: str | None) -> list[str]:
+        """Return member ids for team_id, or empty list for None (teamless agent)."""
+        if team_id is None:
+            return []
         return list(self._teams[team_id].member_ids)
 
     # --- Completion-review accessors (used by list_pending_reviews) --------
@@ -252,6 +258,9 @@ class Orchestrator:
             )
 
         if scope == "team":
+            if me.team_id is None:
+                # Teamless agent (root) has no team-mates.
+                return out
             for mid in self.team_members(me.team_id):
                 if mid == agent_id or mid not in self._agents:
                     continue
@@ -319,7 +328,10 @@ class Orchestrator:
                     if rec.completion_pending_ts is not None
                     else None
                 )
-                leader_id_for_event = self.leader_of(rec.team_id)
+                leader_id_for_event = (
+                    USER_SENTINEL if rec.team_id is None
+                    else self.leader_of(rec.team_id)
+                )
                 self.emit_event(
                     "completion.approved",
                     {
@@ -357,7 +369,10 @@ class Orchestrator:
         # the agent's direct leader or the human user gateway ("user").
         # Exclude system messages (from_id == "beidou") explicitly.
         if msg.from_id != "beidou" and rec.completion_pending:
-            leader_id_for_msg = self.leader_of(rec.team_id)
+            leader_id_for_msg = (
+                USER_SENTINEL if rec.team_id is None
+                else self.leader_of(rec.team_id)
+            )
             is_from_leader = msg.from_id == leader_id_for_msg
             is_from_user = msg.from_id == "user"
             if is_from_leader or is_from_user:
@@ -1301,9 +1316,6 @@ class Orchestrator:
 
         effective_model = model or self._default_model
 
-        # Root team workspace (for inbox files + artifacts; orchestrator-internal).
-        root_workspace = team_workspace(self.project_workspace, self.task_id, ROOT_TEAM_ID)
-
         root_agent_id = f"ag_{uuid.uuid4().hex[:8]}"
         root_agent_name = self._make_unique_name("root")
 
@@ -1336,32 +1348,15 @@ class Orchestrator:
         # setting_sources=["project"] discovery can find them via .claude/skills/
         # (root agent cwd = project workspace).
         provision_skills(self.project_workspace, skill_root=self.skill_root)
-        self._teams[ROOT_TEAM_ID] = TeamRecord(
-            team_id=ROOT_TEAM_ID,
-            name="root",
-            task=root_task,
-            leader_id=USER_SENTINEL,
-            depth=0,
-            member_ids=[root_agent_id],
-            rules=[],
-            parent_team_id=None,
-        )
-        self.emit_event(
-            "team_created",
-            {
-                "new_team_id": ROOT_TEAM_ID,
-                "team_name": "root",
-                "leader_agent_id": root_agent_id,
-                "parent_team_id": None,
-                "depth": 0,
-                "members": [{"agent_id": root_agent_id, "role": "root", "skill": root_skill, "name": root_agent_name}],
-                "ts": time.time(),
-            },
-        )
+
+        # Root agent is teamless: no TeamRecord is created, no team_created event
+        # is emitted.  Per-agent scratch dir for artifacts / inbox files.
+        root_workspace = agent_workspace(self.project_workspace, self.task_id, root_agent_id)
+
         rec = AgentRecord(
             agent_id=root_agent_id,
             task_id=self.task_id,
-            team_id=ROOT_TEAM_ID,
+            team_id=None,
             role="root",
             skill_name=root_skill,
             model=effective_model,
@@ -1474,7 +1469,6 @@ __all__ = [
     "Orchestrator",
     "AgentRecord",
     "TeamRecord",
-    "ROOT_TEAM_ID",
     "USER_SENTINEL",
     "TOKEN_CEILING",
 ]

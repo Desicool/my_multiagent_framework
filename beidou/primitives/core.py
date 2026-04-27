@@ -432,12 +432,18 @@ async def create_team(
     task: str,
     roles: list[dict],
     rules: Optional[list[str]] = None,
+    consensus: bool = False,
 ) -> dict:
     """Spawn a sub-team. See docs/tool-surface.md#create_team.
 
     The self-lead invariant (orchestration.md) is guaranteed by construction:
     this Python signature has no ``leader_id`` parameter, so the model cannot
     pass one. The orchestrator passes ``leader_id=caller_id`` unconditionally.
+
+    ``consensus=True`` opts into legitimate "N parallel attempts" scenarios
+    (voting, ensemble) where all members intentionally share the same task.
+    Without it, N>1 roles that all share the same (skill, description) tuple
+    are rejected as a footgun guard (see ``duplicate_member_descriptions``).
     """
     # Fan-out cap -- limits.md #1.
     if len(roles) > FAN_OUT_CAP:
@@ -471,6 +477,23 @@ async def create_team(
             raise PrimitiveError(
                 "leader_override_attempted",
                 "rules may not carry leader_id overrides",
+            )
+
+    # Duplicate-description guard -- tool-surface.md#create_team.
+    # When N>1 roles all share the same (skill, description) tuple and the
+    # caller has not opted into consensus mode, every member would redundantly
+    # implement the whole task in parallel.  Reject early to prevent that
+    # footgun.  Uses .get() so roles that omit 'skill' or 'description' still
+    # compare correctly (missing fields all collapse to None).
+    if not consensus and len(roles) > 1:
+        sigs = {(r.get("skill"), r.get("description")) for r in roles}
+        if len(sigs) == 1:
+            raise PrimitiveError(
+                "duplicate_member_descriptions",
+                "All roles share the same (skill, description); every member "
+                "would redundantly implement the whole task. Either write "
+                "distinct descriptions for each role, or pass consensus=true "
+                "if parallel attempts are genuinely intentional (e.g. voting).",
             )
 
     # One in-flight create_team per caller -- limits.md #6. asyncio.Lock has

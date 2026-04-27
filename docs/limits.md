@@ -18,9 +18,9 @@ approval. See `README.md` for the approval rule.
 
 | | |
 |---|---|
-| **Value** | **5 (nested sub-teams counted from root = 0)** |
+| **Value** | **5 (team nesting depth; depth 0 = teamless agent)** |
 | Rationale | Bounds the depth of the cascade termination and the liveness walk. 5 is plenty for orchestrator -> phase -> task -> spike -> probe; deeper usually indicates a missing aggregation step. |
-| Enforced in | `create_team` primitive. Beidou reads the caller's team depth from the registry, rejects with `depth_exceeded` when `caller.depth + 1 > 5`. |
+| Enforced in | `create_team` primitive. A teamless agent (depth 0) spawning its first team creates a depth-1 team. Beidou reads the caller's current team depth from the registry, rejects with `depth_exceeded` when `caller_team_depth + 1 > 5`. |
 | Change policy | Requires user approval to change. |
 
 ## 3. Per-agent inbox size cap
@@ -79,7 +79,7 @@ deliberate non-boundary; it is documented here to make the absence explicit.)
 | # | Boundary | Value | Enforced in |
 |---|---|---|---|
 | 1 | Team fan-out per `create_team` | 8 | `create_team` primitive |
-| 2 | Team recursion depth from root | 5 | `create_team` primitive |
+| 2 | Team nesting depth (depth 0 = teamless agent) | 5 | `create_team` primitive |
 | 3 | Per-agent inbox cap | 1000 | `send_message` primitive |
 | 4 | Contract-violation strikes | 3 | Orchestrator recovery |
 | 5 | Concurrent in-flight `create_team` per agent | 1 | Orchestrator lock |

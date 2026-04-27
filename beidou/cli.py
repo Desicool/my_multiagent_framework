@@ -396,23 +396,40 @@ def _print_task_detail(task: dict) -> None:
 @main.command()
 @click.argument("task_id")
 def teams(task_id: str) -> None:
-    """Show team hierarchy for TASK_ID."""
+    """Show team hierarchy for TASK_ID.
+
+    The root agent is displayed as a top-level node (it is teamless).
+    Spawned teams appear beneath the task root.
+    """
     _ensure_db()
 
     from beidou.db import get_agents, get_teams
 
+    # Root agent: teamless agents with role="root" and team_id IS NULL.
+    all_agents = get_agents(task_id=task_id)
+    root_agents = [a for a in all_agents if a.get("role") == "root" and not a.get("team_id")]
+
     teams_list = get_teams(task_id)
-    if not teams_list:
-        console.print("[dim]No teams created for this task.[/dim]")
+
+    if not root_agents and not teams_list:
+        console.print("[dim]No agents or teams found for this task.[/dim]")
         return
 
-    # Build parent → children map
+    # Build parent → children map for teams.
     children: dict[str | None, list[dict]] = {}
     for tm in teams_list:
         pid = tm["parent_team_id"]
         children.setdefault(pid, []).append(tm)
 
     tree = Tree(f"[bold]Task[/bold] [yellow]{task_id}[/yellow]")
+
+    # Add teamless root agent(s) at the top.
+    for ag in root_agents:
+        status = ag.get("last_status", "working")
+        tree.add(
+            f"[green]{ag['agent_id']}[/green] [root] [dim]{ag.get('skill_name', '')}[/dim]"
+            f"  status=[bold]{status}[/bold]  (teamless)"
+        )
 
     def _add_children(node, parent_id: str | None) -> None:
         for tm in children.get(parent_id, []):

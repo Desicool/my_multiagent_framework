@@ -13,7 +13,6 @@ from typing import Any, Optional
 import pytest
 
 from beidou.orchestrator import (
-    ROOT_TEAM_ID,
     USER_SENTINEL,
     AgentRecord,
     Orchestrator,
@@ -21,6 +20,10 @@ from beidou.orchestrator import (
 )
 from beidou.primitives.core import Message, PrimitiveError, terminate_child
 from beidou.sdk_agent import build_hooks
+
+# A generic top-level team id used in tests that need a named team but
+# don't care about the root-agent teamless semantics.
+_TM_TOP = "tm_top"
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +82,7 @@ def _seed_team(
 def _seed_agent(
     o: Orchestrator,
     agent_id: str,
-    team_id: str,
+    team_id: str | None,
     *,
     role: str = "member",
     skill: str = "fake_skill",
@@ -95,7 +98,7 @@ def _seed_agent(
         create_team_lock=asyncio.Lock(),
     )
     o._agents[agent_id] = rec
-    if team_id in o._teams and agent_id not in o._teams[team_id].member_ids:
+    if team_id is not None and team_id in o._teams and agent_id not in o._teams[team_id].member_ids:
         o._teams[team_id].member_ids.append(agent_id)
     return rec
 
@@ -112,8 +115,8 @@ def run(coro) -> Any:
 def test_agent_record_has_pending_review_fields(tmp_path):
     """AgentRecord must expose the four completion-review fields with correct defaults."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    rec = _seed_agent(o, "ag1", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "ag1", _TM_TOP)
 
     # Field existence and defaults.
     assert rec.completion_pending is False
@@ -127,8 +130,8 @@ def test_agent_record_has_pending_review_fields(tmp_path):
 def test_inbox_put_updates_last_progress_ts(tmp_path):
     """inbox_put must bump last_progress_ts to (approximately) the current time."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    rec = _seed_agent(o, "ag1", ROOT_TEAM_ID)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "ag1", _TM_TOP)
 
     # Force an old baseline so the test isn't sensitive to sub-millisecond timing.
     rec.last_progress_ts = time.time() - 1.0
@@ -148,9 +151,9 @@ def test_inbox_put_from_leader_clears_completion_pending(tmp_path):
     """When the direct leader delivers a non-system message, completion_pending must clear."""
     o, emitter = _make_orchestrator(tmp_path)
     # Topology: leader "L" leads team "tm_child"; agent "A" is a member.
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
     # Manually set completion_pending as if on_report_status had done it.
@@ -188,9 +191,9 @@ def test_inbox_put_from_leader_clears_completion_pending(tmp_path):
 def test_inbox_put_from_non_leader_does_not_clear(tmp_path):
     """A message from a peer (not the leader) must NOT clear completion_pending."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     _seed_agent(o, "P", "tm_child", role="peer")   # peer in same team
     rec = _seed_agent(o, "A", "tm_child")
 
@@ -221,9 +224,9 @@ def test_inbox_put_from_non_leader_does_not_clear(tmp_path):
 def test_terminate_emits_completion_approved_when_pending(tmp_path):
     """Terminating an agent with completion_pending=True must emit completion.approved."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
     # Manually simulate pending completion.
@@ -257,9 +260,9 @@ def test_terminate_emits_completion_approved_when_pending(tmp_path):
 def test_terminate_no_completion_approved_when_not_pending(tmp_path):
     """Terminating an agent with completion_pending=False must NOT emit completion.approved."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
     # completion_pending defaults to False — leave it.
 
@@ -283,9 +286,9 @@ def test_terminate_no_completion_approved_when_not_pending(tmp_path):
 def test_inbox_put_from_user_gateway_clears_completion_pending(tmp_path):
     """A message from the user gateway (from_id='user') must also clear completion_pending."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
     rec.completion_pending = True
@@ -328,9 +331,9 @@ def test_terminate_child_clears_completion_pending(tmp_path):
     deny every subsequent tool call (create_team, etc.).
     """
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
     # Simulate pending completion with known timestamps.
@@ -381,9 +384,9 @@ def test_terminate_child_blocks_when_not_pending(tmp_path):
     primitive surface the leader actually calls.
     """
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     _seed_agent(o, "A", "tm_child")
     # completion_pending defaults to False — leave it.
 
@@ -400,9 +403,9 @@ def test_terminate_child_blocks_when_not_pending(tmp_path):
 def test_terminate_child_force_emits_forced_event(tmp_path):
     """force=True on a not-done child: succeeds and emits terminate.forced."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     _seed_agent(o, "A", "tm_child")
     # completion_pending=False, terminate_consumed=False (defaults — gate would block without force)
 
@@ -437,9 +440,9 @@ def test_terminate_child_pending_then_leader_can_proceed(tmp_path):
          After fix: review gate sees completion_pending=False and allows.
     """
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    leader_rec = _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    leader_rec = _seed_agent(o, "L", _TM_TOP, role="leader")
     child_rec = _seed_agent(o, "C", "tm_child")
 
     # Simulate child having called report_status(state="done").

@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from beidou.orchestrator import (
-    ROOT_TEAM_ID,
     USER_SENTINEL,
     AgentRecord,
     Orchestrator,
@@ -27,6 +26,10 @@ from beidou.orchestrator import (
 )
 from beidou.primitives.core import Message
 from beidou.sdk_agent import build_hooks
+
+# A generic top-level team id used in tests that need a named team but
+# don't care about the root-agent teamless semantics.
+_TM_TOP = "tm_top"
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +93,7 @@ def _seed_team(
 def _seed_agent(
     o: Orchestrator,
     agent_id: str,
-    team_id: str,
+    team_id: str | None,
     *,
     role: str = "member",
     skill: str = "fake_skill",
@@ -106,7 +109,7 @@ def _seed_agent(
         create_team_lock=asyncio.Lock(),
     )
     o._agents[agent_id] = rec
-    if team_id in o._teams and agent_id not in o._teams[team_id].member_ids:
+    if team_id is not None and team_id in o._teams and agent_id not in o._teams[team_id].member_ids:
         o._teams[team_id].member_ids.append(agent_id)
     return rec
 
@@ -154,9 +157,9 @@ def _input_data(tool_name: str, tool_input: Optional[dict] = None) -> dict:
 def test_pretoolc_no_pending_children_allows_create_team(tmp_path: Path) -> None:
     """Leader with no completion_pending children can call create_team freely."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = False  # explicit; is the default
 
@@ -176,9 +179,9 @@ def test_pretoolc_no_pending_children_allows_create_team(tmp_path: Path) -> None
 def test_pretoolc_pending_child_denies_create_team(tmp_path: Path) -> None:
     """Leader with 1 completion_pending child cannot call create_team; gets a denial."""
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
     child.completion_pending_ts = time.time()
@@ -203,9 +206,9 @@ def test_pretoolc_pending_child_denies_create_team(tmp_path: Path) -> None:
 def test_pretoolc_pending_child_allows_terminate_child(tmp_path: Path) -> None:
     """Leader with pending child CAN call mcp__beidou__terminate_child (allowlist)."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
 
@@ -220,9 +223,9 @@ def test_pretoolc_pending_child_allows_terminate_child(tmp_path: Path) -> None:
 def test_pretoolc_pending_child_allows_send_message(tmp_path: Path) -> None:
     """Leader with pending child CAN call mcp__beidou__send_message (allowlist)."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
 
@@ -237,9 +240,9 @@ def test_pretoolc_pending_child_allows_send_message(tmp_path: Path) -> None:
 def test_pretoolc_pending_child_allows_read(tmp_path: Path) -> None:
     """Leader with pending child CAN call Read (allowlist — inspect artifacts)."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
 
@@ -254,9 +257,9 @@ def test_pretoolc_pending_child_allows_read(tmp_path: Path) -> None:
 def test_pretoolc_multiple_pending_children(tmp_path: Path) -> None:
     """2 pending children: denial lists both ids and resolution steps for each."""
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     c1 = _seed_agent(o, "C1", "tm_child")
     c2 = _seed_agent(o, "C2", "tm_child")
     c1.completion_pending = True
@@ -377,18 +380,26 @@ def patch_emit_event(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _make_orch_for_watchdog(tmp_path: Path) -> tuple[Orchestrator, _FakeEmitter]:
-    """Build an orchestrator with a root team and root agent pre-seeded."""
+    """Build an orchestrator pre-seeded for watchdog tests.
+
+    The root agent is teamless (team_id=None). A generic top-level team
+    (_TM_TOP) is still seeded so non-root leader/child agents in the
+    watchdog tests have a home team.
+    """
     o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     return o, emitter
 
 
 def _seed_root_agent(o: Orchestrator) -> AgentRecord:
-    """Seed a root agent directly (bypasses _register_agent_record to avoid starting watchdog)."""
+    """Seed a teamless root agent directly (bypasses _register_agent_record).
+
+    The root agent has team_id=None per the new teamless-root model.
+    """
     rec = AgentRecord(
         agent_id="root_ag",
         task_id=o.task_id,
-        team_id=ROOT_TEAM_ID,
+        team_id=None,
         role="root",
         skill_name="orchestrator",
         model=None,
@@ -396,8 +407,6 @@ def _seed_root_agent(o: Orchestrator) -> AgentRecord:
         create_team_lock=asyncio.Lock(),
     )
     o._agents[rec.agent_id] = rec
-    if ROOT_TEAM_ID in o._teams and rec.agent_id not in o._teams[ROOT_TEAM_ID].member_ids:
-        o._teams[ROOT_TEAM_ID].member_ids.append(rec.agent_id)
     o._root_id = rec.agent_id
     return rec
 
@@ -415,10 +424,10 @@ def test_watchdog_pings_at_60s(tmp_path: Path) -> None:
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
-        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=ROOT_TEAM_ID)
+        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=_TM_TOP)
         _seed_root_agent(o)
         # Seed a leader agent in the root team that is the leader of tm_child.
-        leader = _seed_agent(o, "leader_ag", ROOT_TEAM_ID, role="leader")
+        leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
         child.completion_pending = True
         child.completion_pending_ts = time.time() - 65.0  # >60s ago
@@ -451,9 +460,9 @@ def test_watchdog_no_ping_before_60s(tmp_path: Path) -> None:
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
-        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=ROOT_TEAM_ID)
+        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=_TM_TOP)
         _seed_root_agent(o)
-        leader = _seed_agent(o, "leader_ag", ROOT_TEAM_ID, role="leader")
+        leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
         child.completion_pending = True
         child.completion_pending_ts = time.time() - 30.0  # only 30s ago
@@ -475,9 +484,9 @@ def test_watchdog_second_ping_warns(tmp_path: Path) -> None:
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
-        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=ROOT_TEAM_ID)
+        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=_TM_TOP)
         _seed_root_agent(o)
-        leader = _seed_agent(o, "leader_ag", ROOT_TEAM_ID, role="leader")
+        leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
         child.completion_pending = True
         child.completion_pending_ts = time.time() - 65.0
@@ -500,17 +509,21 @@ def test_watchdog_third_strike_escalates(tmp_path: Path) -> None:
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
-        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=ROOT_TEAM_ID)
+        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=_TM_TOP)
         _seed_root_agent(o)
-        _seed_agent(o, "leader_ag", ROOT_TEAM_ID, role="leader")
+        _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
         child.completion_pending = True
         child.completion_pending_ts = time.time() - 65.0
         child.review_ping_count = 2
 
-        # Set up a mock gateway with an ask() method.
+        # Set up a mock gateway with both ask() (for is_gateway_available)
+        # and ask_structured() (the escalation actually calls this).
         mock_gateway = MagicMock()
         mock_gateway.ask = AsyncMock(return_value="approved")
+        mock_gateway.ask_structured = AsyncMock(
+            return_value={"answers": [{"selected_labels": [], "text": "approved"}], "answer_text": "approved"}
+        )
         o.gateway = mock_gateway
 
         await o._watchdog_tick()
@@ -520,9 +533,9 @@ def test_watchdog_third_strike_escalates(tmp_path: Path) -> None:
         events = _events_named(o, "review.escalated_to_user")
         assert len(events) == 1, f"Expected review.escalated_to_user, got: {events}"
 
-        # gateway.ask called once with right args.
-        mock_gateway.ask.assert_called_once()
-        call_kwargs = mock_gateway.ask.call_args
+        # gateway.ask_structured called once with right args.
+        mock_gateway.ask_structured.assert_called_once()
+        call_kwargs = mock_gateway.ask_structured.call_args
         assert "child_ag" in str(call_kwargs)
 
         assert child.review_ping_count == 3
@@ -537,9 +550,9 @@ def test_watchdog_post_escalation_silence(tmp_path: Path) -> None:
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
-        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=ROOT_TEAM_ID)
+        _seed_team(o, "tm_child", leader_id="leader_ag", depth=1, parent=_TM_TOP)
         _seed_root_agent(o)
-        leader = _seed_agent(o, "leader_ag", ROOT_TEAM_ID, role="leader")
+        leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
         child.completion_pending = True
         child.completion_pending_ts = time.time() - 65.0
@@ -613,7 +626,7 @@ def test_idle_nudge_skipped_for_idle_worker_no_children(tmp_path: Path) -> None:
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
         _seed_root_agent(o)
-        _seed_team(o, "tm_child", leader_id="root_ag", depth=1, parent=ROOT_TEAM_ID)
+        _seed_team(o, "tm_child", leader_id="root_ag", depth=1, parent=_TM_TOP)
         worker = _seed_agent(o, "worker_ag", "tm_child")
         worker.last_progress_ts = time.time() - 200.0
         worker.inflight_tools = 0
@@ -676,7 +689,7 @@ def test_watchdog_starts_lazily_on_register(tmp_path: Path) -> None:
 
     async def body():
         o, _ = _make_orchestrator(tmp_path)
-        _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
+        _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
 
         # Before any registration, task must be None.
         assert o._watchdog_task is None
@@ -685,7 +698,7 @@ def test_watchdog_starts_lazily_on_register(tmp_path: Path) -> None:
         rec = AgentRecord(
             agent_id="ag_lazy",
             task_id=o.task_id,
-            team_id=ROOT_TEAM_ID,
+            team_id=_TM_TOP,
             role="root",
             skill_name="orchestrator",
             model=None,
@@ -693,8 +706,8 @@ def test_watchdog_starts_lazily_on_register(tmp_path: Path) -> None:
             create_team_lock=asyncio.Lock(),
         )
         o._register_agent_record(rec)
-        if ROOT_TEAM_ID in o._teams:
-            o._teams[ROOT_TEAM_ID].member_ids.append(rec.agent_id)
+        if _TM_TOP in o._teams:
+            o._teams[_TM_TOP].member_ids.append(rec.agent_id)
 
         # Now the watchdog task must exist.
         assert o._watchdog_task is not None
@@ -719,9 +732,9 @@ def test_review_gate_allows_SendMessage_classic(tmp_path: Path) -> None:
     """
     # bd issue xq1
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
     child.completion_pending_ts = time.time()
@@ -753,9 +766,9 @@ def test_review_gate_allows_AskUserQuestion_classic(tmp_path: Path) -> None:
     """
     # bd issue xq1
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
     child.completion_pending_ts = time.time()
@@ -778,9 +791,9 @@ def test_review_gate_allows_Write_classic(tmp_path: Path) -> None:
     """Leader with 1 pending child can call SDK-builtin Write (e.g. to save notes)."""
     # bd issue xq1
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
     child.completion_pending_ts = time.time()
@@ -803,9 +816,9 @@ def test_review_gate_allows_Edit_classic(tmp_path: Path) -> None:
     """Leader with 1 pending child can call SDK-builtin Edit."""
     # bd issue xq1
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
     child.completion_pending_ts = time.time()
@@ -835,9 +848,9 @@ def test_review_gate_skips_terminate_consumed(tmp_path: Path) -> None:
     """
     # bd issue xq1
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
     child.completion_pending = True
     child.completion_pending_ts = time.time()
@@ -866,9 +879,9 @@ def test_review_gate_skips_terminate_consumed_mixed(tmp_path: Path) -> None:
     """
     # bd issue xq1
     o, _ = _make_orchestrator(tmp_path)
-    _seed_team(o, ROOT_TEAM_ID, leader_id=USER_SENTINEL, depth=0)
-    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=ROOT_TEAM_ID)
-    _seed_agent(o, "L", ROOT_TEAM_ID, role="leader")
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
 
     # Terminated child — must be excluded from gating.
     dead = _seed_agent(o, "C_dead", "tm_child")

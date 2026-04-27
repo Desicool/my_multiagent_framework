@@ -303,6 +303,17 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                     "description": "Optional coordination rules visible to each member.",
                     "items": {"type": "string"},
                 },
+                "consensus": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Default false. Set true only when deliberately spawning "
+                        "N agents to attempt the same task in parallel for voting "
+                        "or ensemble/consensus purposes. Without this flag, N>1 "
+                        "roles that all share the same (skill, description) are "
+                        "rejected as a footgun guard."
+                    ),
+                },
             },
             "required": ["name", "task", "roles"],
         },
@@ -314,6 +325,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             "name": args["name"],
             "task": args["task"],
             "roles": args["roles"],
+            "consensus": bool(args.get("consensus", False)),
         }
         if "rules" in args and args["rules"] is not None:
             kwargs["rules"] = args["rules"]

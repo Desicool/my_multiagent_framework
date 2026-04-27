@@ -159,6 +159,7 @@ construction.
 | `task` | string | yes | Task description propagated to each member. |
 | `roles` | list[object] | yes | One per member. Each has `role` (string), `skill` (skill name, e.g. `junior_engineer`), `model` (optional string), `description` (string). |
 | `rules` | list[string] | no | Coordination rules visible to each member. |
+| `consensus` | bool | no | Default `false`. When `true`, bypasses the duplicate-description guard (see below). Use only when deliberately spawning N agents to attempt the same thing in parallel for voting or ensemble purposes. |
 
 **Output schema**
 ```
@@ -167,13 +168,19 @@ construction.
 
 **Error cases**
 - `fanout_exceeded`: `len(roles)` exceeds cap in `limits.md`.
-- `depth_exceeded`: caller's team is already at max recursion depth.
+- `depth_exceeded`: caller's team depth is already at the max recursion depth.
 - `leader_override_attempted`: the call included a `leader_id` field in the
   input. (Beidou's validator rejects before spawn.)
 - `unknown_skill`: a `roles[i].skill` does not resolve to a loadable
   SKILL.md.
 - `concurrent_create_team`: caller already has an in-flight `create_team`
   (serialization lock).
+- `duplicate_member_descriptions`: raised when `len(roles) > 1` AND every
+  member shares the same `(skill, description)` pair AND `consensus` is
+  `false`. This is a footgun guard: if all N members have identical
+  descriptions, they will redundantly implement the whole task in parallel.
+  Either write distinct descriptions for each role, or pass `consensus=true`
+  if parallel attempts are genuinely intentional.
 
 **Validation rules**
 - **Self-lead invariant**: Beidou sets `leader_id = caller_id` for the new

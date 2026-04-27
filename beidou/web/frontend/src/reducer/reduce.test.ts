@@ -8,7 +8,7 @@ beforeEach(() => { s = createInitialState(); });
 
 describe('agent_started', () => {
   it('creates the agent with metadata', () => {
-    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root', model: 'opus' });
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: null, role: 'root', model: 'opus' });
     expect(s.agentsById.A).toBeDefined();
     expect(s.agentsById.A.role).toBe('root');
     expect(s.agentsById.A.status).toBe('working');
@@ -21,13 +21,13 @@ describe('agent_started', () => {
   });
 
   it('stores name from agent_started onto agent state', () => {
-    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root', name: 'root-ab12' });
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: null, role: 'root', name: 'root-ab12' });
     expect(s.agentsById.A.name).toBe('root-ab12');
   });
 
   it('preserves existing name when agent_started fires without name', () => {
-    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root', name: 'root-ab12' });
-    applyEvent(s, { type: 'agent_started', ts: 2, agent_id: 'A', task_id: 'T', team_id: 'tm_root', role: 'root' });
+    applyEvent(s, { type: 'agent_started', ts: 1, agent_id: 'A', task_id: 'T', team_id: null, role: 'root', name: 'root-ab12' });
+    applyEvent(s, { type: 'agent_started', ts: 2, agent_id: 'A', task_id: 'T', team_id: null, role: 'root' });
     expect(s.agentsById.A.name).toBe('root-ab12');
   });
 

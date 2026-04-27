@@ -5,14 +5,18 @@
 - A **team** is a named group of agents with one leader and N members.
 - The leader is the agent that called `create_team` (self-lead invariant).
 - Every agent is both:
-  - a **member** of the team it was spawned into, AND
+  - a **member** of the team it was spawned into (if any), AND
   - a **potential leader** of any sub-team it creates via `create_team`.
-- The root agent is a member of a synthetic "root team" of size 1; Beidou
-  records itself as the degenerate leader of that root team (sole purpose:
-  root-agent termination authority on user signal). The root team's workspace
-  directory (`{project}/.beidou/tasks/{task_id}/teams/tm_root/`) is created for
-  inbox files and artifacts, but the root agent's cwd is the project workspace
-  itself. This is the only case where agent cwd differs from team workspace.
+- The **root agent** is the first agent in the task. It starts teamless
+  (no team membership, no team record). It may proceed solo or call
+  `create_team` to spawn its first team and become that team's leader.
+  There is no synthetic "root team": no `team_created` event fires for the
+  root agent, and no team record exists for it until it explicitly calls
+  `create_team`. See `agent-runtime.md` §2.
+- The conceptual depth of the teamless root is **0**. The first team any
+  agent spawns has depth 1; sub-teams of that team have depth 2, and so on.
+  The depth cap in `limits.md` applies to team nesting depth (depth ≥ 1),
+  not to the root agent itself. See `limits.md` §2.
 
 ## Self-lead invariant
 
@@ -37,9 +41,9 @@ Beidou maintains an in-memory registry keyed by `team_id`:
 | `name` | Human-readable name. |
 | `leader_id` | The agent that called `create_team`. |
 | `members` | List of `{agent_id, role, status}`. |
-| `parent_team_id` | The team the leader is a member of. `None` for root. |
-| `depth` | 0 for root. Validated against `limits.md` recursion cap on each `create_team`. |
-| `workspace` | Team workspace path (`{project}/.beidou/tasks/{task_id}/teams/{team_id}/`). For the synthetic root team, `team_id = tm_root`. |
+| `parent_team_id` | The team the leader is a member of. `None` for a team directly spawned by the root agent (or by any teamless agent). |
+| `depth` | 1 for the first team spawned from the root agent. Validated against `limits.md` recursion cap on each `create_team`. |
+| `workspace` | Team workspace path (`{project}/.beidou/tasks/{task_id}/teams/{team_id}/`). No workspace entry exists for the root agent; it uses its own agent-scoped scratch path. |
 
 The registry is append-mostly: members are removed only on terminate-ack.
 
@@ -138,22 +142,23 @@ Termination is still leader-driven.
 ## Topology walkthrough (verification case)
 
 ```
-root (R, skill=orchestrator)
-  leads team "impl"
+root (R, skill=orchestrator)   ← teamless; depth=0
+  leads team "impl"             ← depth=1; parent_team_id=null
     member A (junior_engineer)
-      leads team "spike"
+      leads team "spike"        ← depth=2; parent_team_id=impl
         member A1 (researcher)
         member A2 (researcher)
     member B (junior_engineer)
     member C (test_engineer)
 ```
 
+- R starts teamless. No team record, no `team_created` event for R itself.
 - R called `create_team(name="impl", roles=[A, B, C])`. Registry: team
-  "impl", leader=R, members=[A, B, C], parent=root, depth=1.
+  "impl", leader=R, members=[A, B, C], parent_team_id=null, depth=1.
 - A called `create_team(name="spike", roles=[A1, A2])`. Registry: team
-  "spike", leader=A, members=[A1, A2], parent=impl, depth=2.
+  "spike", leader=A, members=[A1, A2], parent_team_id=impl, depth=2.
 - A is both a member of "impl" and leader of "spike". Both facts hold.
-- R cannot `terminate_child(A1)` - it does not lead "spike". A must.
+- R cannot `terminate_child(A1)` — it does not lead "spike". A must.
 - On root termination: Beidou posts a terminate sentinel to R's inbox. The
   runtime cascade automatically propagates sentinels depth-first to A, B, C,
   then from A's subtree to A1 and A2. Each agent's SDK session ends as its

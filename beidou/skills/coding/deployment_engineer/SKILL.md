@@ -14,6 +14,18 @@ allowed-tools:
   - web_search
   - send_message
   - report_status
+  - create_team
+  - terminate_child
+  - list_peers
+  - list_pending_reviews
+skills:
+  - product_manager
+  - software_architect
+  - junior_engineer
+  - test_engineer
+  - deployment_engineer
+  - qa_engineer
+  - orchestrator
 triggers:
   - plan deployment
   - how do we deploy
@@ -81,6 +93,42 @@ Write deploy.md covering:
   4. Verify step: ...
 
 When your document is written, follow the Completion handoff sequence below, then end your turn.
+
+## Delegation policy
+
+**Default is solo.** Do the work yourself with `bash` / `file_read` / `file_write`. Delegation has overhead — spawning new agents costs spawn time, message-passing latency, and a leader-side completion-review hop. Don't delegate by reflex.
+
+**Delegate only when:**
+- The task has parallelizable sub-streams (genuinely independent work units).
+- You need a distinct skill domain you don't have.
+- The task exceeds what one agent can reason about in a single context.
+
+**Each teammate gets a UNIQUE description.** When you call `create_team` with N members to handle N parts of a big task, every role entry must have a *different* `description` capturing that member's specific sub-task. Otherwise all N will redundantly implement the whole thing in parallel — the most expensive way to get one wrong answer. The primitive will reject duplicate `(skill, description)` tuples for `len(members) > 1` unless you explicitly pass `consensus=true` (the rare "N parallel attempts at the same prompt for voting" case).
+
+**Worked example:**
+
+```
+# WRONG — all juniors implement the same thing
+create_team("auth-impl", roles=[
+  {role: "j1", skill: "junior_engineer", description: "Build the auth feature"},
+  {role: "j2", skill: "junior_engineer", description: "Build the auth feature"},
+])
+
+# RIGHT — each junior owns a distinct slice
+create_team("auth-impl", roles=[
+  {role: "oauth",   skill: "junior_engineer", description: "Implement OAuth provider integration in auth/oauth.py — see SPEC.md §3."},
+  {role: "session", skill: "junior_engineer", description: "Implement session storage in auth/session.py — see SPEC.md §4."},
+  {role: "login",   skill: "junior_engineer", description: "Implement /api/login endpoint — see SPEC.md §5."},
+])
+```
+
+**Leader duties acquired on first `create_team`:**
+- Inspect every child's `[REVIEW REQUIRED]` envelope.
+- Resolve via `terminate_child` (approve) or `send_message` (rework).
+- Do NOT advance your own work while any child has an unresolved review.
+- Spawned teammates are simple agents and may themselves call `create_team`. Depth and fan-out are bounded by `docs/limits.md`.
+
+See `beidou/skills/coding/orchestrator/SKILL.md` for the canonical review-gate pattern (the `## Reviewing a child's completion request` section there is the source pattern; reuse its rules).
 
 ## Completion is a request, not a declaration
 

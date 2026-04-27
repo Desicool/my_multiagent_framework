@@ -72,9 +72,9 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
         started_at: e.ts,
         status: a.status === 'unknown' ? 'working' : a.status,
       });
-      // Track root: detect via role='root' or team_id='tm_root' (live root spawns
-      // always have team_id='tm_root', not null — see orchestrator.py).
-      if (state.rootAgentId == null && (e.role === 'root' || e.team_id === 'tm_root')) {
+      // Track root: detect via role='root'. The root agent now spawns with
+      // team_id=null (no synthetic tm_root team).
+      if (state.rootAgentId == null && e.role === 'root') {
         state.rootAgentId = e.agent_id;
       }
       // Add to team membership if known.

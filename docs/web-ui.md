@@ -12,12 +12,12 @@ the JSONL file or to the SQLite database.
 │              │  ⚠ Question Banner (sticky)  │              │
 │ TASK         │  ┌────────────────────────┐  │ TEAM TREE    │
 │ OVERVIEW     │  │ Pinned Agent Header    │  │              │
-│              │  │ (role/id/status/tok/$) │  │  ▾ root team │
-│ + global     │  ├────────────────────────┤  │    └ root    │
-│   activity   │  │  Stream:               │  │  ▾ team-A    │
-│   feed       │  │   • markdown bubble    │  │    ├ engineer│
-│              │  │   • tool card (▸/▾)   │  │    └ tester  │
-│ + question   │  │   • chat bubbles       │  │  ▸ team-B    │
+│              │  │ (role/id/status/tok/$) │  │  • root      │
+│ + global     │  ├────────────────────────┤  │  ▾ team-A    │
+│   activity   │  │  Stream:               │  │    ├ engineer│
+│   feed       │  │   • markdown bubble    │  │    └ tester  │
+│              │  │   • tool card (▸/▾)   │  │  ▸ team-B    │
+│ + question   │  │   • chat bubbles       │  │              │
 │   count chip │  │   • turn divider       │  │              │
 │              │  ├────────────────────────┤  │              │
 │              │  │ Composer (textarea)    │  │              │
@@ -30,8 +30,11 @@ the JSONL file or to the SQLite database.
   `GlobalActivityFeed.svelte` (last 100 cross-agent events).
 - **Middle** — `PinnedAgentPanel.svelte`: sticky `AgentHeader`, optional `QuestionBanner`
   (`role="alert"`), per-agent `AgentStream`, and `Composer` (textarea + Cmd/Ctrl+Enter send).
-- **Right** — `TeamTree.svelte`: nested by `parent_team_id`; clicking an `AgentRow` pins that
-  agent in the middle panel.
+- **Right** — `TeamTree.svelte`: the root agent is rendered as a top-level
+  node (not wrapped in a synthetic root-team row). Real teams the root agent
+  spawns appear as separate top-level team nodes (those whose
+  `parent_team_id == null`). Sub-teams are nested under their parent team.
+  Clicking an `AgentRow` pins that agent in the middle panel.
 
 ### QuestionBanner — structured multi-part questions
 

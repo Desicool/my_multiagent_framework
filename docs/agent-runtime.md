@@ -15,6 +15,10 @@ combination of a prompt-side contract and an orchestrator-side recovery policy.
 
 ## 2. Persistent-agent invariant
 
+The persistent-agent contract applies to **every** agent in the system — root
+or otherwise, solo or team member. Being the root agent, or being a teamless
+agent, does not relax any clause of this contract.
+
 **No self-exit.** Completion of assigned work is a *state transition*, not a
 process exit.
 
@@ -32,6 +36,18 @@ leaves cannot unilaterally exit leaving orphaned children. Beidou has exactly
 ONE termination privilege: it can terminate the **root agent** on behalf of
 the user. Non-root termination is exclusively leader-driven via
 `terminate_child`.
+
+### Delegation is a right, not a role
+
+Any agent MAY call `create_team` if its skill exposes the tool, regardless of
+whether that agent was spawned as a "worker" or an "orchestrator". Leadership
+is acquired by spawning — the moment an agent calls `create_team`, it becomes
+the leader of that team. Leadership is never pre-assigned by skill or role
+label.
+
+The root agent has the same right: it may proceed solo, or it may call
+`create_team` to spawn a team and immediately become that team's leader. The
+only invariant is the self-lead rule (see `orchestration.md`).
 
 ## 2.5 Disambiguation duty
 
@@ -62,11 +78,12 @@ on turn 2+).
 1. `[ASSIGNED SKILL]` — skill body with `{role}` / `{role_description}` /
    `{team_name}` / `{workspace_path}` / `{project_workspace_path}` substituted.
    Goes first so agents sharing the same skill share a cache prefix.
-2. `[IDENTITY]` — agent role, team name, workspace path, project workspace path,
-   and leader id. For the root agent, the agent's cwd is the project workspace,
-   while `{workspace_path}` refers to the synthetic root team's directory
-   (`tm_root`) used for orchestrator-internal storage; these two paths differ
-   only for the root agent.
+2. `[IDENTITY]` — agent role, team name (if any), workspace path, project
+   workspace path, and leader id. For the root agent, the agent's cwd is the
+   project workspace, and `{workspace_path}` refers to an agent-scoped scratch
+   directory (`{project}/.beidou/tasks/{task_id}/agents/{agent_id}/`) used for
+   orchestrator-internal storage. The root agent has no team, so `{team_name}`
+   is omitted or labelled accordingly.
 3. `[PERSISTENT-AGENT CONTRACT]` — verbatim persistent-agent rules.
 4. `[COMPLETION HANDOFF CONTRACT]` — verbatim completion handoff rules,
    including the nudge fallback if a summary is missing.

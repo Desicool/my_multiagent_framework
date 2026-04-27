@@ -41,7 +41,7 @@ Before being passed to the SDK, the loader substitutes these tokens:
 | `{role}` | The agent's role name in its team (from `create_team(roles=...)`). |
 | `{role_description}` | The `description` supplied for this role at spawn time. |
 | `{team_name}` | The name of the team the agent was spawned into. |
-| `{workspace_path}` | Absolute path of the team's workspace directory. For the root agent, this is the synthetic root team's directory `{project}/.beidou/tasks/{task_id}/teams/tm_root/`, used for orchestrator-internal storage (inbox files, artifacts). The root agent's cwd is the project workspace, not this path. |
+| `{workspace_path}` | Absolute path of the agent's workspace directory. For team members, this is the team workspace (`{project}/.beidou/tasks/{task_id}/teams/{team_id}/`). For the root agent (which starts teamless), this is an agent-scoped scratch path (`{project}/.beidou/tasks/{task_id}/agents/{agent_id}/`) used for orchestrator-internal storage. The root agent's cwd is the project workspace, not this path. |
 | `{project_workspace_path}` | Absolute path of the project workspace (user-supplied via `beidou run --workspace`). Same on every agent in the task; used by agents to read/write cross-team shared files via absolute paths. |
 
 Substitution is literal string replace on `{key}` -> value. Missing keys
@@ -125,6 +125,62 @@ Given the raw `allowed-tools` list from a SKILL.md frontmatter, returns only
 the entries that map to SDK built-in tool names (`Bash`, `Read`, `Write`,
 `WebFetch`, `WebSearch`). Needed because `skills="all"` does NOT auto-add SDK
 builtins — those must be passed explicitly in `allowed_tools`.
+
+## Leadership and delegation
+
+Any skill MAY include `create_team` in its `allowed-tools` list and thereby
+act as a leader. The orchestrator skill is one specialization of this pattern —
+it is not the only one. A junior_engineer or test_engineer skill may equally
+include `create_team` and spawn a sub-team if its task warrants it.
+
+Leadership is acquired by spawning (see `agent-runtime.md` §2, "Delegation is
+a right, not a role"), not by skill label.
+
+### Recommended `## Delegation policy` prompt section
+
+Skills that expose `create_team` should include a `## Delegation policy`
+section in their prompt body (before any ambiguity / completion rules). The
+recommended pattern:
+
+```
+## Delegation policy
+
+Default is solo; delegation has overhead. Delegate only when:
+- The work splits cleanly into distinct sub-tasks.
+- A sub-task requires a distinct skill you do not hold.
+- The combined work exceeds one agent's practical context.
+
+Once you create a team, you inherit leader duties:
+- Inspect every [REVIEW REQUIRED] handoff.
+- Resolve with terminate_child (approve) or send_message (rework).
+- Do not advance while any child review is pending.
+
+Spawned teammates are simple agents and may themselves call create_team.
+Depth and fan-out remain bounded by docs/limits.md.
+
+Each teammate gets the description YOU write for them — do NOT clone the
+parent task across all members. Each role entry must have a description
+capturing that member's specific sub-task; otherwise all members will
+redundantly implement the entire task in parallel.
+```
+
+Adapt wording to the role but preserve the no-clone, leader-duties, and
+depth-bounded clauses.
+
+### Runtime caveat on `skills:` rosters
+
+The loader parses and validates `skills:` entries into `LoadedSkill.sub_skills`
+at load time. However, **runtime spawn is not currently restricted by that
+roster**: the SDK always runs with `skills="all"` and `setting_sources=["user",
+"project"]`, and `spawn_team()` resolves any loadable skill name under the
+configured `skill_root`. The shared `skills:` roster is therefore:
+
+1. Prompt-level metadata and documentation for skill authors.
+2. A future enforcement surface — if per-skill runtime authorization is added
+   later, the roster is the candidate list.
+
+It is **not** a runtime authorization boundary today. A separate code change in
+`sdk_agent.py` and `spawn_team()` would be required to enforce it.
 
 ## Validation rules
 
