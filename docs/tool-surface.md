@@ -17,7 +17,9 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 |---|---|---|
 | `send_message` | A2A | No |
 | `list_peers` | Agent-Beidou | No |
-| `ask_user` | Agent-Beidou | Yes (human-bounded) |
+| `ask_user` | Agent-Beidou | Yes (chain-bounded) |
+| `answer_question` | Agent-Beidou | No |
+| `escalate_question` | Agent-Beidou | No |
 | `report_status` | Agent-Beidou | No |
 | `create_team` | Agent-Beidou | No |
 | `terminate_child` | Agent-Beidou | No |
@@ -70,8 +72,15 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 
 ## ask_user
 
-**Kind:** Agent-Beidou. Routes the question to Beidou's human gateway
-(`beidou/gateway/*`).
+**Kind:** Agent-Beidou. Agent-originated `ask_user` is routed through the
+**leader chain**: the question first lands in the caller's team leader's
+inbox (as a `[INBOX QUESTION]` system message), where the leader can
+either resolve it directly via `mcp__beidou__answer_question` or push it
+one hop further with `mcp__beidou__escalate_question`. The question only
+reaches the human gateway when the chain reaches an agent whose leader is
+the user sentinel (or via explicit escalation). System-originated paths
+(watchdog, root completion review) bypass the chain and surface to the
+gateway directly.
 
 **Input schema**
 | Field | Type | Required | Notes |
@@ -121,7 +130,69 @@ discriminator instead of user-facing copy.
   question index and field. Examples: questions list length not in 1..4,
   header > 12 chars, options length not in {0, 2, 3, 4}, malformed option dict.
 
-ask_user blocks indefinitely until the user (or an escalating leader via the inbox question broker) supplies an answer. There is no timeout. Internal escalation paths (watchdog, contract-violation review) wrap their plain-text prompts as a single free-text question (`options: []`).
+ask_user blocks indefinitely until the question is resolved — by the
+caller's leader via `answer_question`, by an upstream leader after one or
+more `escalate_question` hops, or by the user gateway terminal of the
+chain. There is no timeout. Internal escalation paths (watchdog,
+contract-violation review) wrap their plain-text prompts as a single
+free-text question (`options: []`).
+
+---
+
+## answer_question
+
+**Kind:** Agent-Beidou. Used by a leader (the current holder of an
+`ask_user` question routed via the chain) to resolve the question
+directly. The asker's `ask_user` future returns with the supplied
+answers; the user gateway is never pinged.
+
+**Input schema**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `qid` | string | yes | The question id from the `[INBOX QUESTION]` system message in your inbox. |
+| `answers` | array of objects | yes | One entry per sub-question, in order. Each entry is `{selected_labels: list[string], text: string \| null}`. For free-text or "Other" answers, leave `selected_labels` empty and put the answer in `text`. |
+
+**Output schema**
+```
+{ "ok": true, "qid": "<qid>" }
+```
+
+**Error cases**
+- `invalid_input`: `qid` empty, `answers` not a non-empty list, or
+  malformed `answers[i]`.
+- `unknown_qid`: no pending question with that id.
+- `not_holder`: caller is not the current holder of the question. Only
+  the agent the question was last routed to may answer.
+- `answer_count_mismatch`: `len(answers) != len(question.questions)`.
+
+---
+
+## escalate_question
+
+**Kind:** Agent-Beidou. Used by a leader (the current holder of an
+`ask_user` question) to push the question one hop further up the chain.
+The next holder is the caller's own team leader; if the caller is the
+root or the next hop is the user sentinel, the question surfaces to the
+human gateway.
+
+**Input schema**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `qid` | string | yes | The question id from the `[INBOX QUESTION]` system message. |
+| `reason` | string | yes | Short note explaining why you can't answer it yourself (audit trail). |
+
+**Output schema**
+```
+{ "ok": true, "qid": "<qid>", "new_holder": "<agent_id or null>" }
+```
+`new_holder` is `null` when the question reached the user gateway.
+
+**Error cases**
+- `invalid_input`: `qid` empty or `reason` empty.
+- `unknown_qid`: no pending question with that id.
+- `not_holder`: caller is not the current holder.
+- `stale`: the question is no longer pending (already answered or
+  escalated past in a race).
 
 ---
 

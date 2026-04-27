@@ -57,14 +57,28 @@ the same rule: do not silently resolve a user-relevant ambiguity. If the task
 or upstream artifact leaves a binding choice unspecified — framework variant,
 build chain, language version, persistence layer, auth model, deployment
 target, file layout, test framework, or any decision the user could plausibly
-care about — the agent MUST escalate via `ask_user` (leaders) or via
-`send_message` to the leader chain (members) and BLOCK on the answer. Writing
-an artifact (`requirements.md`, `SPEC.md`, `tasks.md`, code, deploy plan, qa
-verdict) that bakes in an unverified assumption on a binding choice is a
-contract violation.
+care about — the agent MUST escalate via `ask_user` and BLOCK on the answer.
+Writing an artifact (`requirements.md`, `SPEC.md`, `tasks.md`, code, deploy
+plan, qa verdict) that bakes in an unverified assumption on a binding choice
+is a contract violation.
 
-The orchestrator routes member-originated `ask_user` escalations to the human
-user via its own `ask_user`. It never answers on the user's behalf.
+**Question chain.** Agent-originated `ask_user` is routed through the leader
+chain. The asker's question first lands in the asker's team leader's inbox
+as a `[INBOX QUESTION]` system message; the leader can resolve it directly
+via `mcp__beidou__answer_question` (when the leader already knows the answer
+from the user task, an upstream artifact, or a prior user reply) or push it
+one hop further with `mcp__beidou__escalate_question`. Each escalation walks
+one team-nesting level toward the root. When the next hop is the user
+sentinel, the question surfaces to the human gateway. This makes "the leader
+already had this answer in `requirements.md`" a single quick reply instead
+of a fresh user prompt, while the user remains the terminal authority for
+genuinely-unresolved binding choices.
+
+The orchestrator (the typical chain terminator before the user) never
+answers on the user's behalf for genuinely-unresolved choices; it
+escalates to the user via `escalate_question`. System-originated paths
+(watchdog ping escalations, root completion review) bypass the chain and
+surface to the gateway directly via `gateway_ask_user_structured`.
 
 ## 3. System prompt structure
 

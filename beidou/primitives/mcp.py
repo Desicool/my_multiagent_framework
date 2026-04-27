@@ -6,7 +6,9 @@ server. The agent-visible names are (see ``docs/tool-surface.md``):
 
 * ``mcp__beidou__send_message``         -- A2A enqueue.
 * ``mcp__beidou__list_peers``           -- Peer snapshot (team/children/all).
-* ``mcp__beidou__ask_user``             -- Human gateway question.
+* ``mcp__beidou__ask_user``             -- Question via the leader chain.
+* ``mcp__beidou__answer_question``      -- Resolve an inbox question (leaders).
+* ``mcp__beidou__escalate_question``    -- Push an inbox question up the chain.
 * ``mcp__beidou__report_status``        -- State update + observability.
 * ``mcp__beidou__create_team``          -- Spawn a sub-team; caller becomes leader.
 * ``mcp__beidou__terminate_child``      -- Post a terminate sentinel to a child.
@@ -29,8 +31,10 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from .core import (
     Orchestrator,
     PrimitiveError,
+    answer_question,
     ask_user,
     create_team,
+    escalate_question,
     list_peers,
     list_pending_reviews,
     report_status,
@@ -253,6 +257,87 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         return await _wrap("ask_user", ask_user, args, **kwargs)
 
     @tool(
+        "answer_question",
+        "Resolve a question that arrived in your inbox via the leader chain. "
+        "Only the current holder may answer. Use this when you can answer "
+        "the asker's question directly from what you already know (the user "
+        "task, requirements.md, prior answers).",
+        {
+            "type": "object",
+            "properties": {
+                "qid": {
+                    "type": "string",
+                    "description": "The question id from the [INBOX QUESTION] system message.",
+                },
+                "answers": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "One entry per sub-question, in order. Each entry "
+                                   "is {selected_labels: list[str], text: str|null}. For "
+                                   "free-text or 'Other' answers, leave selected_labels "
+                                   "empty and put the answer in text.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "selected_labels": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "text": {
+                                "type": ["string", "null"],
+                            },
+                        },
+                        "required": ["selected_labels"],
+                    },
+                },
+            },
+            "required": ["qid", "answers"],
+        },
+    )
+    async def _answer_question(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "answer_question",
+            answer_question,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+            qid=args["qid"],
+            answers=args["answers"],
+        )
+
+    @tool(
+        "escalate_question",
+        "Push a question one hop further up the leader chain. Use this when "
+        "you can't answer the asker's question yourself — the next-up "
+        "reviewer (your own leader, or eventually the user) will see it. "
+        "Only the current holder may escalate.",
+        {
+            "type": "object",
+            "properties": {
+                "qid": {
+                    "type": "string",
+                    "description": "The question id from the [INBOX QUESTION] system message.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short note explaining why you can't answer.",
+                },
+            },
+            "required": ["qid", "reason"],
+        },
+    )
+    async def _escalate_question(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "escalate_question",
+            escalate_question,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+            qid=args["qid"],
+            reason=args["reason"],
+        )
+
+    @tool(
         "report_status",
         "Report your current state (working|idle|blocked|done) with an "
         "optional free-text detail. 'done' triggers parent liveness "
@@ -401,6 +486,8 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             _send_message,
             _list_peers,
             _ask_user,
+            _answer_question,
+            _escalate_question,
             _report_status,
             _create_team,
             _terminate_child,

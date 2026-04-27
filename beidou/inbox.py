@@ -123,6 +123,11 @@ class QuestionBroker:
                 asyncio.create_task(self._surface_to_terminal(q, ctx))
         else:
             self._agent_inbox.setdefault(holder, []).append(q.qid)
+            # Layer 3: wake the holder's SDK session so it actually picks up
+            # the new question. The session is parked on its inbox queue
+            # between turns; without this notification the question would
+            # sit silently in _agent_inbox forever.
+            self._notify_holder(ctx, holder, q)
 
         await self._emit(ctx, "question_asked", qid=q.qid, asker=ctx.agent_id,
                          holder=holder, prompt=prompt[:200], questions=q.questions)
@@ -275,11 +280,63 @@ class QuestionBroker:
                 asyncio.create_task(self._surface_to_terminal(q, by_ctx))
         else:
             self._agent_inbox.setdefault(new_holder, []).append(qid)
+            # Layer 3: wake the new holder so their SDK session picks up the
+            # escalated question on the next turn.
+            self._notify_holder(by_ctx, new_holder, q)
         await self._emit(by_ctx, "question_escalated", qid=qid, by=by_ctx.agent_id,
                          new_holder=new_holder, reason=reason[:200])
         return {"ok": True}
 
     # ---- internals ---------------------------------------------------
+
+    def _notify_holder(self, ctx: Any, holder_id: str, q: Question) -> None:
+        """Post a system-message wake-up to the holder's inbox queue so its
+        SDK session resumes and can call answer_question / escalate_question.
+
+        Best-effort: if the orchestrator is not reachable from ``ctx``, we
+        skip the wake-up. The question still sits in ``_agent_inbox`` for
+        liveness-watchdog or manual retrieval.
+        """
+        orch = ctx.get("orchestrator") if hasattr(ctx, "get") else None
+        if orch is None:
+            return
+        inbox_put = getattr(orch, "inbox_put", None)
+        if inbox_put is None:
+            return
+        try:
+            from beidou.primitives.core import Message  # local import to avoid cycle
+        except Exception:
+            return
+        prompt_preview = q.prompt
+        if len(prompt_preview) > 600:
+            prompt_preview = prompt_preview[:600] + "…"
+        body = (
+            f"[INBOX QUESTION] qid={q.qid} from {q.asker_agent_id}\n"
+            f"chain: {' → '.join(q.chain)}\n"
+            f"\n{prompt_preview}\n"
+        )
+        if q.context_hint:
+            body += f"\ncontext: {q.context_hint}\n"
+        body += (
+            f"\nResolve this BEFORE doing anything else. Two options:\n"
+            f"  1. Answer it directly via mcp__beidou__answer_question("
+            f"qid=\"{q.qid}\", answers=[{{\"selected_labels\": [...], \"text\": \"...\"}}, ...])"
+            f" if you can answer from what you already know.\n"
+            f"  2. Escalate via mcp__beidou__escalate_question("
+            f"qid=\"{q.qid}\", reason=\"...\") if only the next-up reviewer "
+            f"or the user can answer.\n"
+        )
+        msg = Message(
+            from_id="beidou",
+            content=body,
+            ts=time.time(),
+            message_id=f"qmsg-{q.qid}",
+            kind="system",
+        )
+        try:
+            asyncio.create_task(inbox_put(holder_id, msg))
+        except Exception:
+            pass  # best-effort
 
     def _drop_from_inbox(self, q: Question) -> None:
         for lst in self._agent_inbox.values():

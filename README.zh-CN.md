@@ -387,6 +387,32 @@ scope` 段落把这个占位符暴露到系统提示里。`create_team` 的 `tas
 数依然记录在 `TeamRecord` 上供 orchestrator 内部协调用，但已经不再是
 agent 的第一条 user-role 消息了。
 
+**先读上游产物再问用户**（`6839527`，*fix(skills): read upstream
+artifacts before re-asking the user*）。第二次计算器任务里用户被同一
+个 Vite/脚手架/TypeScript 问题问了 3-4 次：PM 先问、architect 又问、
+deploy_advisor 重叠地问、被重新派生的 PM 又把脚手架问题问了一遍。提示
+词层的根因：每个下游 worker skill 的 ambiguity 升级段在读上游产物
+（这些产物里其实已经有答案）之前就执行了。修复：每个下游 skill 的
+正文开头都加了 `## Read upstream artifacts FIRST` 段，列出该角色应当
+首先阅读的具体文件；ambiguity 升级段被改名为 "only for *genuinely*
+unresolved choices" 并明写"重复问已有答案的问题就是契约违规"。
+
+**问题的 leader 链路由**（Layer 3, `ca4`）。上一步在同一个 phase 内
+有效，但解决不了"跨团队重派"的情况——一个新 PM 在新团队工作区里看不到
+旧团队的 `requirements.md`。更深一层的修复是恢复一条早已漂移的工作
+流：agent 发起的 `ask_user` 现在会沿 leader 链路由。提问者的问题先
+落到自己 team leader 的收件箱，作为 `[INBOX QUESTION]` 系统消息出现；
+leader 可以用 `mcp__beidou__answer_question` 直接回答（当 leader 已经
+从用户任务、requirements.md 或上一次的用户回答里知道答案时），也可以
+用 `mcp__beidou__escalate_question` 把它推上一跳。两个新增的 MCP
+primitive（`answer_question`、`escalate_question`）让 leader 端的动作
+显式化。`cli.py` 的桥接层把 asker 的 leader 查出来并构造带 `parent`
+的 ctx；`inbox.py` 的 broker 给 holder 的 SDK 队列投一条系统消息把
+对方"叫醒"，让 leader 的会话在下一轮就能看见这个新问题。系统发起的
+路径（watchdog 升级、root 完成评审）继续走 direct-to-user 的快捷
+通道。`tests/test_question_chain.py` 同时覆盖链路路由和这两个新
+primitive。
+
 ---
 
 ## 按目标查文档

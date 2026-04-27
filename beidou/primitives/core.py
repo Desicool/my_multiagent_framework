@@ -391,11 +391,161 @@ async def ask_user(
             "no human gateway registered",
         )
 
+    # Layer 3: agent-originated ask_user goes through the leader chain so
+    # the caller's leader sees the question first and can answer directly
+    # if it already knows (avoiding redundant user prompts when the leader
+    # has the information). Falls back to direct-to-user routing when the
+    # caller has no leader (root) or the gateway adapter predates Layer 3.
     try:
-        result = await orch.gateway_ask_user_structured(caller_id, questions, context)
+        result = await orch.gateway_ask_via_chain(caller_id, questions, context)
     except GatewayDeclined as e:
         raise PrimitiveError("user_declined", str(e) or "user declined")
     return result
+
+
+async def answer_question(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+    qid: str,
+    answers: list[dict],
+) -> dict:
+    """Resolve a question that landed in the caller's inbox via the leader chain.
+
+    See ``docs/tool-surface.md#answer_question``. Only the current holder of
+    the question (the agent it was routed to) may resolve it; other callers
+    get ``not_holder``.
+    """
+    if not isinstance(qid, str) or not qid:
+        raise PrimitiveError("invalid_input", "qid must be a non-empty string")
+    if not isinstance(answers, list) or not answers:
+        raise PrimitiveError(
+            "invalid_input", "answers must be a non-empty list of {selected_labels, text} dicts"
+        )
+    for i, ans in enumerate(answers):
+        if not isinstance(ans, dict):
+            raise PrimitiveError("invalid_input", f"answers[{i}] must be a dict", index=i)
+        sl = ans.get("selected_labels", [])
+        if not isinstance(sl, list) or not all(isinstance(x, str) for x in sl):
+            raise PrimitiveError(
+                "invalid_input",
+                f"answers[{i}].selected_labels must be a list[str]",
+                index=i,
+            )
+        text = ans.get("text", None)
+        if text is not None and not isinstance(text, str):
+            raise PrimitiveError(
+                "invalid_input", f"answers[{i}].text must be a string or null", index=i
+            )
+
+    broker = _broker_from(orch)
+    q = broker._pending.get(qid)
+    if q is None:
+        raise PrimitiveError("unknown_qid", f"no pending question {qid!r}")
+    if q.current_holder_agent_id != caller_id:
+        raise PrimitiveError(
+            "not_holder",
+            "only the current question holder may answer",
+            qid=qid,
+            holder=q.current_holder_agent_id,
+            caller=caller_id,
+        )
+    result = broker.resolve_answer(qid, answers)
+    if not result.get("ok"):
+        reason = result.get("reason", "unknown")
+        raise PrimitiveError(reason, f"resolve_answer rejected: {reason}", qid=qid)
+    return {"ok": True, "qid": qid}
+
+
+async def escalate_question(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+    qid: str,
+    reason: str,
+) -> dict:
+    """Push a question one hop further up the leader chain.
+
+    See ``docs/tool-surface.md#escalate_question``. Only the current holder
+    may escalate. The next holder is derived from the caller's team leader;
+    if the caller is the root or its leader is the user sentinel, the
+    question surfaces to the user gateway.
+    """
+    if not isinstance(qid, str) or not qid:
+        raise PrimitiveError("invalid_input", "qid must be a non-empty string")
+    if not isinstance(reason, str) or not reason.strip():
+        raise PrimitiveError(
+            "invalid_input", "reason must be a non-empty string explaining why you can't answer"
+        )
+
+    broker = _broker_from(orch)
+    q = broker._pending.get(qid)
+    if q is None:
+        raise PrimitiveError("unknown_qid", f"no pending question {qid!r}")
+    if q.current_holder_agent_id != caller_id:
+        raise PrimitiveError(
+            "not_holder",
+            "only the current question holder may escalate",
+            qid=qid,
+            holder=q.current_holder_agent_id,
+            caller=caller_id,
+        )
+
+    # Build a duck-typed by_ctx so QuestionBroker.escalate can derive the
+    # next holder from the caller's leader. Mirrors the bridge's _BrokerCtx
+    # without depending on cli.py.
+    class _ParentRef:
+        __slots__ = ("agent_id",)
+
+        def __init__(self, agent_id: str) -> None:
+            self.agent_id = agent_id
+
+    class _EscalateCtx:
+        def __init__(self) -> None:
+            self.agent_id = caller_id
+            parent_id: Optional[str] = None
+            rec = orch._agents.get(caller_id) if hasattr(orch, "_agents") else None  # type: ignore[attr-defined]
+            if rec is not None and rec.team_id is not None:
+                team = orch._teams.get(rec.team_id) if hasattr(orch, "_teams") else None  # type: ignore[attr-defined]
+                if team is not None:
+                    leader_id = getattr(team, "leader_id", None)
+                    # USER_SENTINEL means the next stop is the user, not another agent.
+                    from beidou.orchestrator import USER_SENTINEL  # local import to avoid cycle
+                    if leader_id is not None and leader_id != USER_SENTINEL:
+                        parent_id = leader_id
+            self.parent: Optional[_ParentRef] = _ParentRef(parent_id) if parent_id else None
+            self._kv: dict = {
+                "emitter": orch.emitter if hasattr(orch, "emitter") else None,
+                "task_id": orch.task_id if hasattr(orch, "task_id") else "",
+                "orchestrator": orch,
+            }
+
+        def get(self, k: str, default=None):
+            return self._kv.get(k, default)
+
+    by_ctx = _EscalateCtx()
+    out = await broker.escalate(qid, by_ctx, reason)
+    if not out.get("ok"):
+        raise PrimitiveError(out.get("reason", "stale"), f"escalate rejected: {out.get('reason', 'stale')}", qid=qid)
+    return {"ok": True, "qid": qid, "new_holder": q.current_holder_agent_id}
+
+
+def _broker_from(orch: Orchestrator) -> Any:
+    """Resolve the QuestionBroker the orch's gateway adapter is wired to.
+
+    The bridge holds the broker reference (``_GatewayAdapter._broker``).
+    Tests sometimes attach a different bridge that exposes ``broker``. Both
+    shapes are accepted.
+    """
+    gw = getattr(orch, "gateway", None)
+    if gw is None:
+        raise PrimitiveError("gateway_unavailable", "no gateway registered")
+    broker = getattr(gw, "_broker", None) or getattr(gw, "broker", None)
+    if broker is None:
+        raise PrimitiveError(
+            "gateway_unavailable", "gateway adapter exposes no QuestionBroker handle"
+        )
+    return broker
 
 
 async def report_status(
@@ -680,6 +830,8 @@ __all__ = [
     "send_message",
     "list_peers",
     "ask_user",
+    "answer_question",
+    "escalate_question",
     "report_status",
     "create_team",
     "terminate_child",

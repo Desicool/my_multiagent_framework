@@ -85,6 +85,8 @@ def test_server_lists_all_tools():
             "send_message",
             "list_peers",
             "ask_user",
+            "answer_question",
+            "escalate_question",
             "report_status",
             "create_team",
             "terminate_child",

@@ -18,6 +18,8 @@ allowed-tools:
   - report_status
   - terminate_child
   - ask_user
+  - answer_question
+  - escalate_question
 triggers:
   - design the architecture
   - write the spec
@@ -69,14 +71,22 @@ Categories that *might* require a question if requirements.md left them unspecif
 Writing SPEC.md without resolving a *genuinely* unresolved binding choice is a
 contract violation.
 
-STEP 2 — WRITE DRAFT SPEC
+STEP 3 — WRITE DRAFT SPEC
 Write SPEC_DRAFT.md covering:
   - Modules: name, responsibility, public interface (functions/classes/endpoints)
   - Inter-module interactions: which module calls which, data formats
   - Key concepts and invariants
   - Known constraints and limits (size, rate, compatibility)
 
-STEP 3 — INVITE REVIEWERS
+STEP 4 — INVITE REVIEWERS
+
+If a reviewer's `ask_user` lands in your inbox as a `[INBOX QUESTION]` system
+message, resolve it before continuing. Call
+`mcp__beidou__answer_question(qid, answers)` if you can answer from
+SPEC_DRAFT.md or requirements.md; otherwise call
+`mcp__beidou__escalate_question(qid, reason)` to push it up to your own
+leader. Do NOT call `ask_user` to forward it — that creates a duplicate.
+
 Create a review team to stress-test SPEC_DRAFT.md:
   create_team("spec-review", roles=[
     {
@@ -96,12 +106,12 @@ Create a review team to stress-test SPEC_DRAFT.md:
   ])
   End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect both, then call terminate_child for each.
 
-STEP 4 — REVISE AND FINALISE
+STEP 5 — REVISE AND FINALISE
 Read TEST_CONCERNS.md and DEPLOY_CONCERNS.md.
 Address each concern in your design. Then write the final SPEC.md (replacing SPEC_DRAFT.md
 with improvements incorporated).
 
-STEP 5 — WRITE TASKS
+STEP 6 — WRITE TASKS
 Write tasks.md breaking the implementation into the smallest independent closures.
 Use this format for each task:
 

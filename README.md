@@ -425,6 +425,38 @@ team-level `task` arg from `create_team` stays on `TeamRecord` for
 orchestrator-internal coordination but is no longer the agent's first
 user message.
 
+**Read-upstream-first prompts** (`6839527`, *fix(skills): read upstream
+artifacts before re-asking the user*). A second calculator run showed
+the user being pinged 3-4 times for the same Vite/scaffold/TS choice —
+PM asked first, the architect re-asked, the deploy_advisor re-asked
+overlapping scope, a respawned PM re-asked the scaffold yet again. Root
+cause at the prompt layer: every downstream worker skill ran its
+ambiguity-escalation block BEFORE reading the upstream artifact that
+already contained the answer. Fix: every downstream skill's body now
+opens with a "## Read upstream artifacts FIRST" section that names the
+exact files for that role, and the ambiguity-escalation block was
+retitled "only for *genuinely* unresolved choices" with explicit "this
+is a contract violation" wording.
+
+**Leader-chain question routing** (Layer 3, `ca4`). The previous fix
+worked within a phase but didn't help the cross-team respawn case (a
+fresh PM in a new team workspace can't see the prior team's
+`requirements.md`). The deeper fix restores a workflow that had drifted:
+agent-originated `ask_user` is now routed through the leader chain.
+The asker's question first lands in the asker's team leader's inbox as
+a `[INBOX QUESTION]` system message; the leader either resolves it via
+`mcp__beidou__answer_question` (when the leader already has the answer
+in context — the user task, requirements.md, prior answers) or pushes
+it one hop further with `mcp__beidou__escalate_question`. Two new MCP
+primitives (`answer_question`, `escalate_question`) make the leader-side
+action explicit. The bridge in `cli.py` looks up the asker's leader and
+constructs a context with `parent` set; the broker in `inbox.py` posts a
+wake-up system message to the holder's SDK queue so the leader's session
+resumes with the new question visible. System-originated paths
+(watchdog escalations, root completion review) keep the direct-to-user
+shortcut. Tests in `tests/test_question_chain.py` cover both the chain
+routing and the new primitives.
+
 ---
 
 ## Docs by goal

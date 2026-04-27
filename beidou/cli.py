@@ -132,21 +132,88 @@ def _build_gateway(
     return CompositeGateway(gateways)
 
 
+class _BrokerCtxParent:
+    """Minimal duck-typed parent slot for ``QuestionBroker.ask`` / ``escalate``."""
+
+    __slots__ = ("agent_id",)
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+
+
+class _BrokerCtx:
+    """Duck-typed context for ``QuestionBroker.ask`` and ``escalate``.
+
+    The broker reads ``ctx.agent_id``, ``ctx.parent``, and ``ctx.get(key)``.
+    Layer 3 also reads ``ctx.get("orchestrator")`` so it can wake up the
+    holder agent when a question lands in their inbox.
+    """
+
+    def __init__(
+        self,
+        *,
+        agent_id: str,
+        parent_id: str | None,
+        emitter: Any,
+        task_id: str,
+        orchestrator: Any | None = None,
+    ) -> None:
+        self.agent_id = agent_id
+        self.parent: _BrokerCtxParent | None = (
+            _BrokerCtxParent(parent_id) if parent_id else None
+        )
+        self._kv: dict[str, Any] = {
+            "emitter": emitter,
+            "task_id": task_id,
+            "orchestrator": orchestrator,
+        }
+
+    def get(self, k: str, default: Any = None) -> Any:
+        return self._kv.get(k, default)
+
+
+def _leader_for_chain(orch: Any, caller_id: str) -> str | None:
+    """Return ``caller_id``'s next-up reviewer for question-chain routing,
+    or ``None`` if the question should go straight to the user.
+
+    Routing rules:
+      - Caller is the root agent (or has no AgentRecord) → None.
+      - Caller has a team → that team's leader id, **unless** the leader is
+        the user sentinel (root case), in which case None.
+    """
+    from beidou.orchestrator import USER_SENTINEL
+
+    rec = orch._agents.get(caller_id) if hasattr(orch, "_agents") else None
+    if rec is None or rec.team_id is None:
+        return None
+    team = orch._teams.get(rec.team_id) if hasattr(orch, "_teams") else None
+    if team is None:
+        return None
+    leader = getattr(team, "leader_id", None)
+    if leader is None or leader == USER_SENTINEL:
+        return None
+    return leader
+
+
 class _GatewayAdapter:
     """Bridges :class:`~beidou.gateways.base.BaseGateway` to the orchestrator's
-    ``gateway_ask_user(caller_id, question, context) -> str`` and
-    ``gateway_ask_user_structured(caller_id, questions, context) -> dict``
-    contracts.
+    ``gateway_ask_user(caller_id, question, context) -> str``,
+    ``gateway_ask_user_structured(caller_id, questions, context) -> dict``, and
+    ``gateway_ask_via_chain(caller_id, questions, context) -> dict`` contracts.
 
     ``ask()`` — legacy string-only path; used by ``sdk_agent.py``'s
     ``AskUserQuestion`` hook (and ``gateway_ask_user``).  Builds its own
     ``Question`` directly so that it can return a bare string.
 
-    ``ask_structured()`` — unified path for ``gateway_ask_user_structured``;
-    delegates to ``QuestionBroker.ask()`` so both the MCP ``ask_user``
-    primitive and the orchestrator-internal watchdog/review escalations land at
-    the same ``broker._pending`` entry, emit ``question_asked`` / ``question_answered``
-    events, and persist in the DB.
+    ``ask_structured()`` — direct-to-user structured path used by
+    orchestrator-internal escalations (watchdog, root completion review).
+    Sets ``parent=None`` so the question bypasses the leader chain.
+
+    ``ask_via_chain()`` — agent-originated structured path. Looks up the
+    caller's team leader and routes the question into the leader's inbox
+    first; the leader can either ``answer_question`` or ``escalate_question``.
+    Falls back to direct-to-user when the caller has no leader (root) or
+    its leader is the user sentinel.
     """
 
     def __init__(
@@ -155,11 +222,18 @@ class _GatewayAdapter:
         broker: "QuestionBroker",
         emitter: Any,
         task_id: str,
+        orchestrator: Any | None = None,
     ) -> None:
         self._gw = gateway
         self._broker = broker
         self._emitter = emitter
         self._task_id = task_id
+        # Orchestrator is wired in late by _run_task (orch is constructed AFTER
+        # the bridge today). Layer 3 needs it for caller→leader lookup.
+        self._orch = orchestrator
+
+    def set_orchestrator(self, orchestrator: Any) -> None:
+        self._orch = orchestrator
 
     async def ask(self, caller_id: str, question: str, context: str | None) -> str:
         """Legacy string-only path.  Builds a Question without going through
@@ -191,43 +265,48 @@ class _GatewayAdapter:
         finally:
             self._broker._pending.pop(q.qid, None)
 
+    def _make_ctx(
+        self, agent_id: str, parent_id: str | None
+    ) -> "_BrokerCtx":
+        """Build a duck-typed context for ``QuestionBroker.ask`` / ``escalate``.
+
+        Carries the orchestrator handle in ``_kv["orchestrator"]`` so the
+        broker can wake up the holder agent's SDK session by posting a
+        system message into its inbox queue.
+        """
+        return _BrokerCtx(
+            agent_id=agent_id,
+            parent_id=parent_id,
+            emitter=self._emitter,
+            task_id=self._task_id,
+            orchestrator=self._orch,
+        )
+
     async def ask_structured(
         self, caller_id: str, questions: list[dict], context: str | None
     ) -> dict:
-        """Unified structured path.  Delegates to ``QuestionBroker.ask()`` so
-        all asks go through the same pending-question object, DB write, and
-        event sequence as MCP ``ask_user`` calls.
+        """Direct-to-user structured path.  Sets ``parent=None`` so the
+        question bypasses the leader chain; used by watchdog escalations,
+        root completion review, and any caller that explicitly wants the
+        user to see the question.
 
         Returns ``{"answers": [...], "answer_text": "..."}`` from the broker.
         """
+        ctx = self._make_ctx(agent_id=caller_id, parent_id=None)
+        return await self._broker.ask(ctx, questions, context_hint=context)
 
-        class _BrokerCtx:
-            """Minimal duck-typed context satisfying ``QuestionBroker.ask``."""
-
-            def __init__(
-                self,
-                agent_id: str,
-                emitter: Any,
-                task_id: str,
-            ) -> None:
-                self.agent_id = agent_id
-                # parent=None means the question goes straight to the user
-                # (no leader-chain escalation), matching current semantics of
-                # gateway_ask_user / watchdog escalations.
-                self.parent = None
-                self._kv: dict[str, Any] = {
-                    "emitter": emitter,
-                    "task_id": task_id,
-                }
-
-            def get(self, k: str, default: Any = None) -> Any:
-                return self._kv.get(k, default)
-
-        ctx = _BrokerCtx(
-            agent_id=caller_id,
-            emitter=self._emitter,
-            task_id=self._task_id,
-        )
+    async def ask_via_chain(
+        self, caller_id: str, questions: list[dict], context: str | None
+    ) -> dict:
+        """Leader-chain structured path used by agent-originated ``ask_user``
+        calls. Looks up ``caller_id``'s team leader; if there is one and it is
+        a real agent (not the user sentinel), the question lands in the
+        leader's inbox first. Otherwise it surfaces straight to the user.
+        """
+        parent_id: str | None = None
+        if self._orch is not None:
+            parent_id = _leader_for_chain(self._orch, caller_id)
+        ctx = self._make_ctx(agent_id=caller_id, parent_id=parent_id)
         return await self._broker.ask(ctx, questions, context_hint=context)
 
 
@@ -272,6 +351,11 @@ async def _run_task(
         default_model=model,
         project_workspace=workspace,
     )
+
+    # Layer 3: bridge needs the orchestrator handle to look up an asker's
+    # leader for ask_via_chain routing. Constructed late because Orchestrator
+    # is built after the bridge.
+    gateway_adapter.set_orchestrator(orch)
 
     # Record task start.  agent_id is a placeholder here because the
     # orchestrator has not yet assigned the root agent id.  task_completed

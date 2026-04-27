@@ -261,6 +261,17 @@ class FakeOrchestrator:
             "answer_text": self.gateway_answer,
         }
 
+    async def gateway_ask_via_chain(
+        self,
+        caller_id: str,
+        questions: list,
+        context: Optional[str],
+    ) -> dict:
+        # Tests don't model the leader-chain hop; the FakeOrchestrator
+        # mirrors the real Orchestrator's fall-through behaviour and just
+        # returns the canned answer as if the user answered directly.
+        return await self.gateway_ask_user_structured(caller_id, questions, context)
+
     def is_gateway_available(self) -> bool:
         return self.gateway_available
 

@@ -706,11 +706,12 @@ class Orchestrator:
         questions: list[dict],
         context: Optional[str],
     ) -> dict:
-        """Route a structured questions list through the QuestionBroker.
+        """Direct-to-user structured path. Bypasses the leader chain — used by
+        watchdog escalations, root completion review, and any caller that
+        explicitly wants the user to see the question.
 
         Delegates to ``_GatewayAdapter.ask_structured`` (or any object that
-        exposes that coroutine) so both SDK-builtin ``AskUserQuestion`` and
-        ``mcp__beidou__ask_user`` land at the same ``broker._pending`` entry.
+        exposes that coroutine).
 
         Returns ``{"answers": [...], "answer_text": "..."}`` as produced by
         ``QuestionBroker.resolve_answer``.
@@ -721,6 +722,33 @@ class Orchestrator:
         if ask_structured is None:
             raise PrimitiveError("gateway_unavailable", "gateway has no ask_structured() method")
         return await ask_structured(caller_id, questions, context)
+
+    async def gateway_ask_via_chain(
+        self,
+        caller_id: str,
+        questions: list[dict],
+        context: Optional[str],
+    ) -> dict:
+        """Leader-chain structured path used by agent-originated ``ask_user``.
+
+        Routes the question to the caller's team leader's inbox first; the
+        leader can ``answer_question`` or ``escalate_question``. Falls back to
+        direct-to-user when the caller has no leader (root) or its leader is
+        the user sentinel.
+
+        Returns ``{"answers": [...], "answer_text": "..."}`` once the question
+        is resolved (by a leader, an upstream leader after escalation, or the
+        user gateway terminal).
+        """
+        if self.gateway is None:
+            raise PrimitiveError("gateway_unavailable", "no human gateway registered")
+        ask_via_chain = getattr(self.gateway, "ask_via_chain", None)
+        if ask_via_chain is None:
+            # Backwards-compat: gateway adapters that predate Layer 3 fall
+            # through to the direct-to-user path so older test stubs keep
+            # working.
+            return await self.gateway_ask_user_structured(caller_id, questions, context)
+        return await ask_via_chain(caller_id, questions, context)
 
     def is_gateway_available(self) -> bool:
         return self.gateway is not None and hasattr(self.gateway, "ask")
