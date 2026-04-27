@@ -57,6 +57,7 @@ class EventEmitter:
                 tools_json=json.dumps(p.get("tools")) if p.get("tools") is not None else None,
                 skills_json=json.dumps(p.get("skills")) if p.get("skills") is not None else None,
                 system_prompt=p.get("system_prompt"),
+                name=p.get("name"),
             )
 
         elif event == "agent_completed":

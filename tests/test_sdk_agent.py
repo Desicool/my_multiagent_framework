@@ -164,6 +164,22 @@ class FakeOrchestrator:
     def deliver_message(self, from_id: str, to_id: str, body: str, kind: str = "message") -> None:
         self.delivered.append((from_id, to_id, body, kind))
 
+    # --- Completion-review / name accessors (Protocol completeness) ---------
+    def agent_skill_name(self, agent_id: str) -> str:
+        return ""
+
+    def agent_completion_pending(self, agent_id: str) -> bool:
+        return False
+
+    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
+        return None
+
+    def agent_last_status_detail(self, agent_id: str) -> str:
+        return ""
+
+    def agent_name(self, agent_id: str) -> str | None:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Fake SDK message types. The drain loop dispatches by

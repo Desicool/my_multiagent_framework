@@ -59,8 +59,10 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 
 **Output schema**
 ```
-{ "peers": [ {"agent_id": "...", "role": "...", "team_id": "...", "status": "...", "is_leader_of": ["<team_id>", ...]}, ... ] }
+{ "peers": [ {"agent_id": "...", "role": "...", "team_id": "...", "status": "...", "is_leader_of": ["<team_id>", ...], "name": "<string | null>"}, ... ] }
 ```
+
+`name` is the human-readable display label for the peer (e.g. `frontend-engineer-a3b2`). `agent_id` remains the stable join key; `name` is for display only.
 
 **Error cases:** none under normal operation.
 
@@ -239,7 +241,8 @@ No input fields.
     "role": "<skill_name string>",
     "completion_pending_ts": <float | null>,
     "age_s": <float | null>,
-    "summary": "<last_status_detail string>"
+    "summary": "<last_status_detail string>",
+    "name": "<string | null>"
   },
   ...
 ]

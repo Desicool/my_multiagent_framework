@@ -586,6 +586,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             "skill": skill.name,
             "model_requested": spec.model,
             "model": spec.model,
+            "role": template_vars.get("role", ""),
+            "name": orch.agent_name(spec.caller_id),
             "ts": time.time(),
         },
     )

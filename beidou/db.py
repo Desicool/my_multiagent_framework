@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS agents (
     team_id      TEXT,
     model        TEXT,
     role         TEXT,
+    name         TEXT,
     started_at   REAL,
     ended_at     REAL,
     tool_calls   INTEGER DEFAULT 0,
@@ -123,6 +124,7 @@ def _migrate_agents_columns(conn: sqlite3.Connection) -> None:
         ("tools_json", "TEXT"),
         ("skills_json", "TEXT"),
         ("system_prompt", "TEXT"),
+        ("name", "TEXT"),
     ):
         if col not in existing:
             conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {decl}")
@@ -195,17 +197,18 @@ def upsert_agent(
     tools_json: str | None = None,
     skills_json: str | None = None,
     system_prompt: str | None = None,
+    name: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             """
             INSERT OR IGNORE INTO agents
               (agent_id, task_id, team_id, model, role, started_at,
-               skill, tools_json, skills_json, system_prompt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               skill, tools_json, skills_json, system_prompt, name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (agent_id, task_id, team_id, model, role, started_at,
-             skill, tools_json, skills_json, system_prompt),
+             skill, tools_json, skills_json, system_prompt, name),
         )
 
 

@@ -25,8 +25,9 @@ Lifecycle. Emitted before the first SDK message for a spawn.
 | `ts` | Wall clock at spawn. |
 | `task_id` | Context. |
 | `team_id` | Context. |
-| `agent_id` | Assigned by orchestrator. |
+| `agent_id` | Assigned by orchestrator. Stable join key across all events. |
 | `role` | From `create_team` roles entry. |
+| `name` | Human-readable display name, e.g. `frontend-engineer-a3b2`. `agent_id` is the stable join key; `name` is a convenience label for UIs and logs. |
 | `template` | Skill name (e.g. `junior_engineer`). |
 | `model_requested` | The `model=` passed to `ClaudeAgentOptions` (HINT, see `agent-runtime.md` section 6). |
 

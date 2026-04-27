@@ -16,6 +16,7 @@ Every rule enforced here is load-bearing; see:
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -56,6 +57,26 @@ TERMINATE_GRACE_S = 60.0
 
 
 # ---------------------------------------------------------------------------
+# Name helpers.
+# ---------------------------------------------------------------------------
+
+
+def _slug_role(role: str) -> str:
+    """Convert a role string into a clean slug component.
+
+    Steps: lowercase → replace runs of [^a-z0-9] with '-' → strip
+    leading/trailing '-' → collapse repeated '-' → truncate to 24 chars →
+    fall back to 'agent' if the result is empty.
+    """
+    s = role.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    s = re.sub(r"-{2,}", "-", s)
+    s = s[:24]
+    return s or "agent"
+
+
+# ---------------------------------------------------------------------------
 # Records.
 # ---------------------------------------------------------------------------
 
@@ -70,6 +91,7 @@ class AgentRecord:
     model: Optional[str]
     inbox: asyncio.Queue
     create_team_lock: asyncio.Lock
+    name: str = ""                    # human-readable display name, e.g. "frontend-engineer-a3b2"
     last_status: str = "working"
     last_status_detail: str = ""
     contract_strikes: int = 0
@@ -151,6 +173,25 @@ class Orchestrator:
         self._most_recent_assistant_text: dict[str, str] = {}
 
     # ------------------------------------------------------------------
+    # Internal: name generation
+    # ------------------------------------------------------------------
+
+    def _make_unique_name(self, role: str) -> str:
+        """Generate a display name ``<slug>-<4hex>`` unique among in-flight agents.
+
+        On collision (max 3 retries), falls back to an 8-hex suffix so correctness
+        is always preserved — ``agent_id`` remains the stable join key.
+        """
+        slug = _slug_role(role)
+        existing_names = {rec.name for rec in self._agents.values()}
+        for _ in range(3):
+            candidate = f"{slug}-{uuid.uuid4().hex[:4]}"
+            if candidate not in existing_names:
+                return candidate
+        # Fallback: 8-hex suffix virtually eliminates collision.
+        return f"{slug}-{uuid.uuid4().hex[:8]}"
+
+    # ------------------------------------------------------------------
     # Protocol: registry lookups
     # ------------------------------------------------------------------
 
@@ -189,6 +230,10 @@ class Orchestrator:
     def agent_last_status_detail(self, agent_id: str) -> str:
         return self._agents[agent_id].last_status_detail
 
+    def agent_name(self, agent_id: str) -> str | None:
+        rec = self._agents.get(agent_id)
+        return rec.name if rec is not None else None
+
     def peer_snapshot(self, agent_id: str, scope: str) -> list[Peer]:
         if agent_id not in self._agents:
             return []
@@ -203,6 +248,7 @@ class Orchestrator:
                 team_id=a.team_id,
                 status=a.last_status,
                 is_leader_of=self.teams_led_by(aid),
+                name=a.name or None,
             )
 
         if scope == "team":
@@ -404,6 +450,7 @@ class Orchestrator:
             role_desc = r.get("description", "")
             model = r.get("model") or self._default_model
             skill_name = r.get("skill") or r.get("template", "")  # accept deprecated "template" key
+            agent_name = self._make_unique_name(role_name)
 
             rec = AgentRecord(
                 agent_id=agent_id,
@@ -414,9 +461,10 @@ class Orchestrator:
                 model=model,
                 inbox=asyncio.Queue(),
                 create_team_lock=asyncio.Lock(),
+                name=agent_name,
             )
             self._register_agent_record(rec)
-            members_out.append({"agent_id": agent_id, "role": role_name})
+            members_out.append({"agent_id": agent_id, "role": role_name, "name": agent_name})
 
             spec = SpawnSpec(
                 caller_id=agent_id,
@@ -1257,6 +1305,7 @@ class Orchestrator:
         root_workspace = team_workspace(self.project_workspace, self.task_id, ROOT_TEAM_ID)
 
         root_agent_id = f"ag_{uuid.uuid4().hex[:8]}"
+        root_agent_name = self._make_unique_name("root")
 
         # Emit collision warnings for any user-owned skill files that provision_skills
         # would overwrite in the project workspace.
@@ -1305,7 +1354,7 @@ class Orchestrator:
                 "leader_agent_id": root_agent_id,
                 "parent_team_id": None,
                 "depth": 0,
-                "members": [{"agent_id": root_agent_id, "role": "root", "skill": root_skill}],
+                "members": [{"agent_id": root_agent_id, "role": "root", "skill": root_skill, "name": root_agent_name}],
                 "ts": time.time(),
             },
         )
@@ -1318,6 +1367,7 @@ class Orchestrator:
             model=effective_model,
             inbox=asyncio.Queue(),
             create_team_lock=asyncio.Lock(),
+            name=root_agent_name,
         )
         self._register_agent_record(rec)
         self._root_id = root_agent_id

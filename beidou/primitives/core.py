@@ -84,6 +84,7 @@ class Peer:
     team_id: str
     status: str              # "working" | "idle" | "blocked" | "done" | "unknown"
     is_leader_of: list[str] = field(default_factory=list)  # team_ids the agent leads
+    name: str | None = None  # human-readable display name, e.g. "frontend-engineer-a3b2"
 
 
 @runtime_checkable
@@ -156,6 +157,9 @@ class Orchestrator(Protocol):
     def agent_completion_pending(self, agent_id: str) -> bool: ...
     def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]: ...
     def agent_last_status_detail(self, agent_id: str) -> str: ...
+
+    # --- Name accessor (used by list_peers, list_pending_reviews) ----------
+    def agent_name(self, agent_id: str) -> str | None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +269,7 @@ async def list_peers(
                 "team_id": p.team_id,
                 "status": p.status,
                 "is_leader_of": list(p.is_leader_of),
+                "name": p.name,
             }
             for p in peers
         ]
@@ -627,6 +632,7 @@ def list_pending_reviews(
                     "completion_pending_ts": ts,
                     "age_s": age_s,
                     "summary": orch.agent_last_status_detail(member_id),
+                    "name": orch.agent_name(member_id),
                 }
             )
 

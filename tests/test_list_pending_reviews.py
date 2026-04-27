@@ -179,6 +179,9 @@ class FakeOrchestrator:
     def agent_last_status_detail(self, agent_id: str) -> str:
         return self.agents[agent_id].last_status_detail
 
+    def agent_name(self, agent_id: str) -> str | None:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Helpers.
