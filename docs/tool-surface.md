@@ -48,6 +48,16 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
   as a structured tool error; sender decides how to react.
 - `task_mismatch`: `to` resolves but belongs to a different task.
 
+**Event semantics — action-side vs delivery-side:**
+`send_message` emits a `send_message` event recording the **send action** on
+the sender's side (when the message enters the recipient's inbox). It does NOT
+emit the recipient's delivery event. The delivery-side event — recording that
+the **recipient's `input_stream` consumed the message** — is `agent_input`
+(see `docs/observability.md`). The two events share the same `message_id`,
+allowing them to be joined. A `send_message` queued to a recipient that is
+terminated before consumption will produce a `send_message` event but no
+corresponding `agent_input` event.
+
 ---
 
 ## list_peers

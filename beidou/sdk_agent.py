@@ -706,6 +706,20 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
 
     async def input_stream():
         # Yield the initial task as the first user-role message.
+        # Emit agent_input BEFORE yielding so the event lands even if the SDK
+        # errors after the yield.
+        orch.emit_event(
+            "agent_input",
+            {
+                "ts": time.time(),
+                "caller_id": session_id,
+                "from": "user",
+                "message_kind": "initial",
+                "source": "initial",
+                "content": spec.task,
+                "message_id": f"{session_id}:initial",
+            },
+        )
         yield {
             "type": "user",
             "message": {"role": "user", "content": spec.task},
@@ -722,6 +736,21 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 if rec is not None:
                     rec.terminate_consumed = True
                 return  # Closing the generator ends the SDK session.
+            # Emit agent_input BEFORE yielding (origin time, not consume time).
+            # terminate sentinels do NOT produce agent_input — the early return
+            # above handles them without reaching here.
+            orch.emit_event(
+                "agent_input",
+                {
+                    "ts": msg_in.ts,
+                    "caller_id": session_id,
+                    "from": msg_in.from_id,
+                    "message_kind": msg_in.kind,
+                    "source": "queue",
+                    "content": msg_in.content,
+                    "message_id": msg_in.message_id,
+                },
+            )
             # Render peer messages as user-role input to the next turn.
             content = f"[from {msg_in.from_id}] {msg_in.content}"
             yield {

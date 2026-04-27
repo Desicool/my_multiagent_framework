@@ -206,11 +206,56 @@ Emitted by `QuestionBroker` after the question future resolves.
 
 ---
 
+### `agent_input`
+
+Delivery-side event. Emitted by the `input_stream` generator in
+`beidou/sdk_agent.py` immediately **before** each user-role turn is yielded
+to the SDK session. This is the unified "agent received a message" record —
+every user-role text an agent ingests passes through one of the two yield
+sites in `input_stream`, so this event covers all four input classes:
+
+1. The initial user task (synthetic, `source="initial"`).
+2. Peer messages from `send_message` (`source="queue"`).
+3. Web-injected user messages via REST (`source="queue"`, `from="user"`).
+4. System notifications via direct `inbox_put` (`source="queue"`, `from="beidou"`).
+
+`terminate` sentinels do **not** produce an `agent_input` event — the
+`input_stream` generator returns before yielding them.
+
+**Ordering with `send_message`:** `send_message` (action-side) fires when the
+sender calls the primitive. `agent_input` (delivery-side) fires when the
+recipient consumes the queue. These events are distinct in time; the frontend
+renders them as "A sent X" then "B received X" with potentially other events
+between. This is intentionally truthful.
+
+**Behavior note:** A `send_message` queued to a recipient that is terminated
+before consumption will produce a `send_message` event on the sender side but
+**no `agent_input` event on the recipient side**. The new behavior is more
+accurate (the agent did not actually see the message) but differs from the
+prior behavior where the recipient bubble appeared regardless.
+
+| Field | Type | Source |
+|---|---|---|
+| `ts` | float | Delivery time. For queue yields: `msg_in.ts` (origin time, not consume time). For initial task: `time.time()`. |
+| `caller_id` | string | The receiving agent. |
+| `from` | string | `Message.from_id`: `"user"` for initial task and web-injected; `"beidou"` for system notifications; else the sender `agent_id`. |
+| `message_kind` | string | `Message.kind`: `"user"` \| `"system"`. Plus synthetic `"initial"` for the first yield (no underlying `Message`). |
+| `source` | string | `"initial"` = first yield from `spec.task`; `"queue"` = pulled from the per-agent inbox. Lets the frontend identify the boot bubble without inspecting `from`/`message_kind`. |
+| `content` | string | Raw `msg_in.content` (or `spec.task` for initial). NOT the `[from X] ...` wrapper applied at yield time — that is SDK prompt presentation, not wire content. |
+| `message_id` | string | Carried from `Message.message_id` when present; deterministic synthetic for initial: `f"{caller_id}:initial"`. |
+
+**Dedup key for replay/reconnect:** `(caller_id, message_id)`.
+
+---
+
 ### `send_message`
 
-Emitted by the `send_message` primitive whenever an agent (or the user via
-the web composer) delivers a message to another agent's inbox. User messages
-have `caller_id == "user"`. No `kind` field.
+Action-side event. Emitted by the `send_message` primitive whenever an agent
+(or the user via the web composer) **puts** a message into another agent's
+inbox. User messages have `caller_id == "user"`. No `kind` field.
+
+The delivery-side counterpart — when the recipient **consumes** the message
+from the queue — is `agent_input` (see above).
 
 | Field | Source |
 |---|---|

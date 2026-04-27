@@ -885,6 +885,257 @@ def test_outer_loop_streaming_input_terminate(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# agent_input event tests.
+# ---------------------------------------------------------------------------
+#
+# Both tests use the stub_query pattern from test_outer_loop_streaming_input_terminate
+# — a stub that iterates the `prompt` AsyncIterable so that input_stream's yields
+# (and pre-yield emits) are actually exercised.  _install_fake_query does NOT
+# iterate `prompt`, so agent_input events would never fire under that harness.
+
+
+def test_agent_input_initial_task_emitted(tmp_path, monkeypatch):
+    """Spawning an agent emits agent_input with source='initial' before the first turn.
+
+    Asserts:
+    - event name is 'agent_input'
+    - source == 'initial'
+    - from == 'user'
+    - message_kind == 'initial'
+    - content matches spec.task
+    - message_id == f'{caller_id}:initial'
+    - event appears BEFORE the first assistant_text event (emitted before yield)
+    """
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    agent_id = "ag_input_initial"
+    orch.queue_for(agent_id)
+
+    async def stub_query(*, prompt, options):
+        async for item in prompt:
+            if not isinstance(item, dict) or item.get("type") != "user":
+                continue
+            yield AssistantMessage(
+                content=[TextBlock("ok")],
+                message_id="msg_init_1",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                stop_reason="end_turn",
+            )
+        yield ResultMessage(total_cost_usd=0.0, usage={}, num_turns=1)
+
+    monkeypatch.setattr(sdk_agent, "query", stub_query)
+
+    async def body():
+        task = asyncio.create_task(
+            run_agent(
+                orch,
+                SpawnSpec(
+                    caller_id=agent_id,
+                    skill_name="fake_skill",
+                    skill_root=skill_root,
+                    task="build me something cool",
+                ),
+            )
+        )
+        # Let initial turn complete.
+        await asyncio.sleep(0.05)
+        # Terminate to unblock input_stream.
+        await orch.deliver_to_queue(
+            agent_id,
+            Message(
+                from_id="beidou",
+                content="__terminate__",
+                ts=time.time(),
+                message_id="term_init",
+                kind="terminate",
+            ),
+        )
+        return await task
+
+    asyncio.run(body())
+
+    input_events = [p for n, p in orch.events if n == "agent_input"]
+    assert len(input_events) >= 1, "Expected at least one agent_input event"
+
+    initial_ev = next((p for p in input_events if p.get("source") == "initial"), None)
+    assert initial_ev is not None, "No agent_input with source='initial' found"
+    assert initial_ev["from"] == "user"
+    assert initial_ev["message_kind"] == "initial"
+    assert initial_ev["content"] == "build me something cool"
+    assert initial_ev["message_id"] == f"{agent_id}:initial"
+    assert initial_ev["caller_id"] == agent_id
+
+    # agent_input(source='initial') must appear before any assistant_text event.
+    event_names = [n for n, _ in orch.events]
+    first_input_idx = next(
+        i for i, (n, p) in enumerate(orch.events)
+        if n == "agent_input" and p.get("source") == "initial"
+    )
+    first_assistant_idx = next(
+        (i for i, (n, _) in enumerate(orch.events) if n == "assistant_text"),
+        len(orch.events),
+    )
+    assert first_input_idx < first_assistant_idx, (
+        "agent_input(initial) should appear before first assistant_text"
+    )
+
+
+def test_agent_input_queued_peer_message_emitted(tmp_path, monkeypatch):
+    """A queued peer message produces agent_input with source='queue'.
+
+    Asserts:
+    - source == 'queue'
+    - from == sender's agent_id
+    - message_kind == 'user'
+    - content matches the sent content
+    - message_id matches the Message.message_id
+    - ts matches msg_in.ts (origin time), not a fresh time.time()
+    """
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    agent_id = "ag_input_queue"
+    orch.queue_for(agent_id)
+
+    async def stub_query(*, prompt, options):
+        async for item in prompt:
+            if not isinstance(item, dict) or item.get("type") != "user":
+                continue
+            yield AssistantMessage(
+                content=[TextBlock("turn response")],
+                message_id=f"msg_q_{id(item)}",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                stop_reason="end_turn",
+            )
+        yield ResultMessage(total_cost_usd=0.0, usage={}, num_turns=2)
+
+    monkeypatch.setattr(sdk_agent, "query", stub_query)
+
+    peer_ts = time.time()
+    peer_message_id = "peer_msg_xyz"
+
+    async def body():
+        task = asyncio.create_task(
+            run_agent(
+                orch,
+                SpawnSpec(
+                    caller_id=agent_id,
+                    skill_name="fake_skill",
+                    skill_root=skill_root,
+                    task="initial task",
+                ),
+            )
+        )
+        # Let initial turn complete.
+        await asyncio.sleep(0.05)
+        # Deliver a peer message.
+        await orch.deliver_to_queue(
+            agent_id,
+            Message(
+                from_id="agent_sender",
+                content="hello from peer",
+                ts=peer_ts,
+                message_id=peer_message_id,
+                kind="user",
+            ),
+        )
+        await asyncio.sleep(0.05)
+        # Terminate.
+        await orch.deliver_to_queue(
+            agent_id,
+            Message(
+                from_id="beidou",
+                content="__terminate__",
+                ts=time.time(),
+                message_id="term_queue",
+                kind="terminate",
+            ),
+        )
+        return await task
+
+    asyncio.run(body())
+
+    queue_events = [
+        p for n, p in orch.events
+        if n == "agent_input" and p.get("source") == "queue"
+    ]
+    assert len(queue_events) >= 1, "Expected at least one agent_input with source='queue'"
+
+    peer_ev = next(
+        (p for p in queue_events if p.get("message_id") == peer_message_id),
+        None,
+    )
+    assert peer_ev is not None, (
+        f"No agent_input found for message_id={peer_message_id!r}; "
+        f"got queue events: {queue_events}"
+    )
+    assert peer_ev["from"] == "agent_sender"
+    assert peer_ev["message_kind"] == "user"
+    assert peer_ev["content"] == "hello from peer"
+    assert peer_ev["caller_id"] == agent_id
+    assert peer_ev["ts"] == pytest.approx(peer_ts), (
+        "ts should be origin time (msg_in.ts), not consume time"
+    )
+
+
+def test_agent_input_terminate_sentinel_not_emitted(tmp_path, monkeypatch):
+    """Terminate sentinels must NOT produce an agent_input event."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    agent_id = "ag_input_term"
+    orch.queue_for(agent_id)
+
+    async def stub_query(*, prompt, options):
+        async for item in prompt:
+            if not isinstance(item, dict) or item.get("type") != "user":
+                continue
+            yield AssistantMessage(
+                content=[TextBlock("ok")],
+                message_id="msg_term_test",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                stop_reason="end_turn",
+            )
+        yield ResultMessage(total_cost_usd=0.0, usage={}, num_turns=1)
+
+    monkeypatch.setattr(sdk_agent, "query", stub_query)
+
+    async def body():
+        task = asyncio.create_task(
+            run_agent(
+                orch,
+                SpawnSpec(
+                    caller_id=agent_id,
+                    skill_name="fake_skill",
+                    skill_root=skill_root,
+                    task="task",
+                ),
+            )
+        )
+        await asyncio.sleep(0.05)
+        await orch.deliver_to_queue(
+            agent_id,
+            Message(
+                from_id="beidou",
+                content="__terminate__",
+                ts=time.time(),
+                message_id="term_sentinel",
+                kind="terminate",
+            ),
+        )
+        return await task
+
+    asyncio.run(body())
+
+    # No agent_input event should have message_id matching the terminate sentinel.
+    terminate_input_events = [
+        p for n, p in orch.events
+        if n == "agent_input" and p.get("message_id") == "term_sentinel"
+    ]
+    assert terminate_input_events == [], (
+        "terminate sentinel must not produce an agent_input event"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Integration test (real SDK / claude CLI).
 # ---------------------------------------------------------------------------
 

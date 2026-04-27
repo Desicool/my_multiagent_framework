@@ -214,16 +214,8 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
 
     case 'send_message': {
       const e = ev as Extract<BeidouEvent, { type: 'send_message' }>;
-      // Inbound on recipient
-      const recipient = ensureAgent(state, e.to);
-      pushStream(recipient, makeMessageIn({
-        ts: e.ts,
-        from: e.caller_id,
-        from_is_user: e.caller_id === 'user',
-        content: e.content,
-        message_id: e.message_id,
-      }));
-      // Outbound on sender — only if sender is an agent (not user)
+      // Inbound on recipient is now handled by agent_input (delivery-side event).
+      // Only render the outbound bubble on the sender.
       if (e.caller_id !== 'user') {
         const sender = ensureAgent(state, e.caller_id);
         pushStream(sender, makeMessageOut({
@@ -233,6 +225,27 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
           message_id: e.message_id,
         }));
       }
+      break;
+    }
+
+    case 'agent_input': {
+      const e = ev as Extract<BeidouEvent, { type: 'agent_input' }>;
+      const recipient = ensureAgent(state, e.caller_id);
+      // Dedup: drop if a message_in with this message_id is already on the stream
+      // (guards against SSE reconnect/replay delivering the same event twice).
+      const alreadySeen = recipient._stream.some(
+        item => item.kind === 'message_in' && item.message_id === e.message_id,
+      );
+      if (alreadySeen) break;
+      pushStream(recipient, makeMessageIn({
+        ts: e.ts,
+        from: e.from,
+        from_is_user: e.from === 'user',
+        from_is_system: e.from === 'beidou',
+        is_initial: e.source === 'initial',
+        content: e.content,
+        message_id: e.message_id,
+      }));
       break;
     }
 

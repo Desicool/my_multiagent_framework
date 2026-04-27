@@ -58,25 +58,116 @@ describe('lazy stub for unseen agent', () => {
 });
 
 describe('send_message fan-out', () => {
-  it('user→agent: only message_in on recipient', () => {
+  it('user→agent: no-op on streams (inbound now comes from agent_input)', () => {
     applyEvent(s, { type: 'send_message', ts: 1, caller_id: 'user', to: 'A', content: 'hi', message_id: 'm1' });
-    expect(s.agentsById.A._stream.length).toBe(1);
-    expect(s.agentsById.A._stream[0].kind).toBe('message_in');
-    if (s.agentsById.A._stream[0].kind === 'message_in') {
-      expect(s.agentsById.A._stream[0].from_is_user).toBe(true);
-    }
-    expect(s.agentsById.user).toBeUndefined();  // user has no agent stream
+    // send_message from user must not create a recipient stream item; agent_input owns that.
+    expect(s.agentsById.A).toBeUndefined();   // recipient not even touched
+    expect(s.agentsById.user).toBeUndefined(); // user has no agent stream
   });
 
-  it('agent→agent: message_in on recipient + message_out on sender', () => {
+  it('agent→agent: only message_out on sender, NO inbound on recipient', () => {
     applyEvent(s, { type: 'send_message', ts: 1, caller_id: 'A', to: 'B', content: 'hi', message_id: 'm1' });
+    // Sender gets outbound bubble
+    expect(s.agentsById.A._stream.length).toBe(1);
+    expect(s.agentsById.A._stream[0].kind).toBe('message_out');
+    // Recipient has no inbound bubble from send_message alone
+    expect(s.agentsById.B).toBeUndefined();
+  });
+});
+
+describe('agent_input', () => {
+  it('initial task — produces message_in on receiving agent with is_initial=true and from_is_user=true', () => {
+    applyEvent(s, {
+      type: 'agent_input', ts: 1, caller_id: 'A',
+      from: 'user', message_kind: 'initial', source: 'initial',
+      content: 'Build me a CLI', message_id: 'A:initial',
+    });
+    const stream = s.agentsById.A._stream;
+    expect(stream.length).toBe(1);
+    expect(stream[0].kind).toBe('message_in');
+    if (stream[0].kind === 'message_in') {
+      expect(stream[0].from_is_user).toBe(true);
+      expect(stream[0].from_is_system).toBeFalsy();
+      expect(stream[0].is_initial).toBe(true);
+      expect(stream[0].content).toBe('Build me a CLI');
+      expect(stream[0].message_id).toBe('A:initial');
+    }
+  });
+
+  it('peer message (queue) — produces message_in marked as non-user, non-system, non-initial', () => {
+    applyEvent(s, {
+      type: 'agent_input', ts: 2, caller_id: 'B',
+      from: 'A', message_kind: 'user', source: 'queue',
+      content: 'Hey peer', message_id: 'msg-peer-1',
+    });
+    const stream = s.agentsById.B._stream;
+    expect(stream.length).toBe(1);
+    expect(stream[0].kind).toBe('message_in');
+    if (stream[0].kind === 'message_in') {
+      expect(stream[0].from).toBe('A');
+      expect(stream[0].from_is_user).toBe(false);
+      expect(stream[0].from_is_system).toBe(false);
+      expect(stream[0].is_initial).toBe(false);
+    }
+  });
+
+  it('system notification — produces message_in with from_is_system=true', () => {
+    applyEvent(s, {
+      type: 'agent_input', ts: 3, caller_id: 'C',
+      from: 'beidou', message_kind: 'system', source: 'queue',
+      content: '[INBOX QUESTION] ...', message_id: 'sys-42',
+    });
+    const stream = s.agentsById.C._stream;
+    expect(stream.length).toBe(1);
+    expect(stream[0].kind).toBe('message_in');
+    if (stream[0].kind === 'message_in') {
+      expect(stream[0].from_is_system).toBe(true);
+      expect(stream[0].from_is_user).toBe(false);
+      expect(stream[0].from).toBe('beidou');
+    }
+  });
+
+  it('dedup — duplicate agent_input with same message_id only adds one bubble', () => {
+    const ev = {
+      type: 'agent_input' as const, ts: 4, caller_id: 'D',
+      from: 'user', message_kind: 'initial', source: 'initial' as const,
+      content: 'Task', message_id: 'D:initial',
+    };
+    applyEvent(s, ev);
+    applyEvent(s, ev); // replay
+    expect(s.agentsById.D._stream.length).toBe(1);
+  });
+
+  it('web-injected user message (queue, from=user) — from_is_user true, not initial', () => {
+    applyEvent(s, {
+      type: 'agent_input', ts: 5, caller_id: 'E',
+      from: 'user', message_kind: 'user', source: 'queue',
+      content: 'Hello from web', message_id: 'web-msg-1',
+    });
+    const stream = s.agentsById.E._stream;
+    expect(stream.length).toBe(1);
+    if (stream[0].kind === 'message_in') {
+      expect(stream[0].from_is_user).toBe(true);
+      expect(stream[0].is_initial).toBe(false);
+    }
+  });
+});
+
+describe('send_message + agent_input combined flow', () => {
+  it('send_message outbound + agent_input inbound = exactly one inbound bubble on recipient', () => {
+    // Sender calls send_message primitive → outbound on A
+    applyEvent(s, { type: 'send_message', ts: 1, caller_id: 'A', to: 'B', content: 'ping', message_id: 'msg-42' });
+    // Recipient consumes message → inbound on B via agent_input
+    applyEvent(s, {
+      type: 'agent_input', ts: 2, caller_id: 'B',
+      from: 'A', message_kind: 'user', source: 'queue',
+      content: 'ping', message_id: 'msg-42',
+    });
+    // A has exactly one outbound, B has exactly one inbound (no double)
     expect(s.agentsById.A._stream.length).toBe(1);
     expect(s.agentsById.A._stream[0].kind).toBe('message_out');
     expect(s.agentsById.B._stream.length).toBe(1);
     expect(s.agentsById.B._stream[0].kind).toBe('message_in');
-    if (s.agentsById.B._stream[0].kind === 'message_in') {
-      expect(s.agentsById.B._stream[0].from_is_user).toBe(false);
-    }
   });
 });
 

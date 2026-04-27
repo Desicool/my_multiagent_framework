@@ -180,6 +180,17 @@ export type ConfigWarningEvent = {
   message: string;
 };
 
+export type AgentInputEvent = {
+  type: 'agent_input';
+  ts: number;
+  caller_id: string;        // the receiving agent
+  from: string;             // 'user' | 'beidou' | sender agent_id
+  message_kind: string;     // 'user' | 'system' | 'terminate' | 'initial'
+  source: 'initial' | 'queue';
+  content: string;
+  message_id: string;       // e.g. '{caller_id}:initial' for the boot task
+};
+
 export type BeidouEvent =
   | AgentStartedEvent
   | AgentCompletedEvent
@@ -196,6 +207,7 @@ export type BeidouEvent =
   | QuestionAnsweredEvent
   | ContractViolationEvent
   | ConfigWarningEvent
+  | AgentInputEvent
   | { type: string; ts: number; [k: string]: unknown }; // catch-all for forward compat
 
 // ===== Stream items (per-agent _stream union, see plan §4) =====
@@ -224,6 +236,8 @@ export type MessageInStreamItem = {
   ts: number;
   from: string;                 // sender id (or 'user')
   from_is_user: boolean;
+  from_is_system?: boolean;     // true when from === 'beidou' (system notification)
+  is_initial?: boolean;         // true when source === 'initial' (boot task bubble)
   content: string;
   message_id: string;
 };

@@ -24,8 +24,8 @@ export function makeToolPending(ev: { ts: number; tool_use_id: string; name: str
   return { kind: 'tool', ts: ev.ts, tool_use_id: ev.tool_use_id, name: ev.name, input: ev.input, duration_ms: null, is_error: null, expanded: false };
 }
 
-export function makeMessageIn(ev: { ts: number; from: string; from_is_user: boolean; content: string; message_id: string }): MessageInStreamItem {
-  return { kind: 'message_in', ts: ev.ts, from: ev.from, from_is_user: ev.from_is_user, content: ev.content, message_id: ev.message_id };
+export function makeMessageIn(ev: { ts: number; from: string; from_is_user: boolean; from_is_system?: boolean; is_initial?: boolean; content: string; message_id: string }): MessageInStreamItem {
+  return { kind: 'message_in', ts: ev.ts, from: ev.from, from_is_user: ev.from_is_user, from_is_system: ev.from_is_system, is_initial: ev.is_initial, content: ev.content, message_id: ev.message_id };
 }
 
 export function makeMessageOut(ev: { ts: number; to: string; content: string; message_id: string }): MessageOutStreamItem {
