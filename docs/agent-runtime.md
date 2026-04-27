@@ -93,6 +93,25 @@ The per-turn `prompt=` argument carries only the task (first turn) or
 incoming leader/peer messages (subsequent turns). Skill instructions never
 appear in the user message.
 
+**First-user-message contract.** Every spawned agent — root or team member —
+receives the originating user task as its first user-role message. This is
+captured once at `Orchestrator.run_root(root_task=...)` time as
+`Orchestrator._user_task` and propagated unchanged into every subsequent
+`spawn_team` call's `SpawnSpec.task`. The team-level `task` argument the
+caller passes to `create_team(task=...)` is recorded on the `TeamRecord`
+for orchestrator-internal coordination but is **not** the agent's first
+user message — that role belongs to the actual user request, so a child
+member always knows what the user originally asked for.
+
+**`{role_description}` carries only the role-specific scope.** Team-member
+spawns substitute `{role_description}` with `roles[i].description` from
+the `create_team` call (e.g. "Write requirements.md to the team workspace").
+The root agent has no role-specific scope (its scope IS the user task), so
+its `{role_description}` substitutes to the empty string. Worker skills
+that surface the placeholder in their body get a clean role-description
+section; the user task arrives separately as a user message and is never
+duplicated into the system prompt.
+
 ### Completion reporting
 
 Calling `report_status(state="done")` is a **request for review**, not a

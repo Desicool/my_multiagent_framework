@@ -169,8 +169,8 @@ construction.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `name` | string | yes | Human-readable team name. |
-| `task` | string | yes | Task description propagated to each member. |
-| `roles` | list[object] | yes | One per member. Each has `role` (string), `skill` (skill name, e.g. `junior_engineer`), `model` (optional string), `description` (string). |
+| `task` | string | yes | Recorded on the new `TeamRecord` for orchestrator-internal coordination. **Not** delivered as the agent's first user message — that role is reserved for the originating user task (propagated from `run_root`). Use this field for a team-level coordination charter when useful; otherwise mirror the user task. |
+| `roles` | list[object] | yes | One per member. Each has `role` (string), `skill` (skill name, e.g. `junior_engineer`), `model` (optional string), `description` (string). The `description` becomes the role-specific scope: it is substituted into the member's system prompt as `{role_description}` and should describe what THIS member must produce. The originating user task always reaches every member as a separate user message; do not paste it into `description`. |
 | `rules` | list[string] | no | Coordination rules visible to each member. |
 | `consensus` | bool | no | Default `false`. When `true`, bypasses the duplicate-description guard (see below). Use only when deliberately spawning N agents to attempt the same thing in parallel for voting or ensemble purposes. |
 

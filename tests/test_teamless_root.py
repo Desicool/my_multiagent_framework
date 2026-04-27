@@ -307,3 +307,92 @@ def test_recursive_spawn_depth_increments(tmp_path: Path, monkeypatch) -> None:
         assert b_rec.parent_team_id == a_team_id[0]
 
     run(body())
+
+
+# ---------------------------------------------------------------------------
+# Test (d): user task propagates to every spawned agent's first user message,
+# and {role_description} stays clean (only the role-level description, not
+# the user task).
+# ---------------------------------------------------------------------------
+
+
+def test_user_task_propagates_role_description_stays_clean(tmp_path: Path, monkeypatch) -> None:
+    """Each spawned agent receives the originating user task as spec.task,
+    even when the team-level create_team `task` arg is something different.
+    {role_description} carries only the role-level description.
+    """
+    o, _ = _make_orchestrator(tmp_path)
+
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+    monkeypatch.setattr(loader_mod, "provision_skills", lambda *a, **kw: None)
+
+    USER_TASK = "build a calculator with React"
+    TEAM_TASK = "gather requirements (orchestrator's words)"
+    ROLE_DESC = "Write requirements.md to the team workspace."
+
+    captured: list[dict] = []
+
+    async def fake_run(orch, spec):
+        captured.append({
+            "role": (spec.template_vars or {}).get("role"),
+            "task": spec.task,
+            "role_description": (spec.template_vars or {}).get("role_description"),
+        })
+
+        # Root spawns one team, then waits for the member.
+        if (spec.template_vars or {}).get("role") == "root":
+            out = await orch.spawn_team(
+                leader_id=spec.caller_id,
+                name="requirements",
+                task=TEAM_TASK,
+                roles=[{
+                    "role": "product-manager",
+                    "skill": "fake",
+                    "description": ROLE_DESC,
+                }],
+                rules=[],
+            )
+            for m in out["members"]:
+                member_rec = orch._agents[m["agent_id"]]
+                while member_rec.run_task is None or not member_rec.run_task.done():
+                    await asyncio.sleep(0.01)
+
+        rec = orch._agents.get(spec.caller_id)
+        if rec is not None:
+            rec.terminate_consumed = True
+        return _make_result(terminated=True)
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+
+    async def body():
+        await o.run_root("fake", USER_TASK)
+        await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+
+        # Two agents: root + product-manager.
+        roles = [c["role"] for c in captured]
+        assert "root" in roles
+        assert "product-manager" in roles
+
+        root = next(c for c in captured if c["role"] == "root")
+        pm = next(c for c in captured if c["role"] == "product-manager")
+
+        # 1. Both agents' first user message is the originating user task.
+        assert root["task"] == USER_TASK, (
+            f"Root spec.task should be the user task, got {root['task']!r}"
+        )
+        assert pm["task"] == USER_TASK, (
+            f"PM spec.task should be the user task (not {TEAM_TASK!r}), got {pm['task']!r}"
+        )
+
+        # 2. Root's role_description is empty (root has no role-specific scope).
+        assert root["role_description"] == "", (
+            f"Root role_description should be empty, got {root['role_description']!r}"
+        )
+
+        # 3. PM's role_description is exactly the role-level description, clean.
+        assert pm["role_description"] == ROLE_DESC, (
+            f"PM role_description should be {ROLE_DESC!r}, got {pm['role_description']!r}"
+        )
+
+    run(body())

@@ -155,6 +155,12 @@ class Orchestrator:
         self._root_id: Optional[str] = None
         self._root_terminated: bool = False
 
+        # Originating user task — captured at run_root time and propagated to
+        # every spawned agent as their first user-role message. Distinct from
+        # the role's per-spawn `description` (which is the role-specific scope
+        # rendered into the system prompt via {role_description}).
+        self._user_task: str = ""
+
         # Background emitter tasks — keep refs so they're not GC'd mid-flight.
         self._bg_tasks: set[asyncio.Task] = set()
 
@@ -481,11 +487,16 @@ class Orchestrator:
             self._register_agent_record(rec)
             members_out.append({"agent_id": agent_id, "role": role_name, "name": agent_name})
 
+            # First user message = originating user task (propagated from
+            # run_root). The team-level `task` arg from create_team is kept on
+            # TeamRecord for orchestrator-internal coordination but is no
+            # longer the agent's first user message — that role belongs to
+            # the actual user request.
             spec = SpawnSpec(
                 caller_id=agent_id,
                 skill_name=skill_name,
                 skill_root=self.skill_root,
-                task=task,
+                task=self._user_task or task,
                 model=model,
                 template_vars={
                     "role": role_name,
@@ -1314,6 +1325,11 @@ class Orchestrator:
         if self._root_id is not None:
             raise RuntimeError("run_root already invoked on this orchestrator")
 
+        # Capture the originating user task once. Every member spawned later
+        # (via spawn_team) reads this as their first user-role message so the
+        # user's actual request is never lost in role-meta-descriptions.
+        self._user_task = root_task
+
         effective_model = model or self._default_model
 
         root_agent_id = f"ag_{uuid.uuid4().hex[:8]}"
@@ -1375,7 +1391,10 @@ class Orchestrator:
             model=effective_model,
             template_vars={
                 "role": "root",
-                "role_description": root_task,
+                # Root has no role-specific scope; its scope IS the user task.
+                # Keep this slot clean so {role_description} substitutes to
+                # empty when the skill body uses the placeholder.
+                "role_description": "",
                 "team_name": "root",
                 "workspace_path": str(root_workspace),
                 "project_workspace_path": str(self.project_workspace),
