@@ -319,6 +319,30 @@ class TestEnvelopeGuard:
         reported = orch.events_named("completion.reported")
         assert len(reported) == 1 and reported[0]["decision"] == "rework"
 
+    def test_root_terminal_freetext_approve_still_terminates(self) -> None:
+        """TerminalGateway sends selected_labels=[] with the typed text.
+
+        A typed 'approve' / 'yes' must still terminate the root rather than
+        being interpreted as a rework directive.
+        """
+        orch = FakeOrchForEnvelope(
+            agent_id="ag_root",
+            gateway_answer={
+                "answers": [{"selected_labels": [], "text": "approve"}],
+                "answer_text": "approve",
+            },
+        )
+        hook = _get_posttooluse_hook(orch, caller_id="ag_root", leader_id=USER_SENTINEL)
+
+        asyncio.run(
+            hook(_make_input(state="done", detail="root done"), tool_use_id="toolu_term", context=None)
+        )
+
+        assert orch.terminate_root_called == 1
+        assert orch.delivered_bodies() == []
+        reported = orch.events_named("completion.reported")
+        assert reported and reported[-1]["decision"] == "approve"
+
     def test_root_gateway_failure_falls_back_to_completion_empty(self) -> None:
         """If the gateway raises, on_report_status emits completion.empty(gateway_failure: ...)."""
         orch = FakeOrchForEnvelope(

@@ -353,6 +353,14 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             selected = sub.get("selected_values") or sub.get("selected_labels") or []
             decision = (selected[0] if selected else "").lower()
 
+            # TerminalGateway / TUIGateway send free-text answers
+            # (selected_labels=[]); fall back to recognising approval keywords
+            # in the typed text so a typed "approve" / "yes" still terminates.
+            if not decision:
+                typed = (sub.get("text") or "").strip().lower()
+                if typed in {"approve", "approved", "yes", "y", "ok", "lgtm"}:
+                    decision = "approve"
+
             if decision in ("approve", "approved"):
                 orch.emit_event(
                     "completion.reported",
