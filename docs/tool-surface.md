@@ -85,20 +85,24 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 | `question` | string | yes | The question text. |
 | `header` | string | yes | <=12 chars. Used as a chip/label in the UI. May be empty. |
 | `multiSelect` | bool | yes | camelCase. False=radio (single-select), True=checkbox (multi-select). |
-| `options` | array of objects | yes | Length 0 (free-text only) or 2..4 (choice). Each option: `{label: string, description: string}`. |
+| `options` | array of objects | yes | Length 0 (free-text only) or 2..4 (choice). Each option: `{label: string, description: string, value?: string, requires_text?: boolean}`. `value` is an optional machine discriminator (defaults to `label`); the broker mirrors the matched option's `value` into `selected_values` on the answer. `requires_text=true` instructs the frontend to reveal a free-text textarea and gate submission on a non-empty value once that option is selected (the typed text is returned in `text`). |
 
 **Output schema**
 ```
 {
   "answers": [
-    {"selected_labels": ["..."], "text": null},           // single-select
-    {"selected_labels": ["a", "b"], "text": null},        // multi-select
-    {"selected_labels": [], "text": "free-text reply"},   // free-text or "Other" path
+    {"selected_labels": ["..."], "selected_values": ["..."], "text": null},     // single-select
+    {"selected_labels": ["a", "b"], "selected_values": ["a", "b"], "text": null}, // multi-select
+    {"selected_labels": [], "selected_values": [], "text": "free-text reply"},  // free-text or "Other" path
     ...
   ],
   "answer_text": "<human-readable rendering joined by newlines>"
 }
 ```
+
+`selected_values` is server-derived per-answer from the matched option's
+`value` (label fallback) so callers can match on a stable machine
+discriminator instead of user-facing copy.
 
 `answer_text` rendering rules:
 - Free-text only: the typed text.
