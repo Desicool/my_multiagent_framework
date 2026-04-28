@@ -185,6 +185,11 @@ The next holder is the caller's own team leader; if the caller is the
 root or the next hop is the user sentinel, the question surfaces to the
 human gateway.
 
+**Fire-and-forget (bubble model).** This call returns immediately after
+dispatching the question to the next hop. The escalator does NOT await the
+answer — the answer is delivered only to the original asker's `ask_user`
+future. The escalator's tool call ends as soon as the forward is sent.
+
 **Input schema**
 | Field | Type | Required | Notes |
 |---|---|---|---|
@@ -200,7 +205,7 @@ human gateway.
 **Error cases**
 - `invalid_input`: `qid` empty or `reason` empty.
 - `unknown_qid`: no pending question with that id.
-- `not_holder`: caller is not the current holder.
+- `not_holder`: caller is not the current holder (chain[-1] != caller).
 - `stale`: the question is no longer pending (already answered or
   escalated past in a race).
 

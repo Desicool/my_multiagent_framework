@@ -23,6 +23,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import json
+
+from beidou import db as _db
 from beidou import sdk_agent
 from beidou.events import EventEmitter
 from beidou.primitives.core import (
@@ -32,6 +35,7 @@ from beidou.primitives.core import (
     Peer,
     PrimitiveError,
 )
+from beidou.questions import QuestionRegistry, render_prompt_text
 from beidou.sdk_agent import RunResult, SpawnSpec
 from beidou.workspace import agent_workspace, team_workspace
 
@@ -170,6 +174,9 @@ class Orchestrator:
 
         # Lazily-created per-agent create_team locks.
         self._locks: dict[str, asyncio.Lock] = {}
+
+        # Question registry — replaces QuestionBroker.
+        self._questions: QuestionRegistry = QuestionRegistry()
 
         # Per-agent assistant text tracking for PostToolUse hook.
         # Outer key: caller_id. Inner key: tool_use_id -> assistant text from that turn.
@@ -687,18 +694,16 @@ class Orchestrator:
         question: str,
         context: Optional[str],
     ) -> str:
-        if self.gateway is None:
-            raise PrimitiveError("gateway_unavailable", "no human gateway registered")
-        # BaseGateway's surface_question wants a Question + broker; that
-        # plumbing lives in QuestionBroker. The orchestrator-level gateway
-        # hook here is the simpler "ask one thing, block for answer" shape
-        # that the primitive expects. Implementations that only expose the
-        # broker-style surface should adapt in their own wrapper; we call an
-        # optional ``ask`` coroutine when present.
-        ask = getattr(self.gateway, "ask", None)
-        if ask is None:
-            raise PrimitiveError("gateway_unavailable", "gateway has no ask() method")
-        return await ask(caller_id, question, context)
+        """Legacy string-only path used by sdk_agent.py's AskUserQuestion hook.
+
+        Wraps the question as a single free-text sub-question and delegates to
+        gateway_ask_user_structured, then returns the answer_text string.
+        """
+        questions = [{"question": question, "header": "", "multiSelect": False, "options": []}]
+        result = await self.gateway_ask_user_structured(caller_id, questions, context)
+        if isinstance(result, dict):
+            return result.get("answer_text", "")
+        return str(result)
 
     async def gateway_ask_user_structured(
         self,
@@ -710,18 +715,32 @@ class Orchestrator:
         watchdog escalations, root completion review, and any caller that
         explicitly wants the user to see the question.
 
-        Delegates to ``_GatewayAdapter.ask_structured`` (or any object that
-        exposes that coroutine).
-
-        Returns ``{"answers": [...], "answer_text": "..."}`` as produced by
-        ``QuestionBroker.resolve_answer``.
+        Routes straight to the user gateway (parent_id=None).
+        Returns ``{"answers": [...], "answer_text": "..."}`` once resolved.
         """
         if self.gateway is None:
             raise PrimitiveError("gateway_unavailable", "no human gateway registered")
-        ask_structured = getattr(self.gateway, "ask_structured", None)
-        if ask_structured is None:
-            raise PrimitiveError("gateway_unavailable", "gateway has no ask_structured() method")
-        return await ask_structured(caller_id, questions, context)
+        qid, future = await self.post_question(
+            asker_id=caller_id,
+            parent_id=None,
+            questions=questions,
+            context_hint=context,
+        )
+        self.emit_event(
+            "question_asked",
+            {
+                "agent_id": caller_id,
+                "qid": qid,
+                "asker": caller_id,
+                "holder": None,
+                "prompt": render_prompt_text(questions)[:200],
+                "questions": questions,
+            },
+        )
+        try:
+            return await future
+        finally:
+            self._questions.pop(qid)
 
     async def gateway_ask_via_chain(
         self,
@@ -742,16 +761,230 @@ class Orchestrator:
         """
         if self.gateway is None:
             raise PrimitiveError("gateway_unavailable", "no human gateway registered")
-        ask_via_chain = getattr(self.gateway, "ask_via_chain", None)
-        if ask_via_chain is None:
-            # Backwards-compat: gateway adapters that predate Layer 3 fall
-            # through to the direct-to-user path so older test stubs keep
-            # working.
-            return await self.gateway_ask_user_structured(caller_id, questions, context)
-        return await ask_via_chain(caller_id, questions, context)
+        parent_id = self.parent_for_chain(caller_id)
+        qid, future = await self.post_question(
+            asker_id=caller_id,
+            parent_id=parent_id,
+            questions=questions,
+            context_hint=context,
+        )
+        self.emit_event(
+            "question_asked",
+            {
+                "agent_id": caller_id,
+                "qid": qid,
+                "asker": caller_id,
+                "holder": parent_id,
+                "prompt": render_prompt_text(questions)[:200],
+                "questions": questions,
+            },
+        )
+        try:
+            return await future
+        finally:
+            self._questions.pop(qid)
 
     def is_gateway_available(self) -> bool:
         return self.gateway is not None and hasattr(self.gateway, "ask")
+
+    # ------------------------------------------------------------------
+    # Question routing — replaces QuestionBroker
+    # ------------------------------------------------------------------
+
+    def parent_for_chain(self, caller_id: str) -> Optional[str]:
+        """Return caller's next-up reviewer for question-chain routing, or None.
+
+        Returns None when the caller is root (no team), or when the team's
+        leader is the user sentinel (meaning the next hop is the user).
+        """
+        rec = self._agents.get(caller_id)
+        if rec is None or rec.team_id is None:
+            return None
+        team = self._teams.get(rec.team_id)
+        if team is None:
+            return None
+        leader = getattr(team, "leader_id", None)
+        if leader is None or leader == USER_SENTINEL:
+            return None
+        return leader
+
+    async def post_question(
+        self,
+        *,
+        asker_id: str,
+        parent_id: Optional[str],
+        questions: list[dict],
+        context_hint: Optional[str],
+    ) -> tuple[str, asyncio.Future]:
+        """First post (from ask_user primitive). Registers, dispatches, returns (qid, future).
+
+        The caller awaits the returned future and handles cleanup in a finally block.
+        DB insert is non-blocking (best-effort executor).
+        """
+        qid, future = self._questions.register(asker_id, questions, context_hint, parent_id)
+        pq = self._questions.get(qid)
+        # Non-blocking DB insert — mirrors QuestionBroker.ask (inbox.py:104-118).
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: _db.insert_question(
+                    qid=qid,
+                    task_id=self.task_id,
+                    asker_agent_id=asker_id,
+                    prompt=render_prompt_text(questions),
+                    context_hint=context_hint,
+                    chain_json=json.dumps(pq.chain),
+                    created_at=pq.created_at,
+                ),
+            )
+        except Exception:
+            pass
+        await self._deliver_question(
+            qid, target=parent_id, sender=asker_id,
+            questions=questions, context_hint=context_hint,
+            chain=pq.chain, escalation=False,
+        )
+        return qid, future
+
+    async def forward_question(
+        self,
+        *,
+        qid: str,
+        by_id: str,
+        new_target_id: Optional[str],
+        reason: str,
+    ) -> dict:
+        """Re-post (from escalate_question primitive). Adds to chain, dispatches, returns immediately.
+
+        NO future is awaited here — bubble model: the escalator forwards and returns.
+        """
+        pq = self._questions.get(qid)
+        if pq is None or pq.future.done():
+            return {"ok": False, "reason": "stale"}
+        self._questions.add_chain_hop(qid, new_target_id if new_target_id is not None else "USER")
+        await self._deliver_question(
+            qid, target=new_target_id, sender=by_id,
+            questions=pq.questions, context_hint=None,
+            chain=pq.chain, escalation=True, reason=reason,
+        )
+        return {"ok": True, "qid": qid, "new_holder": new_target_id}
+
+    async def _deliver_question(
+        self,
+        qid: str,
+        *,
+        target: Optional[str],
+        sender: str,
+        questions: list[dict],
+        context_hint: Optional[str],
+        chain: list[str],
+        escalation: bool,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Single dispatch: if target is None → user gateway; else → agent inbox."""
+        body = self._render_question_body(
+            qid, sender, questions, context_hint, chain, escalation, reason,
+        )
+        if target is None:
+            # User target — surface to the gateway.
+            if self.gateway is not None:
+                surface = getattr(self.gateway, "surface_question", None)
+                if surface is not None:
+                    asyncio.create_task(surface(qid, body, questions))
+        else:
+            # Agent target — normal inbox message.
+            msg = Message(
+                from_id="beidou",
+                content=body,
+                ts=time.time(),
+                message_id=f"qmsg-{qid}",
+                kind="system",
+            )
+            await self.inbox_put(target, msg)
+
+    def _render_question_body(
+        self,
+        qid: str,
+        sender: str,
+        questions: list[dict],
+        context_hint: Optional[str],
+        chain: list[str],
+        escalation: bool,
+        reason: Optional[str] = None,
+    ) -> str:
+        """Render the inbox body for an agent-targeted question delivery.
+
+        Format ported from QuestionBroker._notify_holder (inbox.py:310-328).
+        Wording kept identical so receiving agents see the same message format.
+        Adds an '(escalated by X)' line when escalation=True.
+        """
+        prompt_preview = render_prompt_text(questions)
+        if len(prompt_preview) > 600:
+            prompt_preview = prompt_preview[:600] + "…"
+        asker_agent_id = chain[0] if chain else sender
+        body = (
+            f"[INBOX QUESTION] qid={qid} from {asker_agent_id}\n"
+            f"chain: {' → '.join(chain)}\n"
+            f"\n{prompt_preview}\n"
+        )
+        if escalation and reason:
+            body += f"\n(escalated by {sender}: {reason})\n"
+        if context_hint:
+            body += f"\ncontext: {context_hint}\n"
+        body += (
+            f"\nResolve this BEFORE doing anything else. Two options:\n"
+            f"  1. Answer it directly via mcp__beidou__answer_question("
+            f"qid=\"{qid}\", answers=[{{\"selected_labels\": [...], \"text\": \"...\"}}, ...])"
+            f" if you can answer from what you already know.\n"
+            f"  2. Escalate via mcp__beidou__escalate_question("
+            f"qid=\"{qid}\", reason=\"...\") if only the next-up reviewer "
+            f"or the user can answer.\n"
+        )
+        return body
+
+    def resolve_question(self, qid: str, answers: list[dict]) -> dict:
+        """Public entry for the gateway and answer_question primitive.
+
+        Owns the side-effects (DB update, event emit) that the registry
+        deliberately avoids. The registry just sets the future.
+        """
+        pq = self._questions.get(qid)
+        if pq is None:
+            return {"ok": False, "reason": "unknown_qid"}
+        if pq.future.done():
+            return {"ok": False, "reason": "already_answered"}
+
+        out = self._questions.resolve(qid, answers)
+        if not out["ok"]:
+            return out
+
+        answer_text = out["answer_text"]
+
+        # Non-blocking DB update.
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: _db.update_question_answered(
+                    qid=qid, answer=json.dumps(answers), answered_at=time.time(),
+                ),
+            )
+        except Exception:
+            pass
+
+        # Event emit — orchestrator-owned; single source of truth.
+        self.emit_event(
+            "question_answered",
+            {
+                "agent_id": pq.asker_agent_id,
+                "qid": qid,
+                "asker": pq.asker_agent_id,
+                "chain_len": len(pq.chain),
+                "answers": answers,
+                "answer_text": answer_text,
+            },
+        )
+
+        return {"ok": True}
 
     def record_status(
         self,
@@ -1041,32 +1274,29 @@ class Orchestrator:
                 )
 
             elif rec.review_ping_count == 2:
-                # Escalate to user gateway.
+                # Escalate to user gateway (fire-and-forget — the watchdog
+                # does not await the user's answer; the question surfaces
+                # asynchronously via the gateway).
                 self.emit_event(
                     "review.escalated_to_user",
                     {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ts": now},
                 )
                 if self.is_gateway_available():
-                    try:
-                        await self.gateway_ask_user_structured(
-                            leader,
-                            [
-                                {
-                                    "question": (
-                                        f"Root agent's leader {leader} has not decided on completion"
-                                        f" review for {child_id} after 3 pings."
-                                        f" Approve (terminate_child), rework, or abort?"
-                                    ),
-                                    "header": "",
-                                    "multiSelect": False,
-                                    "options": [],
-                                }
-                            ],
-                            None,
-                        )
-                    except Exception:
-                        # Best-effort.
-                        pass
+                    _q = [
+                        {
+                            "question": (
+                                f"Root agent's leader {leader} has not decided on completion"
+                                f" review for {child_id} after 3 pings."
+                                f" Approve (terminate_child), rework, or abort?"
+                            ),
+                            "header": "",
+                            "multiSelect": False,
+                            "options": [],
+                        }
+                    ]
+                    _t = asyncio.create_task(self.gateway_ask_user_structured(leader, _q, None))
+                    self._bg_tasks.add(_t)
+                    _t.add_done_callback(self._bg_tasks.discard)
                 rec.review_ping_count += 1
 
             # review_ping_count >= 3: user owns it; do nothing.
@@ -1092,6 +1322,12 @@ class Orchestrator:
                 continue
             # Skip if already escalated.
             if rec.idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION:
+                continue
+            # Skip agents that forwarded a question and are waiting for it to be
+            # resolved upstream. Nudging them to "call ask_user if blocked" would
+            # trigger the duplicate-ask bug (tsk_80cac529). The asker is already
+            # skipped via inflight_tools > 0 (they are blocked in ask_user).
+            if self._questions.has_pending_through(agent_id):
                 continue
             # Skip pure workers (no direct children) that are not root.
             teams_led = list(self.teams_led_by(agent_id))
@@ -1119,30 +1355,27 @@ class Orchestrator:
                     kind="ping",
                 )
             elif rec.idle_nudge_count == 2:
-                # Escalate to user gateway.
+                # Escalate to user gateway (fire-and-forget — the watchdog
+                # does not await the user's answer).
                 self.emit_event(
                     "liveness.escalated_to_user",
                     {"agent_id": agent_id, "team_id": rec.team_id, "delta_s": delta_s, "ts": now},
                 )
                 if self.is_gateway_available():
-                    try:
-                        await self.gateway_ask_user_structured(
-                            agent_id,
-                            [
-                                {
-                                    "question": (
-                                        f"Agent {agent_id} has been idle {delta_s}s with no progress."
-                                        f" Approve continuation, redirect, or abort?"
-                                    ),
-                                    "header": "",
-                                    "multiSelect": False,
-                                    "options": [],
-                                }
-                            ],
-                            None,
-                        )
-                    except Exception:
-                        pass
+                    _q = [
+                        {
+                            "question": (
+                                f"Agent {agent_id} has been idle {delta_s}s with no progress."
+                                f" Approve continuation, redirect, or abort?"
+                            ),
+                            "header": "",
+                            "multiSelect": False,
+                            "options": [],
+                        }
+                    ]
+                    _t = asyncio.create_task(self.gateway_ask_user_structured(agent_id, _q, None))
+                    self._bg_tasks.add(_t)
+                    _t.add_done_callback(self._bg_tasks.discard)
 
             rec.idle_nudge_count += 1
             rec.last_progress_ts = now

@@ -1,19 +1,18 @@
-"""TerminalGateway — routes questions to stdin/stdout. Preserves current behavior exactly."""
+"""TerminalGateway — routes questions to stdin/stdout."""
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import Any
 
 from beidou.gateways.base import BaseGateway
-
-if TYPE_CHECKING:
-    from beidou.inbox import Question, QuestionBroker
 
 
 class TerminalGateway(BaseGateway):
     def __init__(self, console=None) -> None:
         self._console = console
+        # Serialize stdin so concurrent escalations don't interleave.
         self._lock = asyncio.Lock()
+        self.orch: Any = None  # set after orchestrator is created, before start()
 
     async def start(self) -> None:
         pass
@@ -21,23 +20,19 @@ class TerminalGateway(BaseGateway):
     async def stop(self) -> None:
         pass
 
-    async def surface_question(self, q: "Question", broker: "QuestionBroker") -> None:
-        asyncio.create_task(self._do_surface(q, broker))
+    async def surface_question(self, qid: str, body: str, questions: list[dict]) -> None:
+        asyncio.create_task(self._do_surface(qid, body, questions))
 
-    async def _do_surface(self, q: "Question", broker: "QuestionBroker") -> None:
+    async def _do_surface(self, qid: str, body: str, questions: list[dict]) -> None:
         async with self._lock:
-            if q.future.done():
-                return
+            # Check if already answered (race between gateway surface and resolve).
+            registry = getattr(self.orch, "_questions", None) if self.orch else None
+            if registry is not None:
+                pq = registry.get(qid)
+                if pq is None or pq.future.done():
+                    return
             loop = asyncio.get_running_loop()
-            chain_str = " → ".join(q.chain)
-            prompt_txt = (
-                f"\n[bold yellow]Question from {q.asker_agent_id}[/]  "
-                f"[dim](chain: {chain_str})[/dim]\n"
-                f"{q.prompt}\n"
-            )
-            if q.context_hint:
-                prompt_txt += f"[dim]context: {q.context_hint}[/dim]\n"
-            prompt_txt += "[bold green]Answer:[/] "
+            prompt_txt = f"\n{body}\n[bold green]Answer:[/] "
             try:
                 if self._console is not None:
                     answer = await loop.run_in_executor(
@@ -46,11 +41,14 @@ class TerminalGateway(BaseGateway):
                 else:
                     answer = await loop.run_in_executor(None, lambda: input(prompt_txt))
             except Exception as exc:
-                if not q.future.done():
-                    q.future.set_exception(exc)
+                # If the future is still pending, propagate the exception.
+                if registry is not None:
+                    pq = registry.get(qid)
+                    if pq is not None and not pq.future.done():
+                        pq.future.set_exception(exc)
                 return
-            if not q.future.done():
-                broker.resolve_answer(
-                    q.qid,
-                    [{"selected_labels": [], "text": answer} for _ in q.questions],
+            if self.orch is not None:
+                self.orch.resolve_question(
+                    qid,
+                    [{"selected_labels": [], "text": answer} for _ in questions],
                 )

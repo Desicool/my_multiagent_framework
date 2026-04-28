@@ -4,12 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 from beidou.gateways.base import BaseGateway
-
-if TYPE_CHECKING:
-    from beidou.inbox import Question, QuestionBroker
 
 # Guard against importing textual at module level (optional dep)
 _textual_available = False
@@ -26,6 +23,7 @@ class TUIGateway(BaseGateway):
         self._question_queue: asyncio.Queue = asyncio.Queue()
         self._app = None
         self._tui_task: asyncio.Task | None = None
+        self.orch: Any = None  # set after orchestrator is created, before start()
 
     async def start(self) -> None:
         if not _textual_available:
@@ -33,7 +31,11 @@ class TUIGateway(BaseGateway):
                 "textual is not installed. Run: pip install 'beidou[tui]'  "
                 "or: pip install textual>=0.60.0"
             )
-        app = BeidouTUIApp(task_id=self._task_id, question_queue=self._question_queue)
+        app = BeidouTUIApp(
+            task_id=self._task_id,
+            question_queue=self._question_queue,
+            orch=self.orch,
+        )
         self._app = app
         self._tui_task = asyncio.create_task(app.run_async())
 
@@ -49,8 +51,8 @@ class TUIGateway(BaseGateway):
             except (asyncio.TimeoutError, Exception):
                 pass
 
-    async def surface_question(self, q: "Question", broker: "QuestionBroker") -> None:
-        await self._question_queue.put((q, broker))
+    async def surface_question(self, qid: str, body: str, questions: list[dict]) -> None:
+        await self._question_queue.put((qid, body, questions))
 
 
 if _textual_available:
@@ -187,12 +189,13 @@ if _textual_available:
         }
         """
 
-        def __init__(self, task_id: str, question_queue: asyncio.Queue, **kwargs):
+        def __init__(self, task_id: str, question_queue: asyncio.Queue, orch=None, **kwargs):
             super().__init__(**kwargs)
             self._task_id = task_id
             self._question_queue = question_queue
-            self._current_q = None
-            self._current_broker = None
+            self._orch = orch
+            self._current_qid: str | None = None
+            self._current_questions: list[dict] = []
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -233,14 +236,14 @@ if _textual_available:
 
         def _poll_questions(self) -> None:
             """Check question queue and show panel."""
-            if self._current_q is not None:
+            if self._current_qid is not None:
                 return  # Already showing a question
             try:
-                q, broker = self._question_queue.get_nowait()
-                self._current_q = q
-                self._current_broker = broker
+                qid, body, questions = self._question_queue.get_nowait()
+                self._current_qid = qid
+                self._current_questions = questions
                 panel = self.query_one("#q_panel", QuestionPanel)
-                panel.show_question(q.prompt)
+                panel.show_question(body[:120])
             except asyncio.QueueEmpty:
                 pass
 
@@ -248,18 +251,19 @@ if _textual_available:
             if event.input.id != "q_input":
                 return
             answer = event.value.strip()
-            if not answer or self._current_q is None:
+            if not answer or self._current_qid is None:
                 return
-            q = self._current_q
-            broker = self._current_broker
-            self._current_q = None
-            self._current_broker = None
+            qid = self._current_qid
+            questions = self._current_questions
+            self._current_qid = None
+            self._current_questions = []
             # Route through the shared resolver so DB writes and question_answered
-            # event are consistent with the web/terminal/fallback paths.
-            broker.resolve_answer(
-                q.qid,
-                [{"selected_labels": [], "text": answer} for _ in q.questions],
-            )
+            # event are consistent with the web/terminal paths.
+            if self._orch is not None:
+                self._orch.resolve_question(
+                    qid,
+                    [{"selected_labels": [], "text": answer} for _ in questions],
+                )
             panel = self.query_one("#q_panel", QuestionPanel)
             panel.hide()
 

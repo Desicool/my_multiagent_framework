@@ -79,7 +79,7 @@ def _read_jsonl_events(path: Path) -> list[dict]:
     return events
 
 
-def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
+def create_app(orch=None, task_id=None) -> "FastAPI":
     from beidou import db
     from beidou.web.tail import current_cursor
 
@@ -218,56 +218,44 @@ def create_app(broker=None, orch=None, task_id=None) -> "FastAPI":
     async def api_questions_pending():
         """Return questions that are still awaiting a user answer.
 
-        The broker's _pending dict is the canonical in-flight handle (needed to
-        resolve the future).  We cross-reference with JSONL to filter out
-        questions that appear answered in the event log but whose future hasn't
-        been resolved yet (race window).  Questions with no broker entry are
-        orphaned (agent died) and are NOT returned.
+        The orchestrator's _questions registry is the canonical in-flight
+        handle. Questions that are not targeting the user (chain[-1] != "USER")
+        are held by an agent and are NOT returned to the web UI.
         """
-        b = broker  # captured from create_app args
-        if b is None:
-            raise HTTPException(status_code=503, detail="no active gateway")
+        from beidou.questions import render_prompt_text as _render_prompt
 
-        # Build a set of qids that have a matching question_answered event in
-        # any live task's JSONL so we can suppress already-answered questions.
-        answered_qids: set[str] = set()
-        try:
-            for jsonl_path in _EVENTS_DIR.glob("*.jsonl"):
-                for evt in _read_jsonl_events(jsonl_path):
-                    if evt.get("event") == "question_answered":
-                        qid = evt.get("qid")
-                        if qid:
-                            answered_qids.add(qid)
-        except OSError:
-            pass  # best-effort; broker state is still valid
+        if orch is None:
+            raise HTTPException(status_code=503, detail="no active orchestrator")
+
+        registry = getattr(orch, "_questions", None)
+        if registry is None:
+            raise HTTPException(status_code=503, detail="no question registry")
 
         questions = []
-        for q in list(b._pending.values()):
-            if q.state != "at_user":
+        for pq in list(registry._pending.values()):
+            if pq.future.done():
                 continue
-            if q.future.done():
-                continue
-            if q.qid in answered_qids:
+            # Only surface questions whose current target is the user gateway.
+            if not pq.chain or pq.chain[-1] != "USER":
                 continue
             questions.append({
-                "qid": q.qid,
-                "asker_agent_id": q.asker_agent_id,
-                "questions": q.questions,
-                "prompt": q.prompt,
-                "context_hint": q.context_hint,
-                "chain": q.chain,
-                "created_at": q.created_at,
+                "qid": pq.qid,
+                "asker_agent_id": pq.asker_agent_id,
+                "questions": pq.questions,
+                "prompt": _render_prompt(pq.questions),
+                "context_hint": pq.context_hint,
+                "chain": pq.chain,
+                "created_at": pq.created_at,
             })
         return {"questions": questions}
 
     @app.post("/api/questions/{qid}/answer")
     async def api_questions_answer(qid: str, body: AnswerBody):
-        b = broker  # captured from create_app args
-        if b is None:
-            raise HTTPException(status_code=503, detail="no active gateway")
-        # Convert pydantic models to plain dicts for the broker
+        if orch is None:
+            raise HTTPException(status_code=503, detail="no active orchestrator")
+        # Convert pydantic models to plain dicts for the registry
         answers = [{"selected_labels": a.selected_labels, "text": a.text} for a in body.answers]
-        result = b.resolve_answer(qid, answers)
+        result = orch.resolve_question(qid, answers)
         if not result.get("ok"):
             reason = result.get("reason", "unknown")
             # Map known reasons to HTTP statuses

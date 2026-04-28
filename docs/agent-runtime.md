@@ -74,6 +74,20 @@ already had this answer in `requirements.md`" a single quick reply instead
 of a fresh user prompt, while the user remains the terminal authority for
 genuinely-unresolved binding choices.
 
+**Bubble model.** `escalate_question` is fire-and-forget: the escalator
+dispatches the question one hop up and its tool call returns immediately.
+The answer is delivered only to the original asker (via its `ask_user`
+future) — intermediate escalators do NOT receive or process the answer.
+Nothing in the system awaits on behalf of an escalator. The watchdog's
+Pass B suppresses liveness nudges for intermediate-hop agents
+(`QuestionRegistry.has_pending_through`) so they are not prompted to
+re-ask questions they have already forwarded.
+
+**Implementation.** Question routing lives in `beidou/orchestrator.py`
+(`post_question`, `forward_question`, `_deliver_question`, `resolve_question`)
+backed by `beidou/questions.py` (`QuestionRegistry`, `PendingQuestion`).
+The `QuestionBroker` class (formerly `beidou/inbox.py`) no longer exists.
+
 The orchestrator (the typical chain terminator before the user) never
 answers on the user's behalf for genuinely-unresolved choices; it
 escalates to the user via `escalate_question`. System-originated paths

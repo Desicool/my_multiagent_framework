@@ -505,7 +505,7 @@ def test_watchdog_second_ping_warns(tmp_path: Path) -> None:
 
 
 def test_watchdog_third_strike_escalates(tmp_path: Path) -> None:
-    """Pass A: count==2 → review.escalated_to_user event + gateway_ask_user called."""
+    """Pass A: count==2 → review.escalated_to_user event + gateway surfaced."""
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
@@ -517,26 +517,31 @@ def test_watchdog_third_strike_escalates(tmp_path: Path) -> None:
         child.completion_pending_ts = time.time() - 65.0
         child.review_ping_count = 2
 
-        # Set up a mock gateway with both ask() (for is_gateway_available)
-        # and ask_structured() (the escalation actually calls this).
+        # Set up a mock gateway with ask() (for is_gateway_available) and
+        # surface_question (new protocol — the orchestrator calls this directly
+        # instead of delegating to gateway.ask_structured).
+        surfaced: list[tuple] = []
+
+        async def _surface(qid, body_str, questions):
+            surfaced.append((qid, body_str, questions))
+
         mock_gateway = MagicMock()
         mock_gateway.ask = AsyncMock(return_value="approved")
-        mock_gateway.ask_structured = AsyncMock(
-            return_value={"answers": [{"selected_labels": [], "text": "approved"}], "answer_text": "approved"}
-        )
+        mock_gateway.surface_question = _surface
         o.gateway = mock_gateway
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
+        await asyncio.sleep(0)  # allow create_task to run
 
         # review.escalated_to_user event.
         events = _events_named(o, "review.escalated_to_user")
         assert len(events) == 1, f"Expected review.escalated_to_user, got: {events}"
 
-        # gateway.ask_structured called once with right args.
-        mock_gateway.ask_structured.assert_called_once()
-        call_kwargs = mock_gateway.ask_structured.call_args
-        assert "child_ag" in str(call_kwargs)
+        # gateway.surface_question called once (question surfaced to user).
+        assert len(surfaced) == 1, f"Expected surface_question to be called once, got: {surfaced}"
+        _qid, _body, _qs = surfaced[0]
+        assert "child_ag" in _body or "child_ag" in str(_qs)
 
         assert child.review_ping_count == 3
 

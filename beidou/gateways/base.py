@@ -1,10 +1,6 @@
 """BaseGateway — ABC for all question-routing channels."""
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from beidou.inbox import Question, QuestionBroker
 
 
 class BaseGateway(ABC):
@@ -19,7 +15,10 @@ class BaseGateway(ABC):
         ...
 
     @abstractmethod
-    async def surface_question(self, q: "Question", broker: "QuestionBroker") -> None:
-        """Present question to the channel. MUST return immediately (use asyncio.create_task).
-        Call broker.answer(q.qid, text) when the user provides an answer."""
+    async def surface_question(self, qid: str, body: str, questions: list[dict]) -> None:
+        """Present a question to the channel. MUST return immediately (use asyncio.create_task).
+
+        To resolve the question, call orch.resolve_question(qid, answers) where orch is
+        the orchestrator the gateway has a reference to. No broker reference is needed.
+        """
         ...

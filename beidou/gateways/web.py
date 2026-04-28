@@ -5,12 +5,8 @@ import asyncio
 import os
 import socket
 import subprocess
-from typing import TYPE_CHECKING
 
 from beidou.gateways.base import BaseGateway
-
-if TYPE_CHECKING:
-    from beidou.inbox import Question, QuestionBroker
 
 
 def _find_free_port(preferred: int) -> int:
@@ -49,13 +45,11 @@ def _open_browser(url: str) -> None:
 class WebGateway(BaseGateway):
     def __init__(
         self,
-        broker: "QuestionBroker",
         task_id: str,
         host: str = "127.0.0.1",
         port: int = 7777,
         auto_open: bool = False,
     ) -> None:
-        self._broker = broker
         self._task_id = task_id
         self._host = host
         self._port = port
@@ -70,7 +64,7 @@ class WebGateway(BaseGateway):
         from beidou.web.app import create_app
 
         actual_port = _find_free_port(self._port)
-        app = create_app(broker=self._broker, orch=self.orch, task_id=self._task_id)
+        app = create_app(orch=self.orch, task_id=self._task_id)
         config = uvicorn.Config(app, host=self._host, port=actual_port, log_level="warning")
         server = uvicorn.Server(config)
         self._server = server
@@ -107,18 +101,20 @@ class WebGateway(BaseGateway):
             except (asyncio.TimeoutError, Exception):
                 pass
 
-    async def surface_question(self, q: "Question", broker: "QuestionBroker") -> None:
+    async def surface_question(self, qid: str, body: str, questions: list[dict]) -> None:
         # Print a terminal notice so the user knows to check the browser.
         # The question is surfaced in the web UI via the JSONL WebSocket stream
         # (question_asked event) + /api/questions/pending polling.
         # The Future is resolved when the user submits via POST /api/questions/{qid}/answer.
         task_url = f"{self._url}#/tasks/{self._task_id}" if self._url else "the web UI"
+        # Extract a short preview from the body for the terminal notice.
+        preview = body[:120] if body else ""
         try:
             from beidou.cli import console as _console
             _console.print(
-                f"\n[bold magenta]❓ Question from {q.asker_agent_id}[/bold magenta]"
+                f"\n[bold magenta]Question {qid}[/bold magenta]"
                 f" — answer in browser: [cyan]{task_url}[/cyan]\n"
-                f"[dim]{q.prompt[:120]}[/dim]"
+                f"[dim]{preview}[/dim]"
             )
         except Exception:
-            print(f"\nQuestion waiting at: {task_url}\n{q.prompt[:120]}")
+            print(f"\nQuestion waiting at: {task_url}\n{preview}")
