@@ -483,6 +483,15 @@ async def answer_question(
             holder=current_holder,
             caller=caller_id,
         )
+    expected = len(pq.questions)
+    if len(answers) != expected:
+        raise PrimitiveError(
+            "answer_count_mismatch",
+            f"question has {expected} sub-question(s) but you provided {len(answers)} answer(s)",
+            qid=qid,
+            expected=expected,
+            provided=len(answers),
+        )
     result = orch.resolve_question(qid, answers, answerer=caller_id, reason=reason)
     if not result.get("ok"):
         err_reason = result.get("reason", "unknown")
