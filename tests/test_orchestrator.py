@@ -19,7 +19,6 @@ import pytest
 from beidou import orchestrator as orch_module
 from beidou.orchestrator import (
     TERMINATE_GRACE_S,
-    TOKEN_CEILING,
     USER_SENTINEL,
     AgentRecord,
     Orchestrator,
@@ -528,64 +527,6 @@ def test_contract_violation_three_strikes_escalates_to_leader(tmp_path, monkeypa
         # contract_violation emitted exactly CONTRACT_STRIKES times.
         cv = [c for c in emitter.calls if c[0] == "contract_violation"]
         assert len(cv) == CONTRACT_STRIKES
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
-# Token ceiling
-# ---------------------------------------------------------------------------
-
-
-def test_token_ceiling_recommends_to_leader(tmp_path):
-    o, _ = _make_orchestrator(tmp_path)
-    # Leader at root.
-    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
-    _seed_agent(o, "LEADER", _TM_TOP, role="leader")
-    # Child team led by LEADER with one member.
-    _seed_team(o, "tm_kid", leader_id="LEADER", depth=1, parent=_TM_TOP)
-    rec = _seed_agent(o, "CHILD", "tm_kid")
-
-    async def body():
-        # Half + half = at the ceiling.
-        o.emit_event("turn.usage", {
-            "caller_id": "CHILD",
-            "message_id": "m1",
-            "input_tokens": TOKEN_CEILING // 2,
-            "output_tokens": TOKEN_CEILING // 2,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        })
-        # Let the scheduled inbox_put coroutine run.
-        await asyncio.sleep(0.05)
-        assert rec.total_tokens >= TOKEN_CEILING
-        leader_inbox = o._agents["LEADER"].inbox
-        assert leader_inbox.qsize() == 1
-        msg = leader_inbox.get_nowait()
-        assert msg.from_id == "beidou"
-        assert "CHILD" in msg.content
-        assert "token" in msg.content.lower()
-
-    run(body())
-
-
-def test_token_ceiling_root_emits_event(tmp_path, monkeypatch):
-    o, emitter = _make_orchestrator(tmp_path)
-    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
-    rec = _seed_agent(o, "ROOT", _TM_TOP, role="root")
-    o._root_id = "ROOT"
-
-    async def body():
-        o.emit_event("turn.usage", {
-            "caller_id": "ROOT",
-            "input_tokens": TOKEN_CEILING,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        })
-        await asyncio.sleep(0.05)
-        names = [c[0] for c in emitter.calls]
-        assert "root_token_ceiling_reached" in names
 
     run(body())
 

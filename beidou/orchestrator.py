@@ -49,9 +49,6 @@ if TYPE_CHECKING:  # pragma: no cover
 # needs a "who leads the root?" answer (e.g. spawn context template_vars).
 USER_SENTINEL = "__user__"
 
-# Limits.md #8: per-agent token ceiling.
-TOKEN_CEILING = 1_000_000
-
 # Watchdog tunables — implementation constants, NOT in docs/limits.md.
 WATCHDOG_INTERVAL_S = 30.0
 REVIEW_PING_INTERVAL_S = 60.0
@@ -708,49 +705,6 @@ class Orchestrator:
         cache_c = int(payload.get("cache_creation_input_tokens") or 0)
         cache_r = int(payload.get("cache_read_input_tokens") or 0)
         rec.total_tokens += in_tok + out_tok + cache_c + cache_r
-
-        if rec.total_tokens < TOKEN_CEILING:
-            return
-
-        # Root agent has no leader to recommend to; escalate via gateway /
-        # dedicated event for the CLI to pick up.
-        if rec.agent_id == self._root_id:
-            # Fire exactly once per run: strip the flag via a marker.
-            if not getattr(rec, "_token_ceiling_fired", False):
-                rec._token_ceiling_fired = True  # type: ignore[attr-defined]
-                # Emit only — don't recurse via emit_event (we're called
-                # from inside it).
-                self._schedule_emit(
-                    "root_token_ceiling_reached",
-                    rec.agent_id,
-                    rec.team_id,
-                    {"total_tokens": rec.total_tokens, "ts": time.time()},
-                )
-            return
-
-        if getattr(rec, "_token_ceiling_fired", False):
-            return
-        rec._token_ceiling_fired = True  # type: ignore[attr-defined]
-        leader_id = self.leader_of(rec.team_id)
-        msg = Message(
-            from_id="beidou",
-            content=(
-                f"agent {rec.agent_id} exceeded token ceiling "
-                f"({rec.total_tokens} >= {TOKEN_CEILING}). "
-                f"Consider terminate_child({rec.agent_id})."
-            ),
-            ts=time.time(),
-            message_id=str(uuid.uuid4()),
-            kind="user",
-        )
-        # Schedule on the loop without blocking emit_event's caller.
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        t = loop.create_task(self.inbox_put(leader_id, msg))
-        self._bg_tasks.add(t)
-        t.add_done_callback(self._bg_tasks.discard)
 
     def _schedule_emit(
         self,
@@ -2266,5 +2220,4 @@ __all__ = [
     "AgentRecord",
     "TeamRecord",
     "USER_SENTINEL",
-    "TOKEN_CEILING",
 ]

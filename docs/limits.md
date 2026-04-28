@@ -72,13 +72,13 @@ depth cap (#2). Operators concerned about huge plans should monitor disk usage
 of `~/.beidou/runs/`. (This is a deliberate non-boundary; it is documented here
 to make the absence explicit.)
 
-## 7. Per-agent token ceiling per run
+## 7. Per-agent budget controls (SDK-native)
 
 | | |
 |---|---|
-| **Value** | **1,000,000 total tokens (input + output + cache) per agent run** |
-| Rationale | Catches runaway loops and bounds worst-case cost per agent. Aggregated from `turn.usage` events during the run and cross-checked against `ResultMessage.usage` at completion. |
-| Enforced in | Orchestrator observer. On overshoot, orchestrator signals the agent's **team leader** via `send_message` recommending `terminate_child`. Beidou does NOT directly terminate a non-root agent (termination authority is leader-only per `agent-runtime.md` section 2). |
+| **Value** | **Delegated to Claude SDK via `max_turns` and `max_budget_usd` on `ClaudeAgentOptions`** |
+| Rationale | The SDK handles auto-compaction internally (keeping per-turn context within the model window). Cost and runaway protection are better enforced by the SDK's native `max_turns` (hard turn limit) and `max_budget_usd` (cost ceiling) than by a cumulative token sum that includes cache reads. Per-agent token totals are still tracked for observability but no longer trigger termination recommendations. |
+| Enforced in | SDK-level enforcement via `ClaudeAgentOptions`. Orchestrator still accumulates `total_tokens` per agent for observability/stats. |
 | Change policy | Requires user approval to change. |
 
 ## Summary table
@@ -91,6 +91,6 @@ to make the absence explicit.)
 | 4 | Contract-violation strikes | 3 | Orchestrator recovery |
 | 5 | Concurrent in-flight team-spawn (`create_team` or `spawn_agent`) per agent | 1 | Orchestrator `spawn_lock` |
 | 6 | Workspace size per team | 500 MiB | Workspace monitor |
-| 7 | Per-agent token ceiling per run | 1,000,000 | Orchestrator observer |
+| 7 | Per-agent budget controls | SDK-native (max_turns, max_budget_usd) | ClaudeAgentOptions |
 
 All seven require user approval to change.

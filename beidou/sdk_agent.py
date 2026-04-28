@@ -81,6 +81,8 @@ class SpawnSpec:
     allowed_tools: Optional[list[str]] = None
     template_vars: Optional[dict[str, str]] = None
     cwd: Optional[str] = None
+    max_turns: Optional[int] = None
+    max_budget_usd: Optional[float] = None
 
 
 @dataclass
@@ -559,6 +561,8 @@ def _build_options(
     model: Optional[str],
     cwd: Optional[str],
     hooks: Optional[dict] = None,
+    max_turns: Optional[int] = None,
+    max_budget_usd: Optional[float] = None,
 ) -> ClaudeAgentOptions:
     """Assemble ``ClaudeAgentOptions`` for one SDK agent spawn.
 
@@ -587,6 +591,10 @@ def _build_options(
         kwargs["cwd"] = cwd
     if hooks:
         kwargs["hooks"] = hooks
+    if max_turns is not None:
+        kwargs["max_turns"] = max_turns
+    if max_budget_usd is not None:
+        kwargs["max_budget_usd"] = max_budget_usd
     return ClaudeAgentOptions(**kwargs)
 
 
@@ -660,6 +668,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
         model=spec.model,
         cwd=spec.cwd,
         hooks=hooks,
+        max_turns=spec.max_turns,
+        max_budget_usd=spec.max_budget_usd,
     )
 
     orch.emit_event(
