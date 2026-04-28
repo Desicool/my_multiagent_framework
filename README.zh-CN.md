@@ -68,8 +68,9 @@ spec 改动需要显式批准。**目前没有公开的扩展 API**——见
 - **持久 agent。** 任何 agent 都不会自行退出。完成是一种状态
   (`report_status(state="done")`)，不是进程结束。再分配会作为同一 SDK
   会话的下一个 user-role turn 进来。
-- **self-lead 不变量。** 谁调用 `create_team` 谁就是这个团队的 leader。
-  Leader 是通过 spawn 这个动作获得的，不是按 skill 或角色标签预设。
+- **self-lead 不变量。** 谁调用 `spawn_agent`（或已弃用的 `create_team`）
+  谁就是这个团队的 leader。Leader 是通过 spawn 这个动作获得的，不是按
+  skill 或角色标签预设。
 - **leader-only 终止。** 只有 leader 能终止直属子节点。北斗本身只能终止
   root。级联由运行时按深度优先处理，并配有 watchdog 兜底。
 - **`[REVIEW REQUIRED]` 信封约定。** 子节点报告 done 时，PostToolUse hook
@@ -200,11 +201,12 @@ ANTHROPIC_API_KEY=sk-ant-...
   指定，整次运行共享；*团队* 工作区按 `create_team` 创建、归这个团队
   独占；*root agent* 因为是无团队的（depth=0），单独有一个 scratch
   目录。Spec：[`docs/architecture.md`](docs/architecture.md)。
-- **Primitive（原语）** — 每个 agent 都看得到的七个 MCP 工具：
+- **Primitive（原语）** — 每个 agent 都看得到的 MCP 工具：
   `send_message`、`list_peers`、`ask_user`、`report_status`、
-  `create_team`、`terminate_child`、`list_pending_reviews`。身份
-  (`caller_id`) 在 per-spawn 的 MCP 闭包里绑定，模型无法伪造。Spec：
-  [`docs/tool-surface.md`](docs/tool-surface.md)。
+  `declare_plan`、`remove_plan`、`spawn_agent`、`list_ready`、
+  `terminate_child`、`list_pending_reviews`。已弃用的 `create_team`
+  在过渡期内仍保留。身份 (`caller_id`) 在 per-spawn 的 MCP 闭包里
+  绑定，模型无法伪造。Spec：[`docs/tool-surface.md`](docs/tool-surface.md)。
 - **Skill（技能）** — 一个带 YAML frontmatter（`allowed-tools`、
   `description`、`triggers` 等）和系统提示正文的 `SKILL.md` 文件。
   纯声明式，加新 skill 不需要写 Python。Spec：
@@ -412,6 +414,15 @@ primitive（`answer_question`、`escalate_question`）让 leader 端的动作
 路径（watchdog 升级、root 完成评审）继续走 direct-to-user 的快捷
 通道。`tests/test_question_chain.py` 同时覆盖链路路由和这两个新
 primitive。
+
+**计划即数据 DAG**（`deps` 分支）。已弃用的 `create_team` 正在逐步让位于
+四个新 primitive：`declare_plan`（只校验并持久化任务 DAG，不创建团队
+或 agent）、`spawn_agent`（首次调用时延迟建队，此后每次只为一个任务
+派生对应的 agent）、`remove_plan`（删除当前计划，便于重新规划）和
+`list_ready`（只读地查询当前就绪任务）。这样，规划和执行被明确拆开：
+leader 先把完整 DAG 声明出来，再在每轮审批解锁依赖后，按就绪集逐个
+spawn。计划会持久化到 `~/.beidou/runs/{run_task_id}/plans/`，作为审计
+记录。`create_team` 在过渡期内仍保留，待所有调用方完成迁移后再移除。
 
 ---
 

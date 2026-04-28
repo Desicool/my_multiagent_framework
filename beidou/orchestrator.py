@@ -1,6 +1,6 @@
 """Concrete Orchestrator implementing ``beidou.primitives.core.Orchestrator``.
 
-Owns the agent registry, team graph, per-agent inboxes, per-agent create_team
+Owns the agent registry, team graph, per-agent inboxes, per-agent spawn
 locks, emission of observability events, and the resume-not-terminate
 recovery policy for contract violations.
 
@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import json
 
 from beidou import db as _db
+from beidou import plans as _plans
 from beidou import sdk_agent
 from beidou.events import EventEmitter
 from beidou.primitives.core import (
@@ -93,6 +94,8 @@ class AgentRecord:
     skill_name: str
     model: Optional[str]
     inbox: asyncio.Queue
+    # Field name is `create_team_lock` for backward-compat with test fixtures;
+    # access via the `spawn_lock` property (limits.md #5 rename).
     create_team_lock: asyncio.Lock
     name: str = ""                    # human-readable display name, e.g. "frontend-engineer-a3b2"
     last_status: str = "working"
@@ -110,18 +113,30 @@ class AgentRecord:
     # Watchdog fields (bd issue qj2).
     inflight_tools: int = 0
     idle_nudge_count: int = 0
+    # Plan-task association. Set when this agent was spawned via spawn_for_task;
+    # stays None for the root agent and for legacy create_team-spawned members.
+    plan_task_id: Optional[str] = None
+    plan_id: Optional[str] = None
+
+    @property
+    def spawn_lock(self) -> asyncio.Lock:
+        """Alias for create_team_lock (limits.md #5 rename; field kept for test compat)."""
+        return self.create_team_lock
 
 
 @dataclass
 class TeamRecord:
     team_id: str
     name: str
-    task: str
-    leader_id: str                    # MUST equal caller_id of create_team
+    leader_id: str                    # MUST equal caller_id of create_team / spawn_for_task
     depth: int                        # 0 for root
     member_ids: list[str] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
     parent_team_id: Optional[str] = None
+    # `task` is dead metadata — only written by legacy create_team callers,
+    # never read by the orchestrator. Kept as optional with a default so
+    # existing test fixtures still pass; will be removed in a follow-up commit.
+    task: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -172,11 +187,22 @@ class Orchestrator:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._shutting_down: bool = False
 
-        # Lazily-created per-agent create_team locks.
+        # Lazily-created per-agent spawn locks (limits.md #5: one concurrent
+        # team-spawn per agent; renamed from create_team_lock).
         self._locks: dict[str, asyncio.Lock] = {}
 
         # Question registry — replaces QuestionBroker.
         self._questions: QuestionRegistry = QuestionRegistry()
+
+        # Plan registry.
+        self._plans: dict[str, _plans.Plan] = {}          # plan_id → Plan
+        self._active_plan_by_agent: dict[str, str] = {}   # agent_id → plan_id
+        # Per-agent plan locks: serialise plan mutations independently of spawn.
+        self._plan_locks: dict[str, asyncio.Lock] = {}
+
+        # Populate from disk (hot-reload: picks up plans declared in this OS
+        # lifetime before a dev-server restart).
+        self._load_plans_for_run()
 
         # Per-agent assistant text tracking for PostToolUse hook.
         # Outer key: caller_id. Inner key: tool_use_id -> assistant text from that turn.
@@ -416,8 +442,97 @@ class Orchestrator:
         return self._agents[agent_id].inbox
 
     # ------------------------------------------------------------------
-    # Protocol: team spawn
+    # Protocol: team spawn helpers
     # ------------------------------------------------------------------
+
+    def _provision_team_workspace(self, team_id: str) -> Path:
+        """Allocate workspace dir and provision bundled skills into it."""
+        workspace_path = team_workspace(self.project_workspace, self.task_id, team_id)
+        from beidou.skills.loader import provision_skills
+        provision_skills(workspace_path, skill_root=self.skill_root)
+        return workspace_path
+
+    def _create_team_record(
+        self,
+        team_id: str,
+        name: str,
+        leader_id: str,
+        depth: int,
+        parent_team_id: Optional[str],
+        member_ids: list[str],
+        rules: list[str],
+    ) -> "TeamRecord":
+        """Build and register a TeamRecord. Returns it for convenience."""
+        rec = TeamRecord(
+            team_id=team_id,
+            name=name,
+            leader_id=leader_id,
+            depth=depth,
+            member_ids=member_ids,
+            rules=list(rules),
+            parent_team_id=parent_team_id,
+        )
+        self._teams[team_id] = rec
+        return rec
+
+    def _register_member_and_launch(
+        self,
+        team_id: str,
+        role_dict: dict,
+        per_member_task: str,
+        leader_id: str,
+        workspace_path: Path,
+        team_name: str,
+        *,
+        plan_task_id: Optional[str] = None,
+        plan_id: Optional[str] = None,
+    ) -> tuple[str, "AgentRecord", "SpawnSpec"]:
+        """Create an AgentRecord for one role and build its SpawnSpec.
+
+        Does NOT launch the asyncio task — caller does that after emitting
+        team_created (preserving the team_created-before-agent_spawned ordering
+        invariant). Returns (agent_id, rec, spec).
+        """
+        agent_id = f"ag_{uuid.uuid4().hex[:8]}"
+        role_name = role_dict.get("role", "member")
+        role_desc = role_dict.get("description", "")
+        model = role_dict.get("model") or self._default_model
+        skill_name = role_dict.get("skill") or role_dict.get("template", "")
+        agent_name = self._make_unique_name(role_name)
+        run_task_id = self.agent_task(leader_id)
+
+        rec = AgentRecord(
+            agent_id=agent_id,
+            task_id=run_task_id,
+            team_id=team_id,
+            role=role_name,
+            skill_name=skill_name,
+            model=model,
+            inbox=asyncio.Queue(),
+            create_team_lock=asyncio.Lock(),
+            name=agent_name,
+            plan_task_id=plan_task_id,
+            plan_id=plan_id,
+        )
+        self._register_agent_record(rec)
+
+        spec = SpawnSpec(
+            caller_id=agent_id,
+            skill_name=skill_name,
+            skill_root=self.skill_root,
+            task=per_member_task,
+            model=model,
+            template_vars={
+                "role": role_name,
+                "role_description": role_desc,
+                "team_name": team_name,
+                "workspace_path": str(workspace_path),
+                "project_workspace_path": str(self.project_workspace),
+                "leader_id": leader_id,
+            },
+            cwd=str(workspace_path),
+        )
+        return agent_id, rec, spec
 
     async def spawn_team(
         self,
@@ -432,6 +547,9 @@ class Orchestrator:
         Called from ``create_team`` primitive after fan-out / depth / lock
         checks pass. Self-lead invariant: ``leader_id`` comes in as the
         caller's id from the primitive; we record it verbatim.
+
+        Preserves the team_created-before-agent_spawned event ordering invariant:
+        team_created is emitted synchronously before any run tasks are launched.
         """
         if leader_id not in self._agents:
             raise PrimitiveError("unknown_agent", f"no such leader: {leader_id}")
@@ -459,73 +577,27 @@ class Orchestrator:
                     skill=skill,
                 )
             except Exception:
-                # Loader itself blew up for some non-SkillError reason — let
-                # it propagate; it's not a primitive-visible condition.
                 raise
 
-        # Workspace for the new team.
-        workspace_path = team_workspace(self.project_workspace, self.task_id, team_id)
+        workspace_path = self._provision_team_workspace(team_id)
 
-        # Provision all bundled skills into the team workspace so the SDK's
-        # setting_sources=["project"] discovery can find them via .claude/skills/.
-        from beidou.skills.loader import provision_skills
-        provision_skills(workspace_path, skill_root=self.skill_root)
-
-        task_id = self.agent_task(leader_id)
         for r in roles:
-            agent_id = f"ag_{uuid.uuid4().hex[:8]}"
-            role_name = r.get("role", "member")
-            role_desc = r.get("description", "")
-            model = r.get("model") or self._default_model
-            skill_name = r.get("skill") or r.get("template", "")  # accept deprecated "template" key
-            agent_name = self._make_unique_name(role_name)
-
-            rec = AgentRecord(
-                agent_id=agent_id,
-                task_id=task_id,
-                team_id=team_id,
-                role=role_name,
-                skill_name=skill_name,
-                model=model,
-                inbox=asyncio.Queue(),
-                create_team_lock=asyncio.Lock(),
-                name=agent_name,
+            agent_id, rec, spec = self._register_member_and_launch(
+                team_id, r,
+                per_member_task=self._user_task or task,
+                leader_id=leader_id,
+                workspace_path=workspace_path,
+                team_name=name,
             )
-            self._register_agent_record(rec)
-            members_out.append({"agent_id": agent_id, "role": role_name, "name": agent_name})
-
-            # First user message = originating user task (propagated from
-            # run_root). The team-level `task` arg from create_team is kept on
-            # TeamRecord for orchestrator-internal coordination but is no
-            # longer the agent's first user message — that role belongs to
-            # the actual user request.
-            spec = SpawnSpec(
-                caller_id=agent_id,
-                skill_name=skill_name,
-                skill_root=self.skill_root,
-                task=self._user_task or task,
-                model=model,
-                template_vars={
-                    "role": role_name,
-                    "role_description": role_desc,
-                    "team_name": name,
-                    "workspace_path": str(workspace_path),
-                    "project_workspace_path": str(self.project_workspace),
-                    "leader_id": leader_id,
-                },
-                cwd=str(workspace_path),
-            )
+            members_out.append({"agent_id": agent_id, "role": rec.role, "name": rec.name})
             new_records.append((rec, spec))
 
-        self._teams[team_id] = TeamRecord(
-            team_id=team_id,
-            name=name,
-            task=task,
-            leader_id=leader_id,
-            depth=new_depth,
-            member_ids=[m["agent_id"] for m in members_out],
-            rules=list(rules),
-            parent_team_id=parent_team_id,
+        # Register TeamRecord and emit team_created BEFORE launching runs
+        # so any early LLM call from a member sees the right topology and
+        # event consumers see team_created before any agent_spawned events.
+        self._create_team_record(
+            team_id, name, leader_id, new_depth, parent_team_id,
+            [m["agent_id"] for m in members_out], rules,
         )
 
         self.emit_event(
@@ -541,8 +613,6 @@ class Orchestrator:
             },
         )
 
-        # Launch runs AFTER team registry is populated so any early LLM call
-        # from a member sees the right topology.
         for rec, spec in new_records:
             rec.run_task = asyncio.create_task(
                 self._run_agent_with_policy(rec, spec),
@@ -551,12 +621,23 @@ class Orchestrator:
 
         return {"team_id": team_id, "members": members_out}
 
-    async def create_team_lock(self, agent_id: str) -> asyncio.Lock:
+    async def spawn_lock(self, agent_id: str) -> asyncio.Lock:
+        """Return the per-agent spawn lock (limits.md #5: one concurrent team-spawn per agent).
+
+        The error code ``concurrent_create_team`` is preserved for the existing
+        create_team path; it will be renamed to ``concurrent_spawn`` once
+        primitives are migrated.
+        """
         lock = self._locks.get(agent_id)
         if lock is None:
             lock = asyncio.Lock()
             self._locks[agent_id] = lock
         return lock
+
+    # Back-compat alias so primitives/core.py (which calls orch.create_team_lock)
+    # continues to work until its replacement commit lands.
+    async def create_team_lock(self, agent_id: str) -> asyncio.Lock:
+        return await self.spawn_lock(agent_id)
 
     # ------------------------------------------------------------------
     # Protocol: observability / gateway
@@ -1470,6 +1551,9 @@ class Orchestrator:
                         "ts": time.time(),
                     },
                 )
+                # Clean up any orphan plan this agent owns (leader declared a
+                # plan but never spawned, or all tasks already finished).
+                self._remove_orphan_plan(rec.agent_id)
                 return result
 
             rec.contract_strikes += 1
@@ -1501,6 +1585,11 @@ class Orchestrator:
                         "ts": time.time(),
                     },
                 )
+                # TODO: orphan plan cleanup — contract-escalation path also
+                # removes the agent, but in_flight tasks (children) may still
+                # be running; _remove_orphan_plan handles this safely by
+                # checking in_flight count before removing.
+                self._remove_orphan_plan(rec.agent_id)
                 return result
 
             # Resume with a nudge; keep skill_name / model / etc. intact.
@@ -1568,6 +1657,431 @@ class Orchestrator:
         except PrimitiveError:
             # Leader's inbox full or unknown — best effort.
             pass
+
+    # ------------------------------------------------------------------
+    # Plan lifecycle — internal helpers.
+    # ------------------------------------------------------------------
+
+    def _get_plan_lock(self, agent_id: str) -> asyncio.Lock:
+        """Return (lazily creating) the per-agent plan mutation lock.
+
+        Distinct from the spawn_lock: plan operations (declare, remove, status
+        transitions) are serialised by this lock; spawning is serialised by the
+        spawn_lock. Keeping them separate avoids deadlocks between the two paths.
+        """
+        lock = self._plan_locks.get(agent_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._plan_locks[agent_id] = lock
+        return lock
+
+    def _load_plans_for_run(self) -> None:
+        """Populate _plans and _active_plan_by_agent from disk on startup.
+
+        Hot-reload helper: if the orchestrator process was restarted mid-run
+        (dev-server restart), this re-hydrates in-memory plan state from the
+        persistent plan files. Silently no-ops when the plans directory is absent.
+        """
+        plans_root = Path.home() / ".beidou" / "runs"
+        try:
+            loaded = _plans.load_plans_for_run(self.task_id, plans_root)
+        except Exception:
+            return
+        for plan in loaded.values():
+            self._plans[plan.plan_id] = plan
+            self._active_plan_by_agent[plan.owner_agent_id] = plan.plan_id
+
+    def _agent_owning_task(self, task_id: str) -> Optional["_plans.Plan"]:
+        """Return the Plan that contains task_id, or None."""
+        for plan in self._plans.values():
+            if task_id in plan.tasks:
+                return plan
+        return None
+
+    def _is_leader_of_task(self, caller_id: str, task_id: str) -> bool:
+        """True iff caller_id owns the plan that contains task_id."""
+        plan = self._agent_owning_task(task_id)
+        return plan is not None and plan.owner_agent_id == caller_id
+
+    def _remove_orphan_plan(self, agent_id: str) -> None:
+        """Remove an agent's active plan when it is no longer needed.
+
+        Called from agent-teardown paths. If the plan has in_flight tasks, we
+        leave it — the cascade termination will eventually clear them, triggering
+        mark_task_failed, which calls this again once the count reaches zero.
+        """
+        plan_id = self._active_plan_by_agent.get(agent_id)
+        if plan_id is None:
+            return
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            return
+        in_flight = [t for t in plan.tasks.values() if t.status == "in_flight"]
+        if in_flight:
+            # Leave plan in place; cascade will clean up when tasks exit.
+            return
+        try:
+            _plans.remove_plan_file(plan)
+        except Exception:
+            pass
+        self._plans.pop(plan_id, None)
+        self._active_plan_by_agent.pop(agent_id, None)
+
+    # ------------------------------------------------------------------
+    # Plan lifecycle — public API (called by primitive wrappers).
+    # ------------------------------------------------------------------
+
+    async def register_plan(
+        self,
+        *,
+        caller_id: str,
+        specs: list[dict],
+    ) -> dict:
+        """Validate a task DAG, persist it, and register it as caller's active plan.
+
+        Returns the wire shape documented in the plan spec:
+        ``{plan_id, plan_path, tasks: [{id, role, skill, depends_on, status}, ...]}``.
+
+        Raises ``PrimitiveError`` on validation failures (see plan spec for codes)
+        or if the caller already has an active plan (use remove_active_plan first).
+        """
+        async with self._get_plan_lock(caller_id):
+            if caller_id in self._active_plan_by_agent:
+                raise PrimitiveError(
+                    "plan_already_declared",
+                    f"{caller_id} already has an active plan; call remove_plan first",
+                    caller_id=caller_id,
+                    active_plan_id=self._active_plan_by_agent[caller_id],
+                )
+            try:
+                plan = _plans.create_plan(
+                    owner_agent_id=caller_id,
+                    run_task_id=self.task_id,
+                    specs=specs,
+                )
+            except _plans.EmptyPlanError as exc:
+                raise PrimitiveError("empty_plan", str(exc)) from exc
+            except _plans.DuplicateTaskIdError as exc:
+                raise PrimitiveError("duplicate_task_id", str(exc), task_id=exc.task_id) from exc
+            except _plans.SelfDepError as exc:
+                raise PrimitiveError("self_dep", str(exc), task_id=exc.task_id) from exc
+            except _plans.UnknownDepError as exc:
+                raise PrimitiveError("unknown_dep", str(exc), task_id=exc.task_id, bad_dep=exc.bad_dep) from exc
+            except _plans.CycleDetectedError as exc:
+                raise PrimitiveError("cycle_detected", str(exc), chain=exc.chain) from exc
+            except _plans.PlanValidationError as exc:
+                raise PrimitiveError("plan_invalid", str(exc)) from exc
+
+            self._plans[plan.plan_id] = plan
+            self._active_plan_by_agent[caller_id] = plan.plan_id
+
+        self.emit_event(
+            "plan_declared",
+            {
+                "agent_id": caller_id,
+                "plan_id": plan.plan_id,
+                "task_count": len(plan.tasks),
+                "ts": time.time(),
+            },
+        )
+        return {
+            "plan_id": plan.plan_id,
+            "plan_path": plan.file_path,
+            "tasks": [
+                {
+                    "id": t.id,
+                    "role": t.role,
+                    "skill": t.skill,
+                    "depends_on": t.depends_on,
+                    "status": t.status,
+                }
+                for t in plan.tasks.values()
+            ],
+        }
+
+    async def remove_active_plan(self, *, caller_id: str) -> dict:
+        """Remove caller's active plan so a fresh one can be declared.
+
+        Raises ``plan_in_use`` if any task is in_flight (the leader must
+        approve or force-terminate them first). Done/failed tasks do not block.
+        """
+        async with self._get_plan_lock(caller_id):
+            plan_id = self._active_plan_by_agent.get(caller_id)
+            if plan_id is None:
+                raise PrimitiveError("no_active_plan", f"{caller_id} has no active plan")
+            plan = self._plans[plan_id]
+
+            in_flight = [
+                t for t in plan.tasks.values() if t.status == "in_flight"
+            ]
+            if in_flight:
+                raise PrimitiveError(
+                    "plan_in_use",
+                    f"plan {plan_id} has {len(in_flight)} in-flight task(s); "
+                    "approve or force-terminate them before replanning",
+                    plan_id=plan_id,
+                    in_flight_task_ids=[t.id for t in in_flight],
+                    in_flight_agent_ids=[t.agent_id for t in in_flight if t.agent_id],
+                )
+
+            try:
+                _plans.remove_plan_file(plan)
+            except Exception:
+                pass
+            self._plans.pop(plan_id, None)
+            self._active_plan_by_agent.pop(caller_id, None)
+
+        self.emit_event(
+            "plan_removed",
+            {
+                "agent_id": caller_id,
+                "plan_id": plan_id,
+                "ts": time.time(),
+            },
+        )
+        return {"removed_plan_id": plan_id}
+
+    async def spawn_for_task(self, *, caller_id: str, task_id: str) -> dict:
+        """Spawn an agent for a plan task, lazily creating the team on first call.
+
+        Gates: caller has an active plan; task_id exists; status==ready; team
+        has fewer than 8 in-flight members. On first call, depth is checked and
+        the team is materialised (team_created event emitted before agent launch).
+
+        Returns ``{agent_id, team_id, task_id, remaining_ready, team_created}``.
+        """
+        # Acquire spawn_lock first (limits.md #5: one concurrent spawn per agent).
+        lock = await self.spawn_lock(caller_id)
+        async with lock:
+            plan_id = self._active_plan_by_agent.get(caller_id)
+            if plan_id is None:
+                raise PrimitiveError("no_active_plan", f"{caller_id} has no active plan")
+            plan = self._plans[plan_id]
+
+            if task_id not in plan.tasks:
+                raise PrimitiveError(
+                    "unknown_task",
+                    f"task {task_id!r} is not in the active plan",
+                    task_id=task_id,
+                    plan_id=plan_id,
+                )
+
+            task = plan.tasks[task_id]
+            if task.status != "ready":
+                if task.status == "blocked":
+                    unmet = [d for d in task.depends_on if plan.tasks[d].status != "done"]
+                    raise PrimitiveError(
+                        "task_not_ready",
+                        f"task {task_id!r} is blocked on unmet dependencies",
+                        task_id=task_id,
+                        unmet_deps=unmet,
+                    )
+                raise PrimitiveError(
+                    "task_not_pending",
+                    f"task {task_id!r} has status {task.status!r}",
+                    task_id=task_id,
+                    current_status=task.status,
+                )
+
+            # Determine whether we need to create the team.
+            existing_teams = self.teams_led_by(caller_id)
+            team_was_created = False
+
+            if not existing_teams:
+                # First spawn: depth check + lazy team materialisation.
+                parent_team_id = self.agent_team(caller_id)
+                new_depth = self.team_depth(parent_team_id) + 1
+                # Depth cap is in limits.md #2 (value imported from primitives).
+                from beidou.primitives.core import MAX_DEPTH
+                if new_depth > MAX_DEPTH:
+                    raise PrimitiveError(
+                        "depth_exceeded",
+                        f"spawning would exceed max recursion depth {MAX_DEPTH}",
+                        current_depth=new_depth - 1,
+                        max_depth=MAX_DEPTH,
+                    )
+
+                new_team_id = f"tm_{uuid.uuid4().hex[:8]}"
+                workspace_path = self._provision_team_workspace(new_team_id)
+
+                # Validate skill before allocating agent id.
+                try:
+                    from beidou.skills.loader import load_skill, SkillError
+                    load_skill(self.skill_root, task.skill)
+                except SkillError as exc:
+                    raise PrimitiveError(
+                        "unknown_skill",
+                        f"cannot load skill {task.skill!r}: {exc}",
+                        skill=task.skill,
+                    ) from exc
+
+                agent_id, rec, spec = self._register_member_and_launch(
+                    new_team_id,
+                    {"role": task.role, "skill": task.skill, "description": task.description, "model": task.model},
+                    per_member_task=task.task_text,
+                    leader_id=caller_id,
+                    workspace_path=workspace_path,
+                    team_name=f"{caller_id}-team",
+                    plan_task_id=task_id,
+                    plan_id=plan_id,
+                )
+
+                # Register team BEFORE emitting team_created (event ordering invariant).
+                self._create_team_record(
+                    new_team_id,
+                    f"{caller_id}-team",
+                    caller_id,
+                    new_depth,
+                    parent_team_id,
+                    [agent_id],
+                    [],
+                )
+
+                self.emit_event(
+                    "team_created",
+                    {
+                        "new_team_id": new_team_id,
+                        "team_name": f"{caller_id}-team",
+                        "leader_agent_id": caller_id,
+                        "parent_team_id": parent_team_id,
+                        "depth": new_depth,
+                        "members": [{"agent_id": agent_id, "role": task.role, "name": rec.name}],
+                        "ts": time.time(),
+                    },
+                )
+                team_was_created = True
+
+            else:
+                # Subsequent spawn: append to the existing team.
+                new_team_id = existing_teams[0]
+                team_rec = self._teams[new_team_id]
+
+                # Cap: at most 8 in-flight (live) members per team (limits.md #1).
+                live_members = [
+                    mid for mid in team_rec.member_ids
+                    if mid in self._agents and not self._agents[mid].terminate_consumed
+                ]
+                if len(live_members) >= 8:
+                    raise PrimitiveError(
+                        "team_cap_exceeded",
+                        f"team {new_team_id} already has {len(live_members)} live members (cap: 8)",
+                        live_count=len(live_members),
+                        live_agent_ids=live_members,
+                    )
+
+                try:
+                    from beidou.skills.loader import load_skill, SkillError
+                    load_skill(self.skill_root, task.skill)
+                except SkillError as exc:
+                    raise PrimitiveError(
+                        "unknown_skill",
+                        f"cannot load skill {task.skill!r}: {exc}",
+                        skill=task.skill,
+                    ) from exc
+
+                workspace_path = team_workspace(self.project_workspace, self.task_id, new_team_id)
+                agent_id, rec, spec = self._register_member_and_launch(
+                    new_team_id,
+                    {"role": task.role, "skill": task.skill, "description": task.description, "model": task.model},
+                    per_member_task=task.task_text,
+                    leader_id=caller_id,
+                    workspace_path=workspace_path,
+                    team_name=team_rec.name,
+                    plan_task_id=task_id,
+                    plan_id=plan_id,
+                )
+                team_rec.member_ids.append(agent_id)
+
+            # Transition task to in_flight and persist.
+            async with self._get_plan_lock(caller_id):
+                _plans.mark_status(plan, task_id, "in_flight", agent_id=agent_id)
+
+            # Launch the agent run task.
+            rec.run_task = asyncio.create_task(
+                self._run_agent_with_policy(rec, spec),
+                name=f"agent-{agent_id}",
+            )
+
+        self.emit_event(
+            "task_spawned",
+            {
+                "agent_id": caller_id,
+                "plan_id": plan_id,
+                "task_id": task_id,
+                "spawned_agent_id": agent_id,
+                "team_id": new_team_id,
+                "ts": time.time(),
+            },
+        )
+
+        remaining_ready = [
+            t.id for t in plan.tasks.values() if t.status == "ready" and t.id != task_id
+        ]
+        return {
+            "agent_id": agent_id,
+            "team_id": new_team_id,
+            "task_id": task_id,
+            "remaining_ready": remaining_ready,
+            "team_created": team_was_created,
+        }
+
+    def list_ready_tasks(self, *, caller_id: str) -> dict:
+        """Return the ready task ids in caller's active plan.
+
+        Read-only; no lock required.
+        """
+        plan_id = self._active_plan_by_agent.get(caller_id)
+        if plan_id is None:
+            raise PrimitiveError("no_active_plan", f"{caller_id} has no active plan")
+        plan = self._plans[plan_id]
+        ready = [t.id for t in plan.tasks.values() if t.status == "ready"]
+        return {"ready": ready}
+
+    async def mark_task_done(self, *, task_id: str) -> None:
+        """Transition a plan task to done and unblock dependents.
+
+        Called from terminate_child's success path (non-forced) in primitives/core.py
+        when agent.plan_task_id is not None. Acquires the plan-owner's plan lock.
+
+        NOTE TO NEXT SUBAGENT: The call site in primitives/core.py:terminate_child
+        (around line 752, after inbox_put + emit_event in the success path) still
+        needs to be wired up: ``if target_rec.plan_task_id is not None: await
+        orch.mark_task_done(task_id=target_rec.plan_task_id)``.
+        """
+        plan = self._agent_owning_task(task_id)
+        if plan is None:
+            return
+        async with self._get_plan_lock(plan.owner_agent_id):
+            newly_ready = _plans.mark_status(plan, task_id, "done")
+        self.emit_event(
+            "task_done",
+            {"plan_id": plan.plan_id, "task_id": task_id, "ts": time.time()},
+        )
+        for ready_id in newly_ready:
+            self.emit_event(
+                "task_ready",
+                {"plan_id": plan.plan_id, "task_id": ready_id, "ts": time.time()},
+            )
+
+    async def mark_task_failed(self, *, task_id: str) -> None:
+        """Transition a plan task to failed (force-terminate path).
+
+        Dependents that listed this task remain permanently blocked.
+        Called from terminate_child's force=True path in primitives/core.py.
+
+        NOTE TO NEXT SUBAGENT: Wire in primitives/core.py:terminate_child's
+        force path: ``if target_rec.plan_task_id is not None: await
+        orch.mark_task_failed(task_id=target_rec.plan_task_id)``.
+        """
+        plan = self._agent_owning_task(task_id)
+        if plan is None:
+            return
+        async with self._get_plan_lock(plan.owner_agent_id):
+            _plans.mark_status(plan, task_id, "failed")
+        self.emit_event(
+            "task_failed",
+            {"plan_id": plan.plan_id, "task_id": task_id, "ts": time.time()},
+        )
 
     # ------------------------------------------------------------------
     # High-level entry points.

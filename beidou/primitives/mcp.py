@@ -10,7 +10,11 @@ server. The agent-visible names are (see ``docs/tool-surface.md``):
 * ``mcp__beidou__answer_question``      -- Resolve an inbox question (leaders).
 * ``mcp__beidou__escalate_question``    -- Push an inbox question up the chain.
 * ``mcp__beidou__report_status``        -- State update + observability.
-* ``mcp__beidou__create_team``          -- Spawn a sub-team; caller becomes leader.
+* ``mcp__beidou__declare_plan``         -- Validate DAG + persist plan; no team/agent created.
+* ``mcp__beidou__remove_plan``          -- Remove caller's active plan for replanning.
+* ``mcp__beidou__spawn_agent``          -- Gated spawn from plan; lazily creates team on first call.
+* ``mcp__beidou__list_ready``           -- Read-only: return ready task ids in caller's active plan.
+* ``mcp__beidou__create_team``          -- DEPRECATED. Spawn a sub-team; caller becomes leader.
 * ``mcp__beidou__terminate_child``      -- Post a terminate sentinel to a child.
 * ``mcp__beidou__list_pending_reviews`` -- Read-only list of children awaiting review.
 
@@ -34,11 +38,15 @@ from .core import (
     answer_question,
     ask_user,
     create_team,
+    declare_plan,
     escalate_question,
     list_peers,
     list_pending_reviews,
+    list_ready,
+    remove_plan,
     report_status,
     send_message,
+    spawn_agent,
     terminate_child,
 )
 
@@ -423,6 +431,105 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         return await _wrap("create_team", create_team, args, **kwargs)
 
     @tool(
+        "declare_plan",
+        "Declare a plan as a DAG of tasks. Validates structure, persists to disk, "
+        "and returns the task list with initial ready/blocked statuses. Does NOT "
+        "create a team or spawn any agents — use spawn_agent for that. "
+        "Call remove_plan first if you already have an active plan.",
+        {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "description": (
+                        "List of task spec objects. Each must include: "
+                        "id (unique string), role (display name), skill (skill name), "
+                        "task (first message the spawned agent receives). "
+                        "Optional: description, model, depends_on (list of task ids)."
+                    ),
+                    "items": {"type": "object"},
+                },
+            },
+            "required": ["tasks"],
+        },
+    )
+    async def _declare_plan(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "declare_plan",
+            declare_plan,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+            tasks=args.get("tasks", []),
+        )
+
+    @tool(
+        "remove_plan",
+        "Remove your active plan so you can declare a new one. Renames the plan "
+        "file to .removed.json (audit history preserved). Fails with plan_in_use "
+        "if any task is still in_flight — approve or force-terminate those agents first.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    )
+    async def _remove_plan(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "remove_plan",
+            remove_plan,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+        )
+
+    @tool(
+        "spawn_agent",
+        "Spawn an agent for a ready task in your active plan. The first call "
+        "lazily creates the team (team_created=true in the response). Subsequent "
+        "calls append members to the same team. The task must be in 'ready' status; "
+        "blocked/in_flight/done/failed tasks are rejected.",
+        {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task id from your declared plan to spawn an agent for.",
+                },
+            },
+            "required": ["task_id"],
+        },
+    )
+    async def _spawn_agent(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "spawn_agent",
+            spawn_agent,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+            task_id=args["task_id"],
+        )
+
+    @tool(
+        "list_ready",
+        "Return the list of ready task ids in your active plan. Useful after "
+        "approving agents to see which tasks have been unblocked.",
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    )
+    async def _list_ready(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap(
+            "list_ready",
+            list_ready,
+            args,
+            orch=orch,
+            caller_id=caller_id,
+        )
+
+    @tool(
         "terminate_child",
         "Post a terminate sentinel to a child agent's inbox. By default, only "
         "valid when the child has called report_status(state='done') (the "
@@ -496,6 +603,10 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             _escalate_question,
             _report_status,
             _create_team,
+            _declare_plan,
+            _remove_plan,
+            _spawn_agent,
+            _list_ready,
             _terminate_child,
             _list_pending_reviews,
         ],

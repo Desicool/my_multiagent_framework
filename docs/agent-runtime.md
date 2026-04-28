@@ -39,15 +39,16 @@ the user. Non-root termination is exclusively leader-driven via
 
 ### Delegation is a right, not a role
 
-Any agent MAY call `create_team` if its skill exposes the tool, regardless of
-whether that agent was spawned as a "worker" or an "orchestrator". Leadership
-is acquired by spawning — the moment an agent calls `create_team`, it becomes
-the leader of that team. Leadership is never pre-assigned by skill or role
-label.
+Any agent MAY call `declare_plan` + `spawn_agent` (or the deprecated
+`create_team`) if its skill exposes those tools, regardless of whether that
+agent was spawned as a "worker" or an "orchestrator". Leadership is acquired by
+spawning — the moment an agent calls `spawn_agent` (or `create_team`), it
+becomes the leader of that team. Leadership is never pre-assigned by skill or
+role label.
 
-The root agent has the same right: it may proceed solo, or it may call
-`create_team` to spawn a team and immediately become that team's leader. The
-only invariant is the self-lead rule (see `orchestration.md`).
+The root agent has the same right: it may proceed solo, or it may declare a
+plan and spawn a team, immediately becoming that team's leader. The only
+invariant is the self-lead rule (see `orchestration.md`).
 
 ## 2.5 Disambiguation duty
 
@@ -121,24 +122,36 @@ The per-turn `prompt=` argument carries only the task (first turn) or
 incoming leader/peer messages (subsequent turns). Skill instructions never
 appear in the user message.
 
-**First-user-message contract.** Every spawned agent — root or team member —
-receives the originating user task as its first user-role message. This is
-captured once at `Orchestrator.run_root(root_task=...)` time as
-`Orchestrator._user_task` and propagated unchanged into every subsequent
-`spawn_team` call's `SpawnSpec.task`. The team-level `task` argument the
-caller passes to `create_team(task=...)` is recorded on the `TeamRecord`
-for orchestrator-internal coordination but is **not** the agent's first
-user message — that role belongs to the actual user request, so a child
-member always knows what the user originally asked for.
+**First-user-message contract.** Every spawned agent's first user message
+depends on how it was spawned:
 
-**`{role_description}` carries only the role-specific scope.** Team-member
-spawns substitute `{role_description}` with `roles[i].description` from
-the `create_team` call (e.g. "Write requirements.md to the team workspace").
-The root agent has no role-specific scope (its scope IS the user task), so
-its `{role_description}` substitutes to the empty string. Worker skills
-that surface the placeholder in their body get a clean role-description
-section; the user task arrives separately as a user message and is never
-duplicated into the system prompt.
+- **Root agent**: always receives the originating user task, captured once at
+  `Orchestrator.run_root(root_task=...)` time as `Orchestrator._user_task`.
+- **Members spawned via `create_team` (legacy path)**: receive the originating
+  user task (`Orchestrator._user_task`) propagated unchanged. The team-level
+  `task` argument passed to `create_team(task=...)` is recorded on the
+  `TeamRecord` for orchestrator-internal coordination but is **not** the
+  agent's first user message.
+- **Members spawned via `spawn_agent` (new plan flow)**: receive the per-task
+  `task` text from their `declare_plan` entry as their first user message. They
+  do **not** receive the originating user task auto-prepended. Leaders are
+  responsible for making each `task` field self-contained, including any context
+  the worker needs to ground its work.
+
+> **Leader skills MUST treat each `task` field as self-contained because the
+> spawned agent will not see the original user request — only what the leader
+> wrote.**
+
+**`{role_description}` carries only the role-specific scope.** For
+`create_team`-born members, `{role_description}` is substituted with
+`roles[i].description` from the `create_team` call (e.g. "Write
+requirements.md to the team workspace"). For `spawn_agent`-born members,
+`{role_description}` is substituted with the per-task `description` field from
+the plan entry (defaults to `""`). The root agent has no role-specific scope
+(its scope IS the user task), so its `{role_description}` substitutes to the
+empty string. Worker skills that surface the placeholder in their body get a
+clean role-description section; the user task arrives separately as a user
+message and is never duplicated into the system prompt.
 
 ### Completion reporting
 
@@ -284,9 +297,9 @@ For every `AgentRecord` with `last_progress_ts` older than `IDLE_NUDGE_S`
 - `idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION` — already escalated.
 
 The nudge body names four concrete actions the agent can take (call
-`terminate_child`/`send_message` on a pending child, call `create_team` for
-the next phase, call `report_status(done)` if finished, or call `ask_user`
-if blocked). After the nudge is delivered, `last_progress_ts` is reset to
+`terminate_child`/`send_message` on a pending child, call `spawn_agent` for
+the next ready task or `declare_plan` + `spawn_agent` to start a new phase,
+call `report_status(done)` if finished, or call `ask_user` if blocked). After the nudge is delivered, `last_progress_ts` is reset to
 now so the next threshold counts from this ping.
 
 Same 3-strike escalation as Pass A: nudge #1, nudge #2 (with escalation

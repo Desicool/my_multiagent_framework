@@ -21,7 +21,11 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 | `answer_question` | Agent-Beidou | No |
 | `escalate_question` | Agent-Beidou | No |
 | `report_status` | Agent-Beidou | No |
-| `create_team` | Agent-Beidou | No |
+| `create_team` (deprecated) | Agent-Beidou | No |
+| `declare_plan` | Agent-Beidou | No |
+| `remove_plan` | Agent-Beidou | No |
+| `spawn_agent` | Agent-Beidou | No |
+| `list_ready` | Agent-Beidou | No |
 | `terminate_child` | Agent-Beidou | No |
 | `list_pending_reviews` | Agent-Beidou | No |
 
@@ -249,6 +253,10 @@ trigger liveness evaluation.
 
 ## create_team
 
+> **Deprecated.** Use `declare_plan` + `spawn_agent` for ordered work; this
+> primitive will be removed once all callers migrate. Self-contained semantics
+> are preserved during the transition.
+
 **Kind:** Agent-Beidou. Spawns a sub-team. The caller becomes its leader by
 construction.
 
@@ -288,6 +296,185 @@ construction.
   `leader_override_attempted`.
 - Fan-out cap, recursion depth cap: see `limits.md`.
 - One in-flight `create_team` per caller at a time (`limits.md`).
+
+---
+
+## declare_plan
+
+**Kind:** Agent-Beidou. Pure data primitive — validates a task DAG, computes
+initial readiness, persists the plan to disk, and returns rich introspection.
+**No team, workspace, or agent is created — pure data primitive.** The only
+side effect on registry state is setting the caller's `active_plan_id` to the
+newly persisted plan.
+
+**Input schema**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `tasks` | list[TaskSpec] | yes | One entry per node in the DAG. See below. |
+
+**Each `tasks[i]` (TaskSpec)**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | string | yes | Caller-supplied task id, unique within this plan. Join key for `spawn_agent` and dependency refs. |
+| `role` | string | yes | Display name for the agent that will run this task. |
+| `skill` | string | yes | Skill name. Existence check is performed at `declare_plan` time (so a typo is caught early), but the skill is **not loaded** here — load happens on `spawn_agent`. |
+| `task` | string | yes | First user message the spawned agent will receive. Must be self-contained; the spawned agent will not see the originating user request. |
+| `description` | string | no | Substituted into `{role_description}`. Defaults to `""`. |
+| `model` | string | no | Per-task model override. |
+| `depends_on` | list[string] | no | Task ids in this same plan that must reach `done` before this task is spawnable. Defaults to `[]`. |
+
+**Output schema**
+```
+{
+  "plan_id": "<id>",
+  "plan_path": "<absolute path to the persisted plan file>",
+  "tasks": [
+    {"id": "t1", "role": "...", "skill": "...", "depends_on": [], "status": "ready"},
+    {"id": "t2", "role": "...", "skill": "...", "depends_on": ["t1"], "status": "blocked"},
+    ...
+  ]
+}
+```
+
+Readiness is derivable from `tasks[*].status` and `depends_on`. Use `list_ready`
+to query the current ready set after approvals shift it.
+
+**Error cases**
+
+Validation runs before the plan is persisted. On error, nothing is written and
+`active_plan_id` is unchanged.
+
+- `cycle_detected` — returns the offending id chain.
+- `unknown_dep` — a `depends_on` entry does not match any declared id.
+- `duplicate_task_id` — two tasks share an `id`.
+- `self_dep` — a task lists itself in `depends_on`.
+- `empty_plan` — `tasks` is empty.
+- `unknown_skill` — `skill` does not resolve to a loadable SKILL.md (existence
+  check; not full load).
+- `plan_already_declared` — caller already has an active plan. Use `remove_plan`
+  first if a replan is intended.
+
+**Validation rules**
+- Existence check on each `skill` field is performed at declare time; full load
+  is deferred to `spawn_agent`.
+- The plan takes a separate per-agent `plan_lock` (not the spawn lock), so
+  `declare_plan` and `remove_plan` never block `spawn_agent` calls.
+- Atomicity: the plan file is written first, then `active_plan_id` is updated
+  in memory. If the file write fails, no in-memory update occurs.
+
+---
+
+## remove_plan
+
+**Kind:** Agent-Beidou. Removes the caller's active plan so a fresh one can be
+declared. Used when the user changes their mind mid-flight. Does not touch the
+team or workspace — the team is a runtime container; plans come and go on top
+of it.
+
+**Input schema**
+
+No input fields.
+
+**Output schema**
+```
+{ "removed_plan_id": "<id>" }
+```
+
+**Error cases**
+- `no_active_plan` — caller has no active plan.
+- `plan_in_use` — at least one task in the active plan is `in_flight`. Returns
+  the list of `in_flight` task ids and their `agent_id`s. The leader must
+  approve or force-terminate those agents before replanning. Done/failed tasks
+  do not block removal.
+
+**Validation rules**
+- `remove_plan` is allowed when the plan has no `in_flight` tasks (any
+  combination of `ready`/`blocked`/`done`/`failed` is fine).
+- The plan file is renamed to `{plan_id}.removed.json` on disk; an audit event
+  preserves the history. Agents already approved under the old plan stay in the
+  team's history but are no longer tracked in any plan.
+
+---
+
+## spawn_agent
+
+**Kind:** Agent-Beidou. Execution primitive. Spawns a single agent for the
+given `task_id` from the caller's active plan. On the **first call** by this
+leader (when the leader has no team yet), this primitive **lazily creates the
+team**: allocates a `team_id`, provisions the workspace, and registers the
+`TeamRecord` with the caller as leader (self-lead invariant). Subsequent calls
+append members to the same team.
+
+**Input schema**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `task_id` | string | yes | Id of a task in the caller's active plan. Must be `ready` (not `blocked`, `in_flight`, `done`, or `failed`). |
+
+**Output schema**
+```
+{
+  "agent_id": "...",
+  "team_id": "...",
+  "task_id": "...",
+  "remaining_ready": ["<task_id>", ...],
+  "team_created": true | false
+}
+```
+
+`team_created` is `true` only on the first `spawn_agent` call by this leader
+(when the team was materialized). `remaining_ready` lists task ids that are
+currently ready to spawn (excluding the just-spawned task).
+
+**Error cases**
+- `no_active_plan` — caller has no active plan.
+- `unknown_task` — `task_id` is not in the active plan.
+- `task_not_ready` — task is `blocked`; returns `unmet_deps: [...]`.
+- `task_not_pending` — task is `in_flight`, `done`, or `failed`. Returns
+  current status.
+- `team_cap_exceeded` — 8 in-flight members already exist on this team.
+  Returns `live_count` and the live `agent_id`s the leader could approve to
+  free a slot.
+- `depth_exceeded` — checked here (not at `declare_plan` time; declare is a
+  pure-data primitive that does not know about the runtime team graph). If the
+  caller's team-depth-to-be exceeds the cap, the first `spawn_agent` errors
+  out; the plan stays declared but unspawnable. The leader can `remove_plan`
+  and rethink at a shallower level.
+- `unknown_skill` — full skill load failed (the existence check at
+  `declare_plan` was satisfied but loading the SKILL.md content errored).
+- `concurrent_spawn` — caller already holds the per-agent spawn lock (one
+  in-flight `spawn_agent` per agent at a time).
+
+**Validation rules**
+- **Self-lead invariant**: `leader_id = caller_id` is injected by Beidou; it
+  cannot be supplied or overridden in the tool input.
+- Cap applies to the team, not the plan — in-flight members from a previous
+  (removed) plan still count toward the cap until they transition out via
+  `terminate_child`.
+- `team_created` and `agent_spawned` events are emitted in order: `team_created`
+  fires synchronously before the first `agent_spawned` for that team.
+
+---
+
+## list_ready
+
+**Kind:** Agent-Beidou. Read-only query. Returns the set of task ids in the
+caller's active plan that are currently in `ready` state (dependencies all
+`done`). Useful after a few `terminate_child` approvals shift the readiness set.
+
+**Input schema**
+
+No input fields.
+
+**Output schema**
+```
+{ "ready": ["<task_id>", ...] }
+```
+
+**Error cases**
+- `no_active_plan` — caller has no active plan.
+
+**Validation rules**
+- Read-only: no state is mutated. Safe to call as many times as needed.
 
 ---
 

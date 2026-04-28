@@ -20,6 +20,7 @@
 
   let submitting    = $state(false);
   let error         = $state<string | null>(null);
+  let collapsed     = $state(false);
 
   let primary    = $derived(questions.list[0] ?? null);
   let rest       = $derived(questions.list.slice(1));
@@ -39,6 +40,7 @@
     multiChecked  = {};
     optionText    = {};
     error         = null;
+    collapsed     = false;
   });
 
   // Validation: every sub-question must be fully answered.
@@ -157,9 +159,24 @@
           onclick={(e) => { e.stopPropagation(); onPickFromList(primary.asker_agent_id); }}
         >{askerLabel(primary.asker_agent_id)}</button>
       </span>
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        aria-controls="question-banner-body"
+        class="ml-1 text-pending/60 hover:text-pending text-xs leading-none shrink-0"
+        onclick={(e) => { e.stopPropagation(); collapsed = !collapsed; }}
+      >{collapsed ? '▶' : '▼'}</button>
+      {#if collapsed && primary.questions.length > 0}
+        <span class="ml-2 text-xs text-pending/50 truncate">
+          {primary.questions[0].question.length > 80
+            ? primary.questions[0].question.slice(0, 80) + '…'
+            : primary.questions[0].question}
+        </span>
+      {/if}
     </div>
 
-    <!-- Body -->
+    <!-- use class:hidden (display:none) rather than {#if} to preserve form state across collapse cycles -->
+    <div id="question-banner-body" class:hidden={collapsed}>
     <div class="px-4 py-3">
       {#if primary.context_hint}
         <p class="text-xs text-pending/70 italic mb-3">{primary.context_hint}</p>
@@ -310,5 +327,6 @@
         </ul>
       </div>
     {/if}
+    </div>
   </section>
 {/if}

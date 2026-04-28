@@ -3,15 +3,19 @@ name: junior_engineer
 version: 1.1.0
 description: |
   Implements exactly ONE task closure defined in tasks.md. Uses a fast small
-  model. Run one invocation per task and parallelise via create_team for
-  multiple tasks. Use AFTER software_architect produces tasks.md.
+  model. Run one invocation per task and parallelise via declare_plan + spawn_agent
+  for multiple tasks. Use AFTER software_architect produces tasks.md.
 allowed-tools:
   - bash
   - file_read
   - file_write
   - send_message
   - report_status
-  - create_team
+  - declare_plan
+  - remove_plan
+  - spawn_agent
+  - list_ready
+  - create_team          # transitional fallback only; prefer declare_plan + spawn_agent
   - terminate_child
   - list_peers
   - list_pending_reviews
@@ -94,31 +98,14 @@ When DONE.md is written, follow the Completion handoff sequence below, then end 
 - You need a distinct skill domain you don't have.
 - The task exceeds what one agent can reason about in a single context.
 
-**Each teammate gets a UNIQUE description.** When you call `create_team` with N members to handle N parts of a big task, every role entry must have a *different* `description` capturing that member's specific sub-task. Otherwise all N will redundantly implement the whole thing in parallel — the most expensive way to get one wrong answer. The primitive will reject duplicate `(skill, description)` tuples for `len(members) > 1` unless you explicitly pass `consensus=true` (the rare "N parallel attempts at the same prompt for voting" case).
+**When you delegate, write distinct task definitions per child.** If you decide your assigned task warrants breaking down further, call `mcp__beidou__declare_plan` with one entry per subtask — each with its own `task` field describing what that specific agent must produce, plus optional `description` for `{role_description}` substitution. Each spawned worker only sees its own `task` text as the first user message; the originating user request is not auto-prepended, so include any context the worker needs (e.g. paths to upstream artifacts under {project_workspace_path}). Most worker skills won't delegate further — leaf-level tasks should just be done inline.
 
-**Worked example:**
-
-```
-# WRONG — all juniors implement the same thing
-create_team("auth-impl", roles=[
-  {role: "j1", skill: "junior_engineer", description: "Build the auth feature"},
-  {role: "j2", skill: "junior_engineer", description: "Build the auth feature"},
-])
-
-# RIGHT — each junior owns a distinct slice
-create_team("auth-impl", roles=[
-  {role: "oauth",   skill: "junior_engineer", description: "Implement OAuth provider integration in auth/oauth.py — see SPEC.md §3."},
-  {role: "session", skill: "junior_engineer", description: "Implement session storage in auth/session.py — see SPEC.md §4."},
-  {role: "login",   skill: "junior_engineer", description: "Implement /api/login endpoint — see SPEC.md §5."},
-])
-```
-
-**Leader duties acquired on first `create_team`:**
+**Leader duties acquired on first `spawn_agent`:**
 - Inspect every child's `[REVIEW REQUIRED]` envelope.
 - Resolve via `terminate_child` (approve) or `send_message` (rework).
 - Do NOT advance your own work while any child has an unresolved review.
 - When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, reason, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
-- Spawned teammates are simple agents and may themselves call `create_team`. Depth and fan-out are bounded by `docs/limits.md`.
+- Spawned teammates are simple agents and may themselves delegate further via `declare_plan`. Depth and fan-out are bounded by `docs/limits.md`.
 
 See `beidou/skills/coding/orchestrator/SKILL.md` for the canonical review-gate pattern (the `## Reviewing a child's completion request` section there is the source pattern; reuse its rules).
 
