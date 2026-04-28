@@ -136,7 +136,12 @@ depends on how it was spawned:
   `task` text from their `declare_plan` entry as their first user message. They
   do **not** receive the originating user task auto-prepended. Leaders are
   responsible for making each `task` field self-contained, including any context
-  the worker needs to ground its work.
+  the worker needs to ground its work. Before the task text, the runtime
+  **prepends** a `[TASK ASSIGNMENT]...[/TASK ASSIGNMENT]` header containing
+  `plan_task_id` (the task's id from `declare_plan`) and `artifacts_path`
+  (`{project_workspace_path}/artifacts/{plan_task_id}`). This header is injected
+  into the user message — not the system prompt — to preserve KV cache on the
+  skill body. `create_team`-born agents do not receive this header.
 
 > **Leader skills MUST treat each `task` field as self-contained because the
 > spawned agent will not see the original user request — only what the leader

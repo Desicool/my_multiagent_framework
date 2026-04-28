@@ -4,6 +4,7 @@ Coverage: task_not_ready (unmet_deps), task_not_pending after spawn,
 team_cap_exceeded at 9th in-flight, terminate_child unblocks dependents,
 force-terminate marks failed and propagates blocking, full DAG runthrough
 (5 tasks, 3 levels). Also: team_created:true only on the first spawn.
+Also: [TASK ASSIGNMENT] header in _register_member_and_launch.
 
 The SDK launch is stubbed out via monkeypatching _run_agent_with_policy
 so tests don't connect to the Anthropic API. load_skill and provision_skills
@@ -381,3 +382,125 @@ def test_spawn_agent_return_shape(tmp_path: Path) -> None:
             assert "team_created" in result
 
         run(body())
+
+
+# ---------------------------------------------------------------------------
+# [TASK ASSIGNMENT] header in _register_member_and_launch.
+# ---------------------------------------------------------------------------
+
+
+def _seed_leader_with_team(o: Orchestrator, tmp_path: Path) -> tuple[str, str, Path]:
+    """Register a leader + team so _register_member_and_launch can run.
+
+    Returns (leader_id, team_id, workspace_path).
+    """
+    from beidou.orchestrator import TeamRecord
+
+    leader_id = _seed_leader(o)
+    team_id = "tm_test"
+    workspace_path = tmp_path / "ws"
+    workspace_path.mkdir(exist_ok=True)
+    o._teams[team_id] = TeamRecord(
+        team_id=team_id,
+        name="test-team",
+        leader_id=leader_id,
+        depth=1,
+        member_ids=[],
+    )
+    return leader_id, team_id, workspace_path
+
+
+def test_task_assignment_header_present_when_plan_task_id_set(tmp_path: Path) -> None:
+    """When plan_task_id is supplied, spec.task must begin with the [TASK ASSIGNMENT] block."""
+    o = _make_orchestrator(tmp_path)
+    leader_id, team_id, workspace_path = _seed_leader_with_team(o, tmp_path)
+
+    plan_task_id = "t_alpha"
+    role_dict = {"role": "worker", "skill": "engineer", "description": "build it"}
+    _agent_id, _rec, spec = o._register_member_and_launch(
+        team_id,
+        role_dict,
+        per_member_task="do the work",
+        leader_id=leader_id,
+        workspace_path=workspace_path,
+        team_name="test-team",
+        plan_task_id=plan_task_id,
+    )
+
+    expected_artifacts = str(o.project_workspace / "artifacts" / plan_task_id)
+    expected_header = (
+        "[TASK ASSIGNMENT]\n"
+        f"plan_task_id: {plan_task_id}\n"
+        f"artifacts_path: {expected_artifacts}\n"
+        "[/TASK ASSIGNMENT]\n\n"
+    )
+    assert spec.task.startswith(expected_header), (
+        f"spec.task does not start with expected header.\n"
+        f"Expected prefix:\n{expected_header!r}\n\nActual spec.task:\n{spec.task!r}"
+    )
+    # Original task text must still be present after the header.
+    assert "do the work" in spec.task
+
+
+def test_task_assignment_header_absent_when_no_plan_task_id(tmp_path: Path) -> None:
+    """When plan_task_id is None, spec.task must NOT contain [TASK ASSIGNMENT]."""
+    o = _make_orchestrator(tmp_path)
+    leader_id, team_id, workspace_path = _seed_leader_with_team(o, tmp_path)
+
+    role_dict = {"role": "worker", "skill": "engineer", "description": "build it"}
+    _agent_id, _rec, spec = o._register_member_and_launch(
+        team_id,
+        role_dict,
+        per_member_task="do the work",
+        leader_id=leader_id,
+        workspace_path=workspace_path,
+        team_name="test-team",
+        plan_task_id=None,
+    )
+
+    assert "[TASK ASSIGNMENT]" not in spec.task
+    assert spec.task == "do the work"
+
+
+def test_task_assignment_different_ids_produce_different_artifacts_paths(tmp_path: Path) -> None:
+    """Two spawns with different plan_task_ids must yield different artifacts_path values."""
+    o = _make_orchestrator(tmp_path)
+    leader_id, team_id, workspace_path = _seed_leader_with_team(o, tmp_path)
+
+    role_dict = {"role": "worker", "skill": "engineer", "description": "build it"}
+
+    _id1, _r1, spec1 = o._register_member_and_launch(
+        team_id,
+        role_dict,
+        per_member_task="task A",
+        leader_id=leader_id,
+        workspace_path=workspace_path,
+        team_name="test-team",
+        plan_task_id="t_first",
+    )
+    _id2, _r2, spec2 = o._register_member_and_launch(
+        team_id,
+        role_dict,
+        per_member_task="task B",
+        leader_id=leader_id,
+        workspace_path=workspace_path,
+        team_name="test-team",
+        plan_task_id="t_second",
+    )
+
+    # Extract artifacts_path lines from both specs.
+    def _artifacts_line(task_text: str) -> str:
+        for line in task_text.splitlines():
+            if line.startswith("artifacts_path:"):
+                return line
+        return ""
+
+    path1 = _artifacts_line(spec1.task)
+    path2 = _artifacts_line(spec2.task)
+
+    assert path1 != path2, (
+        f"Expected different artifacts_path values for different plan_task_ids,\n"
+        f"got identical: {path1!r}"
+    )
+    assert "t_first" in path1
+    assert "t_second" in path2

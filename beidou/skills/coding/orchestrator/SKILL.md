@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-version: 1.1.0
+version: 1.2.0
 description: |
   Completes software coding tasks end-to-end. Runs five sequential phases:
   requirements clarification → architecture design → implementation → testing
@@ -63,7 +63,7 @@ declare_plan(tasks=[
    depends_on: ["pm"]},
 
   {id: "impl",     role: "implementation-lead", skill: "junior_engineer",
-   task: "Read {project_workspace_path}/SPEC.md and {project_workspace_path}/tasks.md. Implement all tasks defined in tasks.md. Each task goes under {project_workspace_path}/artifacts/{task-id}/. Write {project_workspace_path}/artifacts/{task-id}/DONE.md when verified.",
+   task: "Read {project_workspace_path}/SPEC.md and {project_workspace_path}/tasks.md. Implement all tasks defined in tasks.md. Each spawned worker automatically receives a [TASK ASSIGNMENT] header with its plan_task_id and artifacts_path. Your final [REVIEW REQUIRED] envelope must list every task-id from tasks.md and confirm each has a DONE.md.",
    model: "claude-haiku-4-5-20251001",
    depends_on: ["arch"]},
 
@@ -98,7 +98,7 @@ Each turn, after receiving `[REVIEW REQUIRED]` from a child:
 Gates per phase:
 - **pm gate**: `{project_workspace_path}/requirements.md` must exist and be non-empty.
 - **arch gate**: `{project_workspace_path}/SPEC.md` and `{project_workspace_path}/tasks.md` must both exist.
-- **impl gate**: the implementation-lead's own sub-plan tracks DONE.md per task; verify at least one artifact exists in `{project_workspace_path}/artifacts/`.
+- **impl gate**: the implementation-lead has reported done. The runtime enforces all plan tasks are complete before allowing report_status(state="done"), so if the lead's [REVIEW REQUIRED] arrives, its plan DAG is fully resolved. Verify the envelope lists all deliverables from tasks.md.
 - **test gate**: `{project_workspace_path}/test_report.md` must exist.
 - **deploy gate**: `{project_workspace_path}/deploy.md` must exist.
 - **qa gate**: `{project_workspace_path}/qa_report.md` must exist before checking verdict.

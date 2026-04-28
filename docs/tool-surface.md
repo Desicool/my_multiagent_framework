@@ -453,6 +453,13 @@ currently ready to spawn (excluding the just-spawned task).
 - `team_created` and `agent_spawned` events are emitted in order: `team_created`
   fires synchronously before the first `agent_spawned` for that team.
 
+**Task assignment injection.** When `plan_task_id` is set on the spawned agent,
+the runtime prepends a `[TASK ASSIGNMENT]...[/TASK ASSIGNMENT]` block to the
+agent's first user message (before the `task` text from `declare_plan`). The
+block contains `plan_task_id` and `artifacts_path`
+(`{project_workspace_path}/artifacts/{plan_task_id}`). This is injected in the
+user message — not the system prompt — to preserve KV cache on the skill body.
+
 ---
 
 ## list_ready

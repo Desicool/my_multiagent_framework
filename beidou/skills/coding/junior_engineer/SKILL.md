@@ -1,6 +1,6 @@
 ---
 name: junior_engineer
-version: 1.1.0
+version: 1.2.0
 description: |
   Implements exactly ONE task closure defined in tasks.md. Uses a fast small
   model. Run one invocation per task and parallelise via declare_plan + spawn_agent
@@ -73,13 +73,15 @@ bounce a redundant escalation.
 
 1. Read SPEC.md for overall context and design contracts.
 2. Read tasks.md and locate YOUR specific task (you will be told which one).
-3. Implement it. Write ALL output files to `{project_workspace_path}/artifacts/{task-id}/`.
+3. Your first message includes a `[TASK ASSIGNMENT]` header with your
+   `plan_task_id` and `artifacts_path`. Write ALL output files to your
+   `artifacts_path` directory.
 4. Run the Verify command from your task entry. If the command exits non-zero,
    diagnose the failure, fix the code, and re-run. Repeat until it passes.
-5. Do not modify files outside `{project_workspace_path}/artifacts/{task-id}/`.
-6. Once the verify command exits 0, write `{project_workspace_path}/artifacts/{task-id}/DONE.md`:
+5. Do not modify files outside your `artifacts_path`.
+6. Once the verify command exits 0, write `<your artifacts_path>/DONE.md`:
 
-   # Done: {task-id}
+   # Done: <your plan_task_id>
    ## What was produced
    - list of files created
    ## Verify result

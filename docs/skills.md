@@ -47,6 +47,23 @@ Before being passed to the SDK, the loader substitutes these tokens:
 Substitution is literal string replace on `{key}` -> value. Missing keys
 leave the token untouched (a warning is logged, not an error).
 
+### Task assignment injection
+
+When an agent is spawned via `spawn_agent` with a `plan_task_id`, the runtime
+prepends a delimited `[TASK ASSIGNMENT]...[/TASK ASSIGNMENT]` block to the
+agent's first user message (the task text from `declare_plan`). This is NOT
+part of the system prompt — it preserves cross-agent KV cache on the skill body.
+
+| Field | Value |
+|---|---|
+| `plan_task_id` | The task ID from `declare_plan` (e.g., `task-1`) |
+| `artifacts_path` | `{project_workspace_path}/artifacts/{plan_task_id}` |
+
+Agents should write output to their `artifacts_path` and reference their
+`plan_task_id` when reporting completion. The header is only present for
+plan-spawned agents; agents spawned via the deprecated `create_team` do not
+receive it.
+
 ## Loader behaviour (`beidou/skills/loader.py`)
 
 The loader has three distinct responsibilities:

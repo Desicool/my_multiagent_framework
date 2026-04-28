@@ -513,6 +513,16 @@ class Orchestrator:
         )
         self._register_agent_record(rec)
 
+        if plan_task_id:
+            _artifacts = str(Path(self.project_workspace) / "artifacts" / plan_task_id)
+            _header = (
+                "[TASK ASSIGNMENT]\n"
+                f"plan_task_id: {plan_task_id}\n"
+                f"artifacts_path: {_artifacts}\n"
+                "[/TASK ASSIGNMENT]\n\n"
+            )
+            per_member_task = _header + per_member_task
+
         spec = SpawnSpec(
             caller_id=agent_id,
             skill_name=skill_name,
