@@ -49,8 +49,8 @@ The originating user task arrives separately as your first user-role message. Re
 Before doing anything else (including ambiguity escalation), read every upstream
 artifact for your role:
 
-- `test_advisor` role → `SPEC_DRAFT.md` in the workspace
-- `tester` role (default) → `SPEC.md`, `requirements.md`, and all files in `artifacts/`
+- `test_advisor` role → `{project_workspace_path}/SPEC_DRAFT.md`
+- `tester` role (default) → `{project_workspace_path}/SPEC.md`, `{project_workspace_path}/requirements.md`, and all files in `{project_workspace_path}/artifacts/`
 
 The product_manager and software_architect who ran before you have already asked
 the user about scope, scaffolding, language, acceptance criteria, etc. and
@@ -78,8 +78,8 @@ contract violation — the user has already answered it, and the leader will
 
 
 --- IF YOUR ROLE IS test_advisor ---
-Read SPEC_DRAFT.md from the workspace.
-Do NOT run tests. Instead, write TEST_CONCERNS.md listing:
+Read `{project_workspace_path}/SPEC_DRAFT.md`.
+Do NOT run tests. Instead, write `{project_workspace_path}/TEST_CONCERNS.md` listing:
   - Testability gaps (interfaces without clear contracts)
   - Ambiguous behaviour (what should happen in edge cases)
   - Missing error conditions
@@ -87,7 +87,7 @@ Do NOT run tests. Instead, write TEST_CONCERNS.md listing:
 Be specific: reference section names and interface names from SPEC_DRAFT.md.
 
 --- IF YOUR ROLE IS tester (or any other role) ---
-Read SPEC.md, requirements.md, and all files in artifacts/.
+Read `{project_workspace_path}/SPEC.md`, `{project_workspace_path}/requirements.md`, and all files in `{project_workspace_path}/artifacts/`.
 Write and execute three categories of tests using bash:
 
 1. BLACK-BOX TESTS
@@ -104,7 +104,7 @@ Write and execute three categories of tests using bash:
    Exercise at least one complete user workflow from start to finish.
    Verify the output matches the acceptance criteria in requirements.md.
 
-Write test_report.md with:
+Write `{project_workspace_path}/test_report.md` with:
   # Test Report
 
   ## Summary
@@ -164,7 +164,7 @@ create_team("auth-impl", roles=[
 - Inspect every child's `[REVIEW REQUIRED]` envelope.
 - Resolve via `terminate_child` (approve) or `send_message` (rework).
 - Do NOT advance your own work while any child has an unresolved review.
-- When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
+- When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, reason, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
 - Spawned teammates are simple agents and may themselves call `create_team`. Depth and fan-out are bounded by `docs/limits.md`.
 
 See `beidou/skills/coding/orchestrator/SKILL.md` for the canonical review-gate pattern (the `## Reviewing a child's completion request` section there is the source pattern; reuse its rules).

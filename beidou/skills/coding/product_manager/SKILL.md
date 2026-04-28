@@ -57,7 +57,7 @@ Steps:
    - Example: if the task says "用 react" and does not pin scaffold vs CDN vs build tool, you MUST
      call ask_user to disambiguate before writing requirements.md.
 
-Write requirements.md to the workspace with these sections:
+Write `{project_workspace_path}/requirements.md` with these sections:
   # Requirements
 
   ## Functional Requirements
@@ -113,7 +113,7 @@ create_team("auth-impl", roles=[
 - Inspect every child's `[REVIEW REQUIRED]` envelope.
 - Resolve via `terminate_child` (approve) or `send_message` (rework).
 - Do NOT advance your own work while any child has an unresolved review.
-- When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
+- When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, reason="<why you can answer>", answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
 - Spawned teammates are simple agents and may themselves call `create_team`. Depth and fan-out are bounded by `docs/limits.md`.
 
 See `beidou/skills/coding/orchestrator/SKILL.md` for the canonical review-gate pattern (the `## Reviewing a child's completion request` section there is the source pattern; reuse its rules).

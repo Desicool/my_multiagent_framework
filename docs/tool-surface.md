@@ -161,6 +161,7 @@ answers; the user gateway is never pinged.
 |---|---|---|---|
 | `qid` | string | yes | The question id from the `[INBOX QUESTION]` system message in your inbox. |
 | `answers` | array of objects | yes | One entry per sub-question, in order. Each entry is `{selected_labels: list[string], text: string \| null}`. For free-text or "Other" answers, leave `selected_labels` empty and put the answer in `text`. |
+| `reason` | string | yes | Short note explaining why you can answer this directly instead of escalating (audit trail). |
 
 **Output schema**
 ```
@@ -168,8 +169,8 @@ answers; the user gateway is never pinged.
 ```
 
 **Error cases**
-- `invalid_input`: `qid` empty, `answers` not a non-empty list, or
-  malformed `answers[i]`.
+- `invalid_input`: `qid` empty, `answers` not a non-empty list,
+  malformed `answers[i]`, or `reason` empty or not a string.
 - `unknown_qid`: no pending question with that id.
 - `not_holder`: caller is not the current holder of the question. Only
   the agent the question was last routed to may answer.

@@ -201,7 +201,7 @@ class _FakeOrch:
             )
             await self.inbox_put(target, msg)
 
-    def resolve_question(self, qid: str, answers: list[dict]) -> dict:
+    def resolve_question(self, qid: str, answers: list[dict], *, answerer: str | None = None, reason: str | None = None) -> dict:
         pq = self._questions.get(qid)
         if pq is None:
             return {"ok": False, "reason": "unknown_qid"}
@@ -216,6 +216,8 @@ class _FakeOrch:
                 "agent_id": pq.asker_agent_id,
                 "qid": qid,
                 "asker": pq.asker_agent_id,
+                "answerer": answerer,
+                "reason": reason[:200] if reason else None,
                 "chain_len": len(pq.chain),
                 "answers": answers,
                 "answer_text": out["answer_text"],
@@ -590,6 +592,7 @@ def test_answer_question_resolves_pending_for_holder():
         out = await answer_question(
             orch, caller_id="L", qid=qid,
             answers=[{"selected_labels": [], "text": "Vite, from PM"}],
+            reason="already answered in requirements.md",
         )
         assert out == {"ok": True, "qid": qid}
 
@@ -615,6 +618,7 @@ def test_answer_question_rejects_non_holder():
             await answer_question(
                 orch, caller_id="M", qid=qid,
                 answers=[{"selected_labels": [], "text": "x"}],
+                reason="test reason",
             )
         assert exc.value.code == "not_holder"
 

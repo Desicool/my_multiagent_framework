@@ -290,8 +290,13 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                         "required": ["selected_labels"],
                     },
                 },
+                "reason": {
+                    "type": "string",
+                    "description": "Short note explaining why you can answer this directly "
+                                   "instead of escalating (audit trail).",
+                },
             },
-            "required": ["qid", "answers"],
+            "required": ["qid", "answers", "reason"],
         },
     )
     async def _answer_question(args: dict[str, Any]) -> dict[str, Any]:
@@ -303,6 +308,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             caller_id=caller_id,
             qid=args["qid"],
             answers=args["answers"],
+            reason=args["reason"],
         )
 
     @tool(

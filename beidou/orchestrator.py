@@ -942,7 +942,7 @@ class Orchestrator:
         )
         return body
 
-    def resolve_question(self, qid: str, answers: list[dict]) -> dict:
+    def resolve_question(self, qid: str, answers: list[dict], *, answerer: str | None = None, reason: str | None = None) -> dict:
         """Public entry for the gateway and answer_question primitive.
 
         Owns the side-effects (DB update, event emit) that the registry
@@ -978,6 +978,8 @@ class Orchestrator:
                 "agent_id": pq.asker_agent_id,
                 "qid": qid,
                 "asker": pq.asker_agent_id,
+                "answerer": answerer,
+                "reason": reason[:200] if reason else None,
                 "chain_len": len(pq.chain),
                 "answers": answers,
                 "answer_text": answer_text,

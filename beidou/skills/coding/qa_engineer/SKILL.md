@@ -48,8 +48,8 @@ The originating user task arrives separately as your first user-role message. Re
 ## Read upstream artifacts FIRST
 
 Before doing anything else (including ambiguity escalation), read every upstream
-artifact: `requirements.md`, `SPEC.md`, `test_report.md`, `deploy.md`, and all
-files in `artifacts/`. The product_manager, software_architect, junior_engineer,
+artifact: `{project_workspace_path}/requirements.md`, `{project_workspace_path}/SPEC.md`, `{project_workspace_path}/test_report.md`, `{project_workspace_path}/deploy.md`, and all
+files in `{project_workspace_path}/artifacts/`. The product_manager, software_architect, junior_engineer,
 test_engineer, and deployment_engineer who ran before you have already asked the
 user about scope, scaffolding, language, acceptance criteria, deployment target,
 etc. and recorded the answers there. Treat the upstream artifacts as
@@ -76,15 +76,15 @@ contract violation — the user has already answered it, and the leader will
 (rightly) bounce a redundant escalation.
 
 Steps:
-1. Read requirements.md — extract every acceptance criterion (AC-*).
+1. Read `{project_workspace_path}/requirements.md` — extract every acceptance criterion (AC-*).
 2. For each acceptance criterion:
    a. Check whether the artifacts in artifacts/ satisfy it.
    b. Read test_report.md for evidence of passing tests.
    c. Run bash commands if needed to verify behaviour directly.
    d. Record PASS or FAIL with specific evidence.
-3. Read deploy.md — verify the deployment plan covers the environments and
+3. Read `{project_workspace_path}/deploy.md` — verify the deployment plan covers the environments and
    non-functional requirements.
-4. Write qa_report.md:
+4. Write `{project_workspace_path}/qa_report.md`:
 
    # QA Report
 
@@ -144,7 +144,7 @@ create_team("auth-impl", roles=[
 - Inspect every child's `[REVIEW REQUIRED]` envelope.
 - Resolve via `terminate_child` (approve) or `send_message` (rework).
 - Do NOT advance your own work while any child has an unresolved review.
-- When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
+- When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, reason, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
 - Spawned teammates are simple agents and may themselves call `create_team`. Depth and fan-out are bounded by `docs/limits.md`.
 
 See `beidou/skills/coding/orchestrator/SKILL.md` for the canonical review-gate pattern (the `## Reviewing a child's completion request` section there is the source pattern; reuse its rules).

@@ -37,7 +37,7 @@ Your reviewer (the team leader who spawned you) gave you this scope:
 The originating user task arrives separately as your first user-role message. Read both: the user task tells you what the user actually wants, the scope above tells you which slice of that task you own.
 
 STEP 1 — READ REQUIREMENTS FIRST
-Read requirements.md from the workspace. If it does not exist, stop and say so.
+Read `{project_workspace_path}/requirements.md`. If it does not exist, stop and say so.
 **This step always runs first.** The product_manager who ran before you has already
 asked the user about scope, scaffolding, language, styling, etc. and recorded the
 answers in requirements.md. Treat requirements.md as authoritative for every choice
@@ -72,7 +72,7 @@ Writing SPEC.md without resolving a *genuinely* unresolved binding choice is a
 contract violation.
 
 STEP 3 — WRITE DRAFT SPEC
-Write SPEC_DRAFT.md covering:
+Write `{project_workspace_path}/SPEC_DRAFT.md` covering:
   - Modules: name, responsibility, public interface (functions/classes/endpoints)
   - Inter-module interactions: which module calls which, data formats
   - Key concepts and invariants
@@ -82,8 +82,8 @@ STEP 4 — INVITE REVIEWERS
 
 If a reviewer's `ask_user` lands in your inbox as a `[INBOX QUESTION]` system
 message, resolve it before continuing. Call
-`mcp__beidou__answer_question(qid, answers)` if you can answer from
-SPEC_DRAFT.md or requirements.md; otherwise call
+`mcp__beidou__answer_question(qid, reason="<why you can answer>", answers)` if you can answer from
+`{project_workspace_path}/SPEC_DRAFT.md` or `{project_workspace_path}/requirements.md`; otherwise call
 `mcp__beidou__escalate_question(qid, reason)` to push it up to your own
 leader. Do NOT call `ask_user` to forward it — that creates a duplicate.
 
@@ -92,27 +92,27 @@ Create a review team to stress-test SPEC_DRAFT.md:
     {
       role: "test_advisor",
       skill: "test_engineer",
-      description: "Read SPEC_DRAFT.md. Identify testability gaps, missing interface
+      description: "Read `{project_workspace_path}/SPEC_DRAFT.md`. Identify testability gaps, missing interface
                     contracts, ambiguous behaviour, and edge cases not covered.
-                    Write TEST_CONCERNS.md in the workspace."
+                    Write `{project_workspace_path}/TEST_CONCERNS.md` in the workspace."
     },
     {
       role: "deploy_advisor",
       skill: "deployment_engineer",
-      description: "Read SPEC_DRAFT.md. Identify infrastructure risks, missing
+      description: "Read `{project_workspace_path}/SPEC_DRAFT.md`. Identify infrastructure risks, missing
                     configuration surface, scalability limits, and environment concerns.
-                    Write DEPLOY_CONCERNS.md in the workspace."
+                    Write `{project_workspace_path}/DEPLOY_CONCERNS.md` in the workspace."
     }
   ])
   End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect both, then call terminate_child for each.
 
 STEP 5 — REVISE AND FINALISE
-Read TEST_CONCERNS.md and DEPLOY_CONCERNS.md.
-Address each concern in your design. Then write the final SPEC.md (replacing SPEC_DRAFT.md
+Read `{project_workspace_path}/TEST_CONCERNS.md` and `{project_workspace_path}/DEPLOY_CONCERNS.md`.
+Address each concern in your design. Then write `{project_workspace_path}/SPEC.md` (replacing SPEC_DRAFT.md
 with improvements incorporated).
 
 STEP 6 — WRITE TASKS
-Write tasks.md breaking the implementation into the smallest independent closures.
+Write `{project_workspace_path}/tasks.md` breaking the implementation into the smallest independent closures.
 Use this format for each task:
 
   ## task-{n}: {short name}

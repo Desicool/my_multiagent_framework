@@ -420,6 +420,7 @@ async def answer_question(
     caller_id: str,
     qid: str,
     answers: list[dict],
+    reason: str,
 ) -> dict:
     """Resolve a question that landed in the caller's inbox via the leader chain.
 
@@ -448,6 +449,11 @@ async def answer_question(
                 "invalid_input", f"answers[{i}].text must be a string or null", index=i
             )
 
+    if not isinstance(reason, str) or not reason.strip():
+        raise PrimitiveError(
+            "invalid_input", "reason must be a non-empty string explaining why you can answer directly"
+        )
+
     registry = getattr(orch, "_questions", None)
     if registry is None:
         raise PrimitiveError("gateway_unavailable", "orchestrator has no question registry")
@@ -464,10 +470,10 @@ async def answer_question(
             holder=current_holder,
             caller=caller_id,
         )
-    result = orch.resolve_question(qid, answers)
+    result = orch.resolve_question(qid, answers, answerer=caller_id, reason=reason)
     if not result.get("ok"):
-        reason = result.get("reason", "unknown")
-        raise PrimitiveError(reason, f"resolve_question rejected: {reason}", qid=qid)
+        err_reason = result.get("reason", "unknown")
+        raise PrimitiveError(err_reason, f"resolve_question rejected: {err_reason}", qid=qid)
     return {"ok": True, "qid": qid}
 
 
