@@ -14,7 +14,11 @@ Summary of primitives (full spec in ``docs/tool-surface.md``):
 * :func:`list_peers`           -- Snapshot of peers in ``team``/``children``/``all`` scope.
 * :func:`ask_user`             -- Routes a question to the human gateway.
 * :func:`report_status`        -- Records agent state and emits a status event.
-* :func:`create_team`          -- Spawns a sub-team; caller becomes leader by construction.
+* :func:`declare_plan`         -- Validate DAG + persist plan; no team/agent created.
+* :func:`remove_plan`          -- Remove caller's active plan (hard-fork for replanning).
+* :func:`spawn_agent`          -- Gated spawn from plan; lazily creates team on first call.
+* :func:`list_ready`           -- Read-only: return ready task ids in caller's active plan.
+* :func:`create_team`          -- DEPRECATED. Use declare_plan + spawn_agent.
 * :func:`terminate_child`      -- Posts a terminate sentinel to a direct child.
 * :func:`list_pending_reviews` -- Read-only list of direct children awaiting leader review.
 """
@@ -120,6 +124,15 @@ class Orchestrator(Protocol):
         rules: list[str],
     ) -> dict: ...
     async def create_team_lock(self, agent_id: str) -> asyncio.Lock: ...
+    async def spawn_lock(self, agent_id: str) -> asyncio.Lock: ...
+
+    # --- Plan lifecycle (called by plan primitives) -------------------------
+    async def register_plan(self, *, caller_id: str, specs: list[dict]) -> dict: ...
+    async def remove_active_plan(self, *, caller_id: str) -> dict: ...
+    async def spawn_for_task(self, *, caller_id: str, task_id: str) -> dict: ...
+    def list_ready_tasks(self, *, caller_id: str) -> dict: ...
+    async def mark_task_done(self, *, task_id: str) -> None: ...
+    async def mark_task_failed(self, *, task_id: str) -> None: ...
 
     # --- Observability / human gateway -------------------------------------
     def emit_event(self, name: str, payload: dict) -> None: ...
@@ -586,6 +599,8 @@ async def create_team(
 ) -> dict:
     """Spawn a sub-team. See docs/tool-surface.md#create_team.
 
+    DEPRECATED: Use declare_plan + spawn_agent instead.
+
     The self-lead invariant (orchestration.md) is guaranteed by construction:
     this Python signature has no ``leader_id`` parameter, so the model cannot
     pass one. The orchestrator passes ``leader_id=caller_id`` unconditionally.
@@ -675,6 +690,99 @@ async def create_team(
     return result
 
 
+_TASK_SPEC_REQUIRED = ("id", "role", "skill", "task")
+
+
+def _validate_task_specs(tasks: Any) -> None:
+    """Raise PrimitiveError if tasks is not a list of dicts with required keys."""
+    if not isinstance(tasks, list):
+        raise PrimitiveError("invalid_task_spec", "tasks must be a list of task spec dicts")
+    for i, spec in enumerate(tasks):
+        if not isinstance(spec, dict):
+            raise PrimitiveError(
+                "invalid_task_spec",
+                f"tasks[{i}] must be a dict, got {type(spec).__name__}",
+            )
+        for key in _TASK_SPEC_REQUIRED:
+            if key not in spec:
+                raise PrimitiveError(
+                    "invalid_task_spec",
+                    f"tasks[{i}] missing required key {key!r}",
+                    index=i,
+                    missing_key=key,
+                )
+
+
+async def declare_plan(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+    tasks: list[dict],
+) -> dict:
+    """Pure-data: validate DAG, persist, return rich introspection.
+
+    No team, workspace, or agent is created here. The only registry side-effect
+    is updating the caller's active_plan_id. caller_id is bound by the MCP
+    closure — never trusted from model input.
+    """
+    _validate_task_specs(tasks)
+    # PrimitiveError subclasses from register_plan bubble up unchanged.
+    return await orch.register_plan(caller_id=caller_id, specs=tasks)
+
+
+async def remove_plan(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+) -> dict:
+    """Hard-fork the active plan: rename file to .removed.json and clear the slot.
+
+    caller_id is bound by the MCP closure — never trusted from model input.
+    """
+    return await orch.remove_active_plan(caller_id=caller_id)
+
+
+async def spawn_agent(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+    task_id: str,
+) -> dict:
+    """Gated spawn. First call lazily creates the team.
+
+    caller_id is bound by the MCP closure — never trusted from model input.
+    """
+    if not isinstance(task_id, str) or not task_id:
+        raise PrimitiveError("invalid_task_id", "task_id must be a non-empty string")
+
+    # One concurrent spawn per caller — mirrors create_team's lock pattern.
+    # The .locked() check is best-effort: in the rare case two spawn_agent
+    # calls interleave before spawn_for_task acquires the lock, they both
+    # pass the check and then serialize inside spawn_for_task's `async with lock`.
+    # This is acceptable; the primary guard is the orchestrator's own lock.
+    lock = await orch.spawn_lock(caller_id)
+    if lock.locked():
+        raise PrimitiveError(
+            "concurrent_spawn",
+            f"{caller_id} already has an in-flight spawn_agent (limits.md #5)",
+            caller_id=caller_id,
+        )
+    # spawn_for_task acquires the lock internally; no acquire here.
+    return await orch.spawn_for_task(caller_id=caller_id, task_id=task_id)
+
+
+async def list_ready(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+) -> dict:
+    """Read-only query: return ready task ids in the caller's active plan.
+
+    caller_id is bound by the MCP closure — never trusted from model input.
+    """
+    return orch.list_ready_tasks(caller_id=caller_id)
+
+
 async def terminate_child(
     orch: Orchestrator,
     *,
@@ -759,6 +867,16 @@ async def terminate_child(
             "ts": sentinel.ts,
         },
     )
+
+    # Plan-task lifecycle hook: drive task status alongside agent termination.
+    # getattr fallback handles FakeOrchestrator in tests (no plan_task_id attr).
+    plan_task_id = getattr(target_rec, "plan_task_id", None) if target_rec is not None else None
+    if plan_task_id is not None:
+        if force:
+            await orch.mark_task_failed(task_id=plan_task_id)
+        else:
+            await orch.mark_task_done(task_id=plan_task_id)
+
     return {"sentinel_posted": True}
 
 

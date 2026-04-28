@@ -210,11 +210,13 @@ at runtime.
   `create_team` and owned by the team; the *root agent* gets a scoped
   scratch path because it is teamless (depth 0). Spec:
   [`docs/architecture.md`](docs/architecture.md).
-- **Primitive** — one of the seven MCP tools every agent sees:
+- **Primitive** — one of the MCP tools every agent sees:
   `send_message`, `list_peers`, `ask_user`, `report_status`,
-  `create_team`, `terminate_child`, `list_pending_reviews`. Identity
-  (`caller_id`) is bound in the per-spawn MCP closure — the model
-  cannot spoof it. Spec: [`docs/tool-surface.md`](docs/tool-surface.md).
+  `declare_plan`, `remove_plan`, `spawn_agent`, `list_ready`,
+  `terminate_child`, `list_pending_reviews`. The deprecated `create_team`
+  remains available during the transition. Identity (`caller_id`) is bound
+  in the per-spawn MCP closure — the model cannot spoof it. Spec:
+  [`docs/tool-surface.md`](docs/tool-surface.md).
 - **Skill** — a `SKILL.md` file with YAML frontmatter (`allowed-tools`,
   `description`, `triggers`, etc.) and a body that becomes the system
   prompt. Declarative; no Python required to add one. Spec:
@@ -456,6 +458,17 @@ resumes with the new question visible. System-originated paths
 (watchdog escalations, root completion review) keep the direct-to-user
 shortcut. Tests in `tests/test_question_chain.py` cover both the chain
 routing and the new primitives.
+
+**Plan-as-data DAG** (`deps` branch). `create_team` (deprecated) is being
+replaced by four new primitives: `declare_plan` (pure data — validates the task
+DAG and persists it, no team or agent created), `spawn_agent` (lazily creates
+the team on first call, then spawns one task at a time), `remove_plan` (clears
+the active plan for replanning), and `list_ready` (read-only readiness query).
+This separates planning from execution: a leader declares the full DAG up front,
+then spawns from the ready set one turn at a time as approvals unblock
+dependents. Plans persist to `~/.beidou/runs/{run_task_id}/plans/` as an audit
+artifact. `create_team` remains operational during the transition period and will
+be removed once all callers migrate.
 
 ---
 

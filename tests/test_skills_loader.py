@@ -66,9 +66,9 @@ def test_render_system_prompt_substitutes_known_and_preserves_unknown() -> None:
     assert "{workspace_path}" not in rendered
     assert "{project_workspace_path}" not in rendered
     # Unknown-looking tokens that happen to share brace syntax MUST survive.
-    # The orchestrator body contains `{role: "<task-id>", ...}` JSON-ish and
-    # nothing we pass should replace them.
-    assert '{role: "<task-id>"' in rendered
+    # The rewritten orchestrator body contains `{id: "pm", ...}` declare_plan
+    # task spec examples and nothing we pass should consume them.
+    assert '{id: "pm",' in rendered
 
 
 def test_render_leaves_unknown_placeholder_literal() -> None:

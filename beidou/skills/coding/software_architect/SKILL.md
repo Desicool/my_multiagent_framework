@@ -12,7 +12,11 @@ allowed-tools:
   - file_read
   - file_write
   - web_search
-  - create_team
+  - declare_plan
+  - remove_plan
+  - spawn_agent
+  - list_ready
+  - create_team          # transitional fallback only; prefer declare_plan + spawn_agent
   - send_message
   - list_peers
   - report_status
@@ -87,24 +91,22 @@ SPEC_DRAFT.md or requirements.md; otherwise call
 `mcp__beidou__escalate_question(qid, reason)` to push it up to your own
 leader. Do NOT call `ask_user` to forward it — that creates a duplicate.
 
-Create a review team to stress-test SPEC_DRAFT.md:
-  create_team("spec-review", roles=[
-    {
-      role: "test_advisor",
-      skill: "test_engineer",
-      description: "Read SPEC_DRAFT.md. Identify testability gaps, missing interface
-                    contracts, ambiguous behaviour, and edge cases not covered.
-                    Write TEST_CONCERNS.md in the workspace."
-    },
-    {
-      role: "deploy_advisor",
-      skill: "deployment_engineer",
-      description: "Read SPEC_DRAFT.md. Identify infrastructure risks, missing
-                    configuration surface, scalability limits, and environment concerns.
-                    Write DEPLOY_CONCERNS.md in the workspace."
-    }
-  ])
-  End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect both, then call terminate_child for each.
+Declare a review plan and spawn both reviewers to stress-test SPEC_DRAFT.md:
+
+```
+declare_plan(tasks=[
+  {id: "test_advisor",   role: "test_advisor",   skill: "test_engineer",
+   task: "Read SPEC_DRAFT.md from the workspace. Identify testability gaps, missing interface contracts, ambiguous behaviour, and edge cases not covered. Write TEST_CONCERNS.md in the workspace.",
+   depends_on: []},
+  {id: "deploy_advisor", role: "deploy_advisor", skill: "deployment_engineer",
+   task: "Read SPEC_DRAFT.md from the workspace. Identify infrastructure risks, missing configuration surface, scalability limits, and environment concerns. Write DEPLOY_CONCERNS.md in the workspace.",
+   depends_on: []},
+])
+spawn_agent("test_advisor")
+spawn_agent("deploy_advisor")
+```
+
+End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect both, then call terminate_child for each.
 
 STEP 5 — REVISE AND FINALISE
 Read TEST_CONCERNS.md and DEPLOY_CONCERNS.md.

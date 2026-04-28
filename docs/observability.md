@@ -365,6 +365,102 @@ Emitted in two situations:
 
 ---
 
+### `plan_declared`
+
+Emitted by the orchestrator when an agent calls `declare_plan` successfully.
+`team_id` is null because `declare_plan` is a pure-data primitive — no team
+is created at this point.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at declaration. |
+| `plan_id` | Stable plan identifier. |
+| `owner_agent_id` | The agent that declared the plan. |
+| `team_id` | Always `null` — no team exists yet. |
+| `tasks` | List of task descriptors: `[{id, role, skill, depends_on, status}, ...]`. |
+
+---
+
+### `plan_removed`
+
+Emitted by the orchestrator when an agent calls `remove_plan` successfully.
+The plan file is renamed to `{plan_id}.removed.json` on disk for audit.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at removal. |
+| `plan_id` | The plan that was removed. |
+| `owner_agent_id` | The agent that removed the plan. |
+
+---
+
+### `task_ready`
+
+Emitted when a task transitions from `blocked` to `ready`. This happens after
+a dependency's `terminate_child` approval drives that dependency `in_flight → done`
+and all of the newly-ready task's other dependencies are also `done`.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at transition. |
+| `plan_id` | The plan containing the task. |
+| `task_id` | The task that became ready. |
+
+---
+
+### `task_spawned`
+
+Emitted when `spawn_agent` transitions a task `ready → in_flight` and launches
+the agent. If this is the first `spawn_agent` for the plan's leader, `team_created`
+is emitted **before** this event (producer-side ordering invariant: `team_created`
+always precedes the first `agent_spawned` for a given team).
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at spawn. |
+| `plan_id` | The plan containing the task. |
+| `task_id` | The task being executed. |
+| `team_id` | The team the agent was added to (materialized on first spawn). |
+| `agent_id` | The newly-spawned agent. |
+
+---
+
+### `task_done`
+
+Emitted when `terminate_child` (approve) drives a task `in_flight → done`.
+After emission, the orchestrator recomputes the readiness set and emits
+`task_ready` for any newly-unblocked dependents.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at approval. |
+| `plan_id` | The plan containing the task. |
+| `task_id` | The task that completed. |
+
+---
+
+### `task_failed`
+
+Emitted when `terminate_child(force=true)` drives a task `in_flight → failed`.
+Dependents that list the failed task become permanently blocked; recovery requires
+`remove_plan` + `declare_plan`.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at forced termination. |
+| `plan_id` | The plan containing the task. |
+| `task_id` | The task that failed. |
+| `reason` | Reason string from the forced termination (e.g. `"leader_force"`). |
+
+**Note on `team_created` timing:** Prior to the plan-as-data model, `team_created`
+was emitted at `create_team` time (atomically with member spawns). With the new
+`spawn_agent` flow, `team_created` is emitted on the **first** `spawn_agent` call
+(lazy team creation), not at `declare_plan`. The producer-side ordering invariant
+is preserved: `team_created` fires before the first `agent_spawned` for that team.
+Web frontend reducers that normalise event ordering do not need to change.
+
+---
+
 ## Sinks
 
 - **JSONL** `~/.beidou/events/{task_id}.jsonl`: one JSON object per line,

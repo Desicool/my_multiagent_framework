@@ -99,6 +99,15 @@ class EventEmitter:
                 created_at=ts,
             )
 
-        # All other event types (status, config_warning, agent_error,
-        # tool_called, contract_violation, question_*) are JSONL-only.
-        # No rollup branch is needed for them.
+        # All other event types are JSONL-only (no SQLite rollup branch needed).
+        #
+        # Plan lifecycle events (emitted by orchestrator plan methods):
+        #   plan_declared  {agent_id, plan_id, task_count, ts}
+        #   plan_removed   {agent_id, plan_id, ts}
+        #   task_spawned   {agent_id, plan_id, task_id, spawned_agent_id, team_id, ts}
+        #   task_done      {plan_id, task_id, ts}
+        #   task_failed    {plan_id, task_id, ts}
+        #   task_ready     {plan_id, task_id, ts}   -- emitted per newly-unblocked dep
+        #
+        # Other JSONL-only: status, config_warning, agent_error,
+        # tool_called, contract_violation, question_*

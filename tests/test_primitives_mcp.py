@@ -89,6 +89,10 @@ def test_server_lists_all_tools():
             "escalate_question",
             "report_status",
             "create_team",
+            "declare_plan",
+            "remove_plan",
+            "spawn_agent",
+            "list_ready",
             "terminate_child",
             "list_pending_reviews",
         }
@@ -426,3 +430,159 @@ def test_redact_args_small_values_pass_through():
     args = {"to": "B", "content": "hello world", "count": 42}
     result = _redact_args(args)
     assert result == args
+
+
+# ---------------------------------------------------------------------------
+# New plan primitives: registration and schema shape.
+# ---------------------------------------------------------------------------
+
+
+def test_declare_plan_registered_in_tool_list():
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        names = {t.name for t in result.tools}
+        assert "declare_plan" in names
+
+    run(body())
+
+
+def test_remove_plan_registered_in_tool_list():
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        names = {t.name for t in result.tools}
+        assert "remove_plan" in names
+
+    run(body())
+
+
+def test_spawn_agent_registered_in_tool_list():
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        names = {t.name for t in result.tools}
+        assert "spawn_agent" in names
+
+    run(body())
+
+
+def test_list_ready_registered_in_tool_list():
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        names = {t.name for t in result.tools}
+        assert "list_ready" in names
+
+    run(body())
+
+
+def test_declare_plan_schema_requires_tasks():
+    """declare_plan schema must require the tasks field."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        tool = next(t for t in result.tools if t.name == "declare_plan")
+        schema = tool.inputSchema
+        assert "tasks" in schema.get("required", [])
+        assert "tasks" in schema.get("properties", {})
+
+    run(body())
+
+
+def test_spawn_agent_schema_requires_task_id():
+    """spawn_agent schema must require the task_id field."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        srv = cfg["instance"]
+        handler = srv.request_handlers[mcp_types.ListToolsRequest]
+        req = mcp_types.ListToolsRequest(method="tools/list")
+        result = (await handler(req)).root
+        tool = next(t for t in result.tools if t.name == "spawn_agent")
+        schema = tool.inputSchema
+        assert "task_id" in schema.get("required", [])
+
+    run(body())
+
+
+def test_declare_plan_no_active_plan_is_structured_error():
+    """Calling declare_plan with empty tasks returns structured error from MCP layer."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="R")
+
+    async def body():
+        result = await _call(cfg, "declare_plan", {"tasks": []})
+        assert result.isError is True
+        payload = _text_payload(result)
+        assert payload["error"] == "empty_plan"
+
+    run(body())
+
+
+def test_remove_plan_no_active_plan_is_structured_error():
+    """remove_plan with no declared plan returns no_active_plan structured error."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="R")
+
+    async def body():
+        result = await _call(cfg, "remove_plan", {})
+        assert result.isError is True
+        payload = _text_payload(result)
+        assert payload["error"] == "no_active_plan"
+
+    run(body())
+
+
+def test_spawn_agent_no_active_plan_is_structured_error():
+    """spawn_agent with no declared plan returns no_active_plan structured error."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="R")
+
+    async def body():
+        result = await _call(cfg, "spawn_agent", {"task_id": "t1"})
+        assert result.isError is True
+        payload = _text_payload(result)
+        assert payload["error"] == "no_active_plan"
+
+    run(body())
+
+
+def test_list_ready_no_active_plan_is_structured_error():
+    """list_ready with no declared plan returns no_active_plan structured error."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="R")
+
+    async def body():
+        result = await _call(cfg, "list_ready", {})
+        assert result.isError is True
+        payload = _text_payload(result)
+        assert payload["error"] == "no_active_plan"
+
+    run(body())

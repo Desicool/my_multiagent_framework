@@ -50,6 +50,9 @@ class _AgentRec:
     completion_pending_ts: Optional[float] = None
     last_status_detail: str = ""
     terminate_consumed: bool = False
+    # Plan-task association (defaulted None so existing tests don't break).
+    plan_task_id: Optional[str] = None
+    plan_id: Optional[str] = None
 
 
 @dataclass
@@ -225,6 +228,41 @@ class FakeOrchestrator:
         return {"team_id": team_id, "members": members}
 
     async def create_team_lock(self, agent_id: str) -> asyncio.Lock:
+        if agent_id not in self._locks:
+            self._locks[agent_id] = asyncio.Lock()
+        return self._locks[agent_id]
+
+    # Back-compat alias (limits.md #5 rename: create_team_lock → spawn_lock).
+    async def spawn_lock(self, agent_id: str) -> asyncio.Lock:
+        return await self.create_team_lock(agent_id)
+
+    # --- Plan lifecycle stubs ------------------------------------------------
+    # These stubs raise the same PrimitiveError codes the real orchestrator
+    # raises on its no-active-plan / empty-plan paths so MCP wrapper tests can
+    # verify the wrapper's PrimitiveError → structured-tool-error translation
+    # without needing a real orchestrator.
+
+    async def register_plan(self, *, caller_id: str, specs: list) -> dict:
+        if not specs:
+            raise PrimitiveError("empty_plan", "tasks list is empty")
+        raise NotImplementedError("FakeOrchestrator does not implement register_plan beyond empty_plan")
+
+    async def remove_active_plan(self, *, caller_id: str) -> dict:
+        raise PrimitiveError("no_active_plan", f"{caller_id} has no active plan")
+
+    async def spawn_for_task(self, *, caller_id: str, task_id: str) -> dict:
+        raise PrimitiveError("no_active_plan", f"{caller_id} has no active plan")
+
+    def list_ready_tasks(self, *, caller_id: str) -> dict:
+        raise PrimitiveError("no_active_plan", f"{caller_id} has no active plan")
+
+    async def mark_task_done(self, *, task_id: str) -> None:
+        pass  # no-op for tests that call terminate_child on agents without plan_task_id
+
+    async def mark_task_failed(self, *, task_id: str) -> None:
+        pass  # no-op for tests that call terminate_child on agents without plan_task_id
+
+    def _get_plan_lock(self, agent_id: str) -> asyncio.Lock:
         if agent_id not in self._locks:
             self._locks[agent_id] = asyncio.Lock()
         return self._locks[agent_id]

@@ -5,13 +5,13 @@ requires explicit user approval via `AskUserQuestion` *before* code is
 written. Bug fixes that preserve all values in this file proceed without
 approval. See `README.md` for the approval rule.
 
-## 1. Team fan-out cap
+## 1. Concurrent in-flight members per team
 
 | | |
 |---|---|
-| **Value** | **8 members per single `create_team` call** |
-| Rationale | Keeps per-team cognitive load manageable for the leader; bounds the inbox + spawn burst Beidou has to absorb at once. |
-| Enforced in | `create_team` primitive (`beidou/primitives/core.py`). Returns structured error `fanout_exceeded` when exceeded. |
+| **Value** | **8 concurrently in-flight (spawned) members per team** |
+| Rationale | Keeps per-team cognitive load manageable for the leader; bounds the inbox + spawn burst Beidou has to absorb at once. Plan size is unbounded — the readiness queue handles backpressure. |
+| Enforced in | `spawn_agent` primitive and (legacy) `create_team` primitive (`beidou/primitives/core.py`). Returns structured error `team_cap_exceeded` (or `fanout_exceeded` for `create_team`) when exceeded. |
 | Change policy | Requires user approval to change. |
 
 ## 2. Team recursion depth
@@ -20,7 +20,7 @@ approval. See `README.md` for the approval rule.
 |---|---|
 | **Value** | **5 (team nesting depth; depth 0 = teamless agent)** |
 | Rationale | Bounds the depth of the cascade termination and the liveness walk. 5 is plenty for orchestrator -> phase -> task -> spike -> probe; deeper usually indicates a missing aggregation step. |
-| Enforced in | `create_team` primitive. A teamless agent (depth 0) spawning its first team creates a depth-1 team. Beidou reads the caller's current team depth from the registry, rejects with `depth_exceeded` when `caller_team_depth + 1 > 5`. |
+| Enforced in | `spawn_agent` primitive (and legacy `create_team` primitive). A teamless agent (depth 0) spawning its first team creates a depth-1 team. Beidou reads the caller's current team depth from the registry, rejects with `depth_exceeded` when `caller_team_depth + 1 > 5`. For `spawn_agent`, the depth check is deferred to spawn time (not `declare_plan` time) because `declare_plan` is a pure-data primitive that does not know about the runtime team graph. |
 | Change policy | Requires user approval to change. |
 
 ## 3. Per-agent inbox size cap
@@ -41,13 +41,13 @@ approval. See `README.md` for the approval rule.
 | Enforced in | Orchestrator recovery loop (`beidou/orchestrator.py`). After N=3, orchestrator stops resuming and posts a `send_message` to the agent's team leader recommending `terminate_child`. For the root agent, escalates to the user gateway instead. See `agent-runtime.md` section 4. |
 | Change policy | Requires user approval to change. |
 
-## 5. Per-agent concurrent in-flight `create_team` calls
+## 5. Per-agent concurrent in-flight team-spawn calls
 
 | | |
 |---|---|
-| **Value** | **1 (serialized; no simultaneous create_team from the same agent)** |
-| Rationale | Removes a class of race conditions in leader assignment and depth accounting. The agent can still create teams sequentially without limit (subject to fan-out and depth caps). |
-| Enforced in | Per-agent asyncio lock held by the orchestrator during `create_team`. Returns `concurrent_create_team` on contention. |
+| **Value** | **1 (serialized; no simultaneous `create_team` or `spawn_agent` from the same agent)** |
+| Rationale | Removes a class of race conditions in leader assignment and depth accounting. The agent can still spawn sequentially without limit (subject to the in-flight member cap and depth caps). |
+| Enforced in | Per-agent asyncio `spawn_lock` held by the orchestrator during `create_team` (legacy) or `spawn_agent`. Returns `concurrent_create_team` or `concurrent_spawn` on contention. `declare_plan` and `remove_plan` are pure-data primitives and do **not** hold the spawn lock; they take a separate per-agent `plan_lock` that serialises plan mutations. |
 | Change policy | Requires user approval to change. |
 
 ## 6. Workspace max size (per team)
@@ -65,6 +65,13 @@ not Beidou-capped** — Beidou makes no claims about its size. Operators concern
 about disk usage should monitor the project workspace independently. (This is a
 deliberate non-boundary; it is documented here to make the absence explicit.)
 
+**Plan size is intentionally not bounded.** `declare_plan` accepts any number
+of tasks in a single call; there is no upper limit on task count per plan.
+Backpressure is enforced by the concurrent in-flight cap (#1) and the recursion
+depth cap (#2). Operators concerned about huge plans should monitor disk usage
+of `~/.beidou/runs/`. (This is a deliberate non-boundary; it is documented here
+to make the absence explicit.)
+
 ## 7. Per-agent token ceiling per run
 
 | | |
@@ -78,11 +85,11 @@ deliberate non-boundary; it is documented here to make the absence explicit.)
 
 | # | Boundary | Value | Enforced in |
 |---|---|---|---|
-| 1 | Team fan-out per `create_team` | 8 | `create_team` primitive |
-| 2 | Team nesting depth (depth 0 = teamless agent) | 5 | `create_team` primitive |
+| 1 | Concurrent in-flight members per team | 8 | `spawn_agent` / `create_team` (deprecated) primitive |
+| 2 | Team nesting depth (depth 0 = teamless agent) | 5 | `spawn_agent` / `create_team` (deprecated) primitive |
 | 3 | Per-agent inbox cap | 1000 | `send_message` primitive |
 | 4 | Contract-violation strikes | 3 | Orchestrator recovery |
-| 5 | Concurrent in-flight `create_team` per agent | 1 | Orchestrator lock |
+| 5 | Concurrent in-flight team-spawn (`create_team` or `spawn_agent`) per agent | 1 | Orchestrator `spawn_lock` |
 | 6 | Workspace size per team | 500 MiB | Workspace monitor |
 | 7 | Per-agent token ceiling per run | 1,000,000 | Orchestrator observer |
 
