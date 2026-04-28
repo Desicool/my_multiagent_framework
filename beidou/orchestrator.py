@@ -964,8 +964,6 @@ class Orchestrator:
         Adds an '(escalated by X)' line when escalation=True.
         """
         prompt_preview = render_prompt_text(questions)
-        if len(prompt_preview) > 600:
-            prompt_preview = prompt_preview[:600] + "…"
         asker_agent_id = chain[0] if chain else sender
         body = (
             f"[INBOX QUESTION] qid={qid} from {asker_agent_id}\n"
