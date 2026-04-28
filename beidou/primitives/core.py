@@ -581,6 +581,23 @@ async def report_status(
     if state not in ("working", "idle", "blocked", "done"):
         raise PrimitiveError("invalid_state", f"unknown state: {state}", state=state)
 
+    if state == "done":
+        plan_id = orch._active_plan_by_agent.get(caller_id)
+        if plan_id is not None:
+            plan = orch._plans.get(plan_id)
+            if plan is not None:
+                incomplete = [
+                    t.id for t in plan.tasks.values()
+                    if t.status not in ("done", "failed")
+                ]
+                if incomplete:
+                    raise PrimitiveError(
+                        "plan_incomplete",
+                        f"cannot report done: {len(incomplete)} plan task(s) unfinished: {', '.join(incomplete)}",
+                        plan_id=plan_id,
+                        incomplete_task_ids=incomplete,
+                    )
+
     # tool-surface.md calls detail "required in practice" when state==done
     # but does NOT enforce -- we record whatever we're given.
     orch.record_status(caller_id, state, detail)

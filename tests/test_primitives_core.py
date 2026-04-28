@@ -16,6 +16,7 @@ from typing import Optional
 
 import pytest
 
+from beidou import plans as _beidou_plans
 from beidou.primitives.core import (
     FAN_OUT_CAP,
     INBOX_CAP,
@@ -82,6 +83,9 @@ class FakeOrchestrator:
         self._spawn_fail: Optional[PrimitiveError] = None
         self._team_counter = 0
         self._agent_counter = 0
+        # Plan state for DAG guard tests (report_status reads these).
+        self._active_plan_by_agent: dict[str, str] = {}
+        self._plans: dict[str, object] = {}
 
     # --- test-only helpers -------------------------------------------------
 
@@ -630,6 +634,92 @@ def test_report_status_invalid_state():
         with pytest.raises(PrimitiveError) as ei:
             await report_status(o, caller_id="A", state="exploding")
         assert ei.value.code == "invalid_state"
+
+    run(body())
+
+
+# ---------------------------------------------------------------------------
+# report_status — DAG guard (plan_incomplete).
+# ---------------------------------------------------------------------------
+
+
+def _make_plan(plan_id: str, agent_id: str, statuses: dict[str, str]) -> "_beidou_plans.Plan":
+    """Build a minimal Plan with one Task per entry in ``statuses``.
+
+    ``statuses`` maps task_id → TaskStatus string.
+    """
+    tasks = {
+        tid: _beidou_plans.Task(
+            id=tid,
+            role="worker",
+            skill="engineer",
+            task_text=f"do {tid}",
+            description="",
+            model=None,
+            depends_on=[],
+            status=st,  # type: ignore[arg-type]
+        )
+        for tid, st in statuses.items()
+    }
+    return _beidou_plans.Plan(
+        plan_id=plan_id,
+        owner_agent_id=agent_id,
+        run_task_id="tsk_test",
+        created_at=0.0,
+        tasks=tasks,
+        file_path="",
+    )
+
+
+def test_report_status_done_with_incomplete_plan_raises():
+    """report_status(state='done') when plan has unfinished tasks raises plan_incomplete."""
+    o = _build()
+    plan = _make_plan(
+        plan_id="plan_1",
+        agent_id="A",
+        statuses={"t1": "done", "t2": "ready", "t3": "in_flight"},
+    )
+    o._plans["plan_1"] = plan
+    o._active_plan_by_agent["A"] = "plan_1"
+
+    async def body():
+        with pytest.raises(PrimitiveError) as ei:
+            await report_status(o, caller_id="A", state="done")
+        assert ei.value.code == "plan_incomplete"
+        # Both unfinished tasks should be reported in the error details.
+        incomplete = ei.value.details.get("incomplete_task_ids", [])
+        assert set(incomplete) == {"t2", "t3"}
+
+    run(body())
+
+
+def test_report_status_done_with_all_tasks_finished_succeeds():
+    """report_status(state='done') when all tasks are done/failed must return {recorded: True}."""
+    o = _build()
+    plan = _make_plan(
+        plan_id="plan_2",
+        agent_id="A",
+        statuses={"t1": "done", "t2": "failed", "t3": "done"},
+    )
+    o._plans["plan_2"] = plan
+    o._active_plan_by_agent["A"] = "plan_2"
+
+    async def body():
+        out = await report_status(o, caller_id="A", state="done", detail="all finished")
+        assert out == {"recorded": True}
+
+    run(body())
+
+
+def test_report_status_done_with_no_active_plan_succeeds():
+    """report_status(state='done') when the agent has no active plan must succeed."""
+    o = _build()
+    # Agent A has no entry in _active_plan_by_agent — the default FakeOrchestrator
+    # already has _active_plan_by_agent = {} so no further setup is needed.
+
+    async def body():
+        out = await report_status(o, caller_id="A", state="done", detail="no plan, still done")
+        assert out == {"recorded": True}
 
     run(body())
 
