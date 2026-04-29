@@ -1,11 +1,11 @@
 ---
 name: software_architect
-version: 1.1.0
+version: 1.2.0
 description: |
   Designs system architecture given requirements. Produces SPEC.md (modules,
   public interfaces, key concepts, constraints/limits) and tasks.md (smallest
-  implementable closures for junior engineers). Internally invites test and
-  deployment reviewers to stress-test the design before finalising.
+  implementable closures for junior engineers). Internally invites test,
+  deployment, and UX reviewers to stress-test the design before finalising.
   Use AFTER product_manager, BEFORE junior_engineer.
 allowed-tools:
   - bash
@@ -91,7 +91,7 @@ message, resolve it before continuing. Call
 `mcp__beidou__escalate_question(qid, reason)` to push it up to your own
 leader. Do NOT call `ask_user` to forward it — that creates a duplicate.
 
-Declare a review plan and spawn both reviewers to stress-test SPEC_DRAFT.md:
+Declare a review plan and spawn all three reviewers to stress-test SPEC_DRAFT.md:
 
 ```
 declare_plan(tasks=[
@@ -101,17 +101,27 @@ declare_plan(tasks=[
   {id: "deploy_advisor", role: "deploy_advisor", skill: "deployment_engineer",
    task: "Read {project_workspace_path}/SPEC_DRAFT.md. Identify infrastructure risks, missing configuration surface, scalability limits, and environment concerns. Write {project_workspace_path}/DEPLOY_CONCERNS.md.",
    depends_on: []},
+  {id: "ux_advisor",     role: "ux_advisor",     skill: "ui_ux_designer",
+   task: "Read {project_workspace_path}/SPEC_DRAFT.md and {project_workspace_path}/requirements.md. Identify UX gaps: information architecture, user flows, missing screen/CLI states (empty/loading/error), interaction patterns, accessibility, and naming-vs-mental-model mismatches. When a visual artifact would sharpen the critique, invoke the huashu-design skill (via the Skill tool) to produce HTML mockups under {project_workspace_path}/ux/. Write {project_workspace_path}/UX_CONCERNS.md.",
+   depends_on: []},
 ])
 spawn_agent("test_advisor")
 spawn_agent("deploy_advisor")
+spawn_agent("ux_advisor")
 ```
 
-End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect both, then call terminate_child for each.
+End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect all three, then call terminate_child for each.
 
 STEP 5 — REVISE AND FINALISE
-Read `{project_workspace_path}/TEST_CONCERNS.md` and `{project_workspace_path}/DEPLOY_CONCERNS.md`.
-Address each concern in your design. Then write `{project_workspace_path}/SPEC.md` (replacing SPEC_DRAFT.md
-with improvements incorporated).
+Read `{project_workspace_path}/TEST_CONCERNS.md`, `{project_workspace_path}/DEPLOY_CONCERNS.md`,
+and `{project_workspace_path}/UX_CONCERNS.md`.
+Address each concern in your design. If `UX_CONCERNS.md` references mockups under
+`{project_workspace_path}/ux/`, treat them as visual aids when shaping the
+final architecture — they are not deliverables you reproduce, only evidence
+that informed your decisions. Then write `{project_workspace_path}/SPEC.md`
+(replacing SPEC_DRAFT.md with improvements incorporated). The final SPEC.md
+must include a **UX/UI** section describing the user-facing surface (screens
+or CLI shape, key flows, accessibility targets) when the system has one.
 
 STEP 6 — WRITE TASKS
 Write `{project_workspace_path}/tasks.md` breaking the implementation into the smallest independent closures.
