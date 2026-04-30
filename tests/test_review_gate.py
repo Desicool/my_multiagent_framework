@@ -586,6 +586,7 @@ def test_idle_nudge_fires_for_idle_root(tmp_path: Path) -> None:
         o, _ = _make_orch_for_watchdog(tmp_path)
         root = _seed_root_agent(o)
         root.last_progress_ts = time.time() - 130.0
+        root.last_drain_ts = time.time() - 130.0  # stale drain; last_progress_ts <= last_drain_ts so freshness = last_drain_ts
         root.inflight_tools = 0
         root.completion_pending = False
 
@@ -606,13 +607,14 @@ def test_idle_nudge_fires_for_idle_root(tmp_path: Path) -> None:
 
 
 def test_idle_nudge_skipped_when_inflight_tool(tmp_path: Path) -> None:
-    """Pass B: inflight_tools>0 → skip liveness nudge."""
+    """Pass B: inflight_tools>0 → skip liveness nudge even with stale drain."""
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
         root = _seed_root_agent(o)
         root.last_progress_ts = time.time() - 130.0
-        root.inflight_tools = 1  # tool running
+        root.last_drain_ts = time.time() - 130.0  # stale drain; proves inflight_tools blocks nudge regardless
+        root.inflight_tools = 1  # tool running → freshness=0 → no nudge
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
@@ -625,8 +627,18 @@ def test_idle_nudge_skipped_when_inflight_tool(tmp_path: Path) -> None:
     run(body())
 
 
-def test_idle_nudge_skipped_for_idle_worker_no_children(tmp_path: Path) -> None:
-    """Pass B: non-root worker with no direct children → skip nudge."""
+def test_idle_nudge_fires_for_idle_worker_no_children(tmp_path: Path) -> None:
+    """Pass B: non-root leaf worker with stale drain → liveness.nudge emitted (regression guard).
+
+    This is the regression that motivated the freshness-signal redesign — the old leaf-worker
+    skip at orchestrator.py:1407-1410 silently suppressed nudges for leaf workers, causing
+    silent hangs. See plan ~/.claude/plans/i-want-to-see-transient-fox.md and bd my_simple_agent-npkn.
+
+    Under the new contract:
+    - last_drain_ts stale + last_progress_ts <= last_drain_ts → freshness = last_drain_ts
+    - inflight_tools=0, completion_pending=False → no zero-freshness short-circuit
+    - now - freshness >= IDLE_NUDGE_S → Pass B MUST nudge, regardless of leaf/non-leaf shape
+    """
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
@@ -634,6 +646,7 @@ def test_idle_nudge_skipped_for_idle_worker_no_children(tmp_path: Path) -> None:
         _seed_team(o, "tm_child", leader_id="root_ag", depth=1, parent=_TM_TOP)
         worker = _seed_agent(o, "worker_ag", "tm_child")
         worker.last_progress_ts = time.time() - 200.0
+        worker.last_drain_ts = time.time() - 200.0  # stale drain; last_progress_ts <= last_drain_ts → freshness = last_drain_ts
         worker.inflight_tools = 0
         worker.completion_pending = False
         # worker leads no teams → no direct children
@@ -641,8 +654,12 @@ def test_idle_nudge_skipped_for_idle_worker_no_children(tmp_path: Path) -> None:
         await o._watchdog_tick()
         await asyncio.sleep(0)
 
-        assert _events_named(o, "liveness.nudge") == []
-        assert worker.inbox.qsize() == 0
+        nudges = _events_named(o, "liveness.nudge")
+        assert len(nudges) == 1, f"Expected 1 liveness.nudge for idle leaf worker, got {nudges}"
+
+        assert worker.inbox.qsize() == 1
+        msg = worker.inbox.get_nowait()
+        assert msg.content.startswith("[BEIDOU LIVENESS CHECK]")
 
         await o.stop_watchdog()
 
@@ -650,13 +667,14 @@ def test_idle_nudge_skipped_for_idle_worker_no_children(tmp_path: Path) -> None:
 
 
 def test_idle_nudge_skipped_when_completion_pending(tmp_path: Path) -> None:
-    """Pass B: completion_pending=True → Pass A handles it; Pass B must skip."""
+    """Pass B: completion_pending=True → Pass A handles it; Pass B must skip even with stale drain."""
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
         root = _seed_root_agent(o)
         root.last_progress_ts = time.time() - 130.0
-        root.completion_pending = True  # Pass A territory
+        root.last_drain_ts = time.time() - 130.0  # stale drain; proves completion_pending blocks the nudge regardless
+        root.completion_pending = True  # Pass A territory → freshness=0 → no Pass B nudge
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
@@ -671,13 +689,14 @@ def test_idle_nudge_skipped_when_completion_pending(tmp_path: Path) -> None:
 
 
 def test_inflight_tools_skip(tmp_path: Path) -> None:
-    """Focused: inflight_tools>0 blocks watchdog nudge even for a very idle root."""
+    """Focused: inflight_tools>0 blocks watchdog nudge even for a very idle root with stale drain."""
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
         root = _seed_root_agent(o)
         root.last_progress_ts = time.time() - 9999.0  # extremely idle
-        root.inflight_tools = 2
+        root.last_drain_ts = time.time() - 9999.0  # stale drain; proves inflight_tools short-circuits freshness to 0
+        root.inflight_tools = 2  # still running → freshness=0 → no nudge
 
         await o._watchdog_tick()
         await asyncio.sleep(0)

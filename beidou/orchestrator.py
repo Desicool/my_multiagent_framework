@@ -106,6 +106,7 @@ class AgentRecord:
     completion_pending: bool = False
     completion_pending_ts: Optional[float] = None
     last_progress_ts: float = field(default_factory=time.time)
+    last_drain_ts: Optional[float] = None
     review_ping_count: int = 0
     # Watchdog fields (bd issue qj2).
     inflight_tools: int = 0
@@ -1270,6 +1271,29 @@ class Orchestrator:
             kind="liveness_answer",
         )
 
+    def _agent_freshness_ts(self, agent_id: str) -> float:
+        """Return the Pass B freshness timestamp for an agent, or 0.0 if the agent is still active or legitimately waiting.
+
+        Returns 0.0 when:
+          - a tool call is in-flight (inflight_tools > 0),
+          - this agent is waiting for its leader to review its completion (completion_pending),
+          - the agent forwarded a question and is waiting for it to be resolved upstream, or
+          - last_drain_ts is None or last_progress_ts > last_drain_ts (inbox/tool activity is
+            newer than the most recent natural drain, so the current turn is still in-flight or
+            the agent was freshly awakened since the last drain).
+
+        Returns rec.last_drain_ts otherwise: the timestamp of the most-recent natural SDK turn
+        drain that Pass B can compare against now to decide whether the agent has been idle.
+        """
+        rec = self._agents[agent_id]
+        if rec.inflight_tools > 0 or rec.completion_pending:
+            return 0.0
+        if self._questions.has_pending_through(agent_id):
+            return 0.0
+        if rec.last_drain_ts is None or rec.last_progress_ts > rec.last_drain_ts:
+            return 0.0
+        return rec.last_drain_ts
+
     async def _watchdog_tick(self) -> None:
         """One tick of the watchdog: Pass A (review escalation) + Pass B (liveness nudge).
 
@@ -1386,40 +1410,26 @@ class Orchestrator:
                 continue
             if rec.terminate_consumed:
                 continue
-            # Skip if recent progress.
-            if now - rec.last_progress_ts < IDLE_NUDGE_S:
-                continue
-            # Skip if a tool is currently running.
-            if rec.inflight_tools > 0:
-                continue
-            # Skip if completion is pending — Pass A handles it.
-            if rec.completion_pending:
-                continue
             # Skip if already escalated.
             if rec.idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION:
                 continue
-            # Skip agents that forwarded a question and are waiting for it to be
-            # resolved upstream. Nudging them to "call ask_user if blocked" would
-            # trigger the duplicate-ask bug (tsk_80cac529). The asker is already
-            # skipped via inflight_tools > 0 (they are blocked in ask_user).
-            if self._questions.has_pending_through(agent_id):
+            freshness = self._agent_freshness_ts(agent_id)
+            if freshness == 0:
                 continue
-            # Skip pure workers (no direct children) that are not root.
-            teams_led = list(self.teams_led_by(agent_id))
-            if len(teams_led) == 0 and agent_id != self._root_id:
+            if now - freshness < IDLE_NUDGE_S:
                 continue
 
-            delta_s = int(now - rec.last_progress_ts)
+            delta_s = int(now - freshness)
 
             if rec.idle_nudge_count < 2:
                 body = (
-                    f"[BEIDOU LIVENESS CHECK] You have been idle {delta_s}s with no progress.\n"
-                    f"Either:\n"
-                    f"  (a) call terminate_child / send_message to a pending child, or\n"
-                    f"  (b) call create_team to start the next phase, or\n"
-                    f"  (c) emit a final completion message and call report_status(done) if this is your final state, or\n"
-                    f"  (d) call ask_user if you are blocked on missing input.\n"
-                    f"Choose one and act on this turn. Do not respond with \"still waiting\"."
+                    f"[BEIDOU LIVENESS CHECK] Your last SDK turn drained {delta_s}s ago and the runtime has not seen fresh work since.\n"
+                    f"Choose one and act on this turn:\n"
+                    f"  (a) call report_status(state=\"done\", detail=\"...\") if your work is complete,\n"
+                    f"  (b) take the needed coordination step (for example send_message or terminate_child) if you are waiting on another agent,\n"
+                    f"  (c) call ask_user if you are blocked on missing user input,\n"
+                    f"  (d) if your work is not finished and you still have concrete next steps, keep working now — emit your next plan or tool call on this turn.\n"
+                    f"Do not answer only with \"still working\" or \"waiting\"."
                 )
                 if rec.idle_nudge_count == 1:
                     body += "\n\nIf you do not act, this will escalate to the user gateway in ~120s."

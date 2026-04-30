@@ -1009,6 +1009,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                             )
 
             elif cls == "ResultMessage":
+                drain_ts = time.time()
                 result_data = {
                     "total_cost_usd": getattr(msg, "total_cost_usd", 0.0) or 0.0,
                     "usage": dict(getattr(msg, "usage", {}) or {}),
@@ -1019,11 +1020,13 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                     "stop_reason": getattr(msg, "stop_reason", "unknown") or "unknown",
                     "session_id": getattr(msg, "session_id", None),
                 }
+                if _drain_rec is not None:
+                    _drain_rec.last_drain_ts = drain_ts
                 orch.emit_event(
                     "run.cost",
                     {
                         "caller_id": spec.caller_id,
-                        "ts": time.time(),
+                        "ts": drain_ts,
                         **result_data,
                     },
                 )

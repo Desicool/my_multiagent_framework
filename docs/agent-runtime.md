@@ -292,37 +292,61 @@ Implementation: `beidou/orchestrator.py::_watchdog_tick` (Pass A loop).
 
 ### Pass B — general liveness nudge
 
-For every `AgentRecord` with `last_progress_ts` older than `IDLE_NUDGE_S`
-(120 s), the watchdog sends a structured directive nudge, **unless**:
+Pass B uses a single **freshness** number per agent computed by
+`_agent_freshness_ts(agent_id)`. Freshness is `0` when the runtime knows the
+agent is still active or legitimately waiting:
 
-- `inflight_tools > 0` — a tool call is currently running; no false alarm.
-- `completion_pending=True` — Pass A is already handling this agent.
-- The agent has no direct children AND is not the root agent — pure workers
-  parked on their inbox are the normal steady state; nudging them is noise.
-- `idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION` — already escalated.
+- `inflight_tools > 0` — a tool call is currently running.
+- `completion_pending=True` — this agent is waiting for its leader to review
+  its completion; Pass A handles waking that leader.
+- `_questions.has_pending_through(agent_id)` — the agent forwarded a question
+  upstream and is waiting for it to be resolved (nudging it to "call ask_user"
+  would trigger the duplicate-ask bug, tsk_80cac529).
+- `last_drain_ts is None` or `last_progress_ts > last_drain_ts` — inbox/tool
+  activity is newer than the most recent natural drain, so the current turn is
+  still in-flight or the agent was freshly awakened since the last drain.
 
-The nudge body names four concrete actions the agent can take (call
-`terminate_child`/`send_message` on a pending child, call `spawn_agent` for
-the next ready task or `declare_plan` + `spawn_agent` to start a new phase,
-call `report_status(done)` if finished, or call `ask_user` if blocked). After the nudge is delivered, `last_progress_ts` is reset to
-now so the next threshold counts from this ping.
+Freshness equals `last_drain_ts` only when all zero-freshness conditions are
+absent. The Pass B threshold is: `freshness != 0 AND now − freshness >= IDLE_NUDGE_S`.
+The watchdog never inspects children's freshness to decide whether to nudge a
+leader; a leader is judged solely by its own drain state. This means a leader
+whose child has `completion_pending=True` is still eligible for Pass B — the
+leader is the one supposed to review that child, so suppressing the nudge
+while the child waits would be counterproductive.
+
+`idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION` — already escalated; skip.
+
+The nudge body names four concrete actions the agent can take:
+
+1. Call `report_status(state="done", detail="…")` if work is complete.
+2. Take the needed coordination step (e.g. `send_message` or `terminate_child`)
+   if waiting on another agent.
+3. Call `ask_user` if blocked on missing user input.
+4. **Keep working** — if work is not finished and there are concrete next steps,
+   emit the next plan or tool call on this turn.
+
+After the nudge is delivered, `last_progress_ts` is reset to now so the next
+threshold counts from this ping.
 
 Same 3-strike escalation as Pass A: nudge #1, nudge #2 (with escalation
 warning), then a watchdog-owned background ask to the user gateway. When the
-user answers, that same watchdog task delivers the answer into the asking
-agent's inbox via `deliver_message(kind="liveness_answer")`, because the
-agent's prior SDK turn has already drained and it is parked on inbox, not
-awaiting the question future. Events: `liveness.nudge` (every fired nudge)
-and `liveness.escalated_to_user` (on escalation).
+user answers, `_watchdog_ask_and_deliver_liveness_answer` delivers the answer
+into the asking agent's inbox via `deliver_message(kind="liveness_answer")`,
+because the agent's prior SDK turn has already drained and it is parked on
+inbox, not awaiting the question future. Events: `liveness.nudge` (every fired
+nudge) and `liveness.escalated_to_user` (on escalation).
 
 ### In-flight tracking
 
 `AgentRecord.inflight_tools` is incremented by the drain loop when a
 `ToolUseBlock` arrives, and decremented when the matching `ToolResultBlock`
-arrives (`beidou/sdk_agent.py`, drain loop). `AgentRecord.last_progress_ts`
-is bumped on every tool start, every tool end, and every inbox arrival
-(`beidou/orchestrator.py::inbox_put`). These two fields are the Pass B
-eligibility criteria.
+arrives (`beidou/sdk_agent.py`, drain loop). `AgentRecord.last_drain_ts` is
+stamped at the moment a `ResultMessage` arrives — the natural end of an SDK
+turn. `AgentRecord.last_progress_ts` is bumped on every tool start, every tool
+end, and every inbox arrival (`beidou/orchestrator.py::inbox_put`); it is
+runtime support state that `_agent_freshness_ts` consults to determine whether
+any activity has occurred since the most recent drain. The Pass B watchdog
+itself only consumes freshness — it does not read `last_progress_ts` directly.
 
 ### Leader-side review gate (PreToolUse interceptor)
 

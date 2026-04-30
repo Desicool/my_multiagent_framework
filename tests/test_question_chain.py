@@ -65,6 +65,7 @@ class _AgentRec:
         self.team_id = team_id
         self.inbox: asyncio.Queue = asyncio.Queue()
         self.last_progress_ts: float = time.time()
+        self.last_drain_ts: Optional[float] = None
         self.inflight_tools: int = 0
         self.completion_pending: bool = False
         self.terminate_consumed: bool = False
@@ -899,6 +900,261 @@ def test_watchdog_pass_b_suppresses_nudge_for_intermediate_hop(tmp_path):
         # Cleanup: resolve the question.
         o._questions.resolve(qid, _answer())
         future.result()  # confirm it resolved cleanly
+
+    asyncio.run(body())
+
+
+def test_watchdog_pass_b_nudges_stale_leaf_worker_with_keep_working_option(tmp_path):
+    """Pass B must nudge a leaf worker whose last_drain_ts is old and no inflight activity.
+
+    Regression guard for the leaf-worker exclusion that was removed in favour of the
+    freshness signal. The nudge body must include both the report_status(done) option
+    and the keep-working escape hatch.
+    """
+    from pathlib import Path
+    from beidou.orchestrator import (
+        USER_SENTINEL, AgentRecord, Orchestrator, TeamRecord,
+        IDLE_NUDGE_S,
+    )
+
+    class _SyncEmitter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event: str, agent_id: str = "", team_id=None, **kwargs) -> None:
+            self.events.append((event, {"agent_id": agent_id, **kwargs}))
+
+    async def body():
+        emitter = _SyncEmitter()
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir(exist_ok=True)
+        o = Orchestrator(
+            task_id="tsk_leaf_nudge_test",
+            emitter=emitter,  # type: ignore[arg-type]
+            skill_root=skill_root,
+        )
+
+        # root_ag leads team tm_top; worker_ag is a leaf member (no team led, not root).
+        top_team = TeamRecord(
+            team_id="tm_top", name="top", task="",
+            leader_id="root_ag", depth=1, member_ids=[], rules=[],
+        )
+        o._teams["tm_top"] = top_team
+
+        def _add(agent_id, team_id):
+            rec = AgentRecord(
+                agent_id=agent_id, task_id="tsk_leaf_nudge_test", team_id=team_id,
+                role=agent_id, skill_name="fake", model=None,
+                inbox=asyncio.Queue(), create_team_lock=asyncio.Lock(),
+            )
+            o._agents[agent_id] = rec
+            if team_id and team_id in o._teams:
+                o._teams[team_id].member_ids.append(agent_id)
+            return rec
+
+        root_rec = _add("root_ag", None)
+        o._root_id = "root_ag"
+        worker_rec = _add("worker_ag", "tm_top")
+
+        # Put worker_ag in "stale drain" state: drain happened > IDLE_NUDGE_S ago,
+        # no subsequent inbox/tool activity (last_progress_ts <= last_drain_ts).
+        now = time.time()
+        stale_ts = now - IDLE_NUDGE_S - 10
+        worker_rec.last_drain_ts = stale_ts
+        worker_rec.last_progress_ts = stale_ts - 1  # older than drain
+        worker_rec.inflight_tools = 0
+        worker_rec.completion_pending = False
+        worker_rec.idle_nudge_count = 0
+
+        # Run one watchdog tick; yield to allow emit tasks to flush.
+        await o._watchdog_tick()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        nudge_events = [e for e in emitter.events if e[0] == "liveness.nudge"]
+        nudged_agents = {e[1].get("agent_id") for e in nudge_events}
+
+        assert "worker_ag" in nudged_agents, (
+            f"worker_ag was NOT nudged despite stale drain; events: {nudge_events}"
+        )
+        assert len([e for e in nudge_events if e[1].get("agent_id") == "worker_ag"]) == 1
+
+        # Verify body content via inbox message.
+        msg = await asyncio.wait_for(worker_rec.inbox.get(), timeout=1.0)
+        assert "report_status(state=\"done\"" in msg.content, (
+            f"Nudge body missing report_status(state=\"done\" option: {msg.content!r}"
+        )
+        assert "keep working now" in msg.content, (
+            f"Nudge body missing keep-working escape hatch: {msg.content!r}"
+        )
+
+    asyncio.run(body())
+
+
+def test_watchdog_pass_b_skips_running_agent_with_inflight_tool(tmp_path):
+    """Pass B must not nudge an agent whose last_drain_ts is stale but inflight_tools > 0.
+
+    Even with an old drain timestamp, an in-flight tool call means the agent is still
+    active — freshness returns 0 and the nudge must be suppressed.
+    """
+    from beidou.orchestrator import (
+        AgentRecord, Orchestrator, TeamRecord,
+        IDLE_NUDGE_S,
+    )
+
+    class _SyncEmitter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event: str, agent_id: str = "", team_id=None, **kwargs) -> None:
+            self.events.append((event, {"agent_id": agent_id, **kwargs}))
+
+    async def body():
+        emitter = _SyncEmitter()
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir(exist_ok=True)
+        o = Orchestrator(
+            task_id="tsk_inflight_test",
+            emitter=emitter,  # type: ignore[arg-type]
+            skill_root=skill_root,
+        )
+
+        top_team = TeamRecord(
+            team_id="tm_top", name="top", task="",
+            leader_id="root_ag", depth=1, member_ids=[], rules=[],
+        )
+        o._teams["tm_top"] = top_team
+
+        def _add(agent_id, team_id):
+            rec = AgentRecord(
+                agent_id=agent_id, task_id="tsk_inflight_test", team_id=team_id,
+                role=agent_id, skill_name="fake", model=None,
+                inbox=asyncio.Queue(), create_team_lock=asyncio.Lock(),
+            )
+            o._agents[agent_id] = rec
+            if team_id and team_id in o._teams:
+                o._teams[team_id].member_ids.append(agent_id)
+            return rec
+
+        root_rec = _add("root_ag", None)
+        o._root_id = "root_ag"
+        worker_rec = _add("worker_ag", "tm_top")
+
+        # Same stale drain baseline as test_watchdog_pass_b_nudges_stale_leaf_worker …
+        now = time.time()
+        stale_ts = now - IDLE_NUDGE_S - 10
+        worker_rec.last_drain_ts = stale_ts
+        worker_rec.last_progress_ts = stale_ts - 1
+        worker_rec.completion_pending = False
+        worker_rec.idle_nudge_count = 0
+        # … but inflight_tools = 1: agent is still actively running.
+        worker_rec.inflight_tools = 1
+
+        await o._watchdog_tick()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        nudge_events = [e for e in emitter.events if e[0] == "liveness.nudge"]
+        nudged_agents = {e[1].get("agent_id") for e in nudge_events}
+
+        assert "worker_ag" not in nudged_agents, (
+            f"worker_ag was nudged despite inflight_tools=1; events: {nudge_events}"
+        )
+
+    asyncio.run(body())
+
+
+def test_watchdog_pass_b_nudges_leader_even_when_child_has_pending_completion(tmp_path):
+    """Pass B must nudge a leader whose own drain is stale even if a child has completion_pending=True.
+
+    Regression guard: Pass B must NOT recurse into children to decide freshness.
+    A leader with a pending child needs the nudge precisely because it is the one
+    expected to act on that child (terminate_child / send_message).  Suppressing
+    the nudge while the child waits for review would be the opposite of helpful.
+    """
+    from beidou.orchestrator import (
+        AgentRecord, Orchestrator, TeamRecord,
+        IDLE_NUDGE_S,
+    )
+
+    class _SyncEmitter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event: str, agent_id: str = "", team_id=None, **kwargs) -> None:
+            self.events.append((event, {"agent_id": agent_id, **kwargs}))
+
+    async def body():
+        emitter = _SyncEmitter()
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir(exist_ok=True)
+        o = Orchestrator(
+            task_id="tsk_leader_nudge_test",
+            emitter=emitter,  # type: ignore[arg-type]
+            skill_root=skill_root,
+        )
+
+        # root_ag leads tm_top; leader_ag is a member of tm_top AND leads tm_inner;
+        # child_ag is a member of tm_inner with completion_pending=True.
+        top_team = TeamRecord(
+            team_id="tm_top", name="top", task="",
+            leader_id="root_ag", depth=1, member_ids=[], rules=[],
+        )
+        inner_team = TeamRecord(
+            team_id="tm_inner", name="inner", task="",
+            leader_id="leader_ag", depth=2, member_ids=[], rules=[],
+        )
+        o._teams["tm_top"] = top_team
+        o._teams["tm_inner"] = inner_team
+
+        def _add(agent_id, team_id):
+            rec = AgentRecord(
+                agent_id=agent_id, task_id="tsk_leader_nudge_test", team_id=team_id,
+                role=agent_id, skill_name="fake", model=None,
+                inbox=asyncio.Queue(), create_team_lock=asyncio.Lock(),
+            )
+            o._agents[agent_id] = rec
+            if team_id and team_id in o._teams:
+                o._teams[team_id].member_ids.append(agent_id)
+            return rec
+
+        root_rec = _add("root_ag", None)
+        o._root_id = "root_ag"
+        leader_rec = _add("leader_ag", "tm_top")
+        child_rec = _add("child_ag", "tm_inner")
+
+        # leader_ag: stale drain, no inflight activity, NOT completion_pending itself.
+        now = time.time()
+        stale_ts = now - IDLE_NUDGE_S - 10
+        leader_rec.last_drain_ts = stale_ts
+        leader_rec.last_progress_ts = stale_ts - 1
+        leader_rec.inflight_tools = 0
+        leader_rec.completion_pending = False
+        leader_rec.idle_nudge_count = 0
+
+        # child_ag: has completion_pending=True (waiting for leader to review).
+        # Set completion_pending_ts=None to prevent Pass A from also firing
+        # (keeps the test focused on Pass B behaviour only).
+        child_rec.completion_pending = True
+        child_rec.completion_pending_ts = None
+
+        await o._watchdog_tick()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        nudge_events = [e for e in emitter.events if e[0] == "liveness.nudge"]
+        nudged_agents = {e[1].get("agent_id") for e in nudge_events}
+
+        # Leader MUST be nudged — its own drain is stale regardless of child state.
+        assert "leader_ag" in nudged_agents, (
+            f"leader_ag was NOT nudged despite stale drain; events: {nudge_events}"
+        )
+        assert len([e for e in nudge_events if e[1].get("agent_id") == "leader_ag"]) == 1
+
+        # Child MUST NOT be nudged — completion_pending=True gives it freshness=0.
+        assert "child_ag" not in nudged_agents, (
+            f"child_ag was nudged despite completion_pending=True; events: {nudge_events}"
+        )
 
     asyncio.run(body())
 
