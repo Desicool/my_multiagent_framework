@@ -71,7 +71,7 @@ Defined in `beidou/web/frontend/src/lib/types.ts`:
 ```ts
 type StreamItem =
   | { kind:'text';        ts; message_id?; text; stop_reason? }
-  | { kind:'tool';        ts; tool_use_id; name; input?; duration_ms; is_error; expanded? }
+  | { kind:'tool';        ts; tool_use_id; name; input?; duration_ms; is_error; error_reason?; expanded? }
   | { kind:'message_in';  ts; from; from_is_user; content; message_id }
   | { kind:'message_out'; ts; to; content; message_id }
   | { kind:'turn_divider';ts; in_tok; out_tok; stop_reason?; model? }

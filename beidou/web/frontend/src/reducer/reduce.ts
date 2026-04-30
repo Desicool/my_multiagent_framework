@@ -172,7 +172,7 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
           // Replace the array element with a new object so the Svelte 5 $state
           // proxy set-trap fires and subscribers (e.g. ToolCard derived) are
           // notified. Mutating the old item in-place would bypass the proxy.
-          a._stream[idx] = { ...item, duration_ms: e.duration_ms, is_error: e.is_error ?? false };
+          a._stream[idx] = { ...item, duration_ms: e.duration_ms, is_error: e.is_error ?? false, error_reason: e.error_reason ?? null };
           if (e.is_error) {
             pushGlobalActivity(state, { ts: e.ts, agent_id: e.caller_id, kind: 'tool_error', label: `✗ ${displayToolName(item.name)} (${e.duration_ms ?? 0}ms)` });
           }

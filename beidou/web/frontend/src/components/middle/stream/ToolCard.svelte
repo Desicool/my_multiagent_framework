@@ -92,7 +92,11 @@
     {/if}
     {#if !pending && isError}
       <div class="mx-3 mb-2 px-3 py-2 rounded bg-error/10 border border-error/20">
-        <p class="text-xs text-error/80 italic">Tool errored. The result body is not in the event stream — see JSONL or pinned-agent terminal.</p>
+        {#if item.error_reason}
+          <pre class="text-xs text-error/90 font-mono whitespace-pre-wrap max-h-64 overflow-auto">{item.error_reason}</pre>
+        {:else}
+          <p class="text-xs text-error/80 italic">Tool errored. The result body is not in the event stream — see JSONL or pinned-agent terminal.</p>
+        {/if}
       </div>
     {/if}
   {/if}

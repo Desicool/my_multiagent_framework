@@ -240,6 +240,17 @@ describe('tool span: index-based patching', () => {
     // Should not throw; agent exists with empty stream
     expect(s.agentsById.A._stream.length).toBe(0);
   });
+
+  it('tool_result with is_error=true and error_reason threads error_reason onto stream item', () => {
+    applyEvent(s, { type: 'tool_called', ts: 1, caller_id: 'A', tool_use_id: 'u1', name: 'mcp__beidou__report_status' });
+    applyEvent(s, { type: 'tool_result', ts: 2, caller_id: 'A', tool_use_id: 'u1', duration_ms: 5, is_error: true, error_reason: 'plan_incomplete' });
+    const item = s.agentsById.A._stream[0];
+    expect(item.kind).toBe('tool');
+    if (item.kind === 'tool') {
+      expect(item.is_error).toBe(true);
+      expect(item.error_reason).toBe('plan_incomplete');
+    }
+  });
 });
 
 describe('turn.usage dedup', () => {

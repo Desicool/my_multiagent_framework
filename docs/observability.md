@@ -135,6 +135,7 @@ End of a tool span. Emitted by the drain loop when it observes the
 | `tool_use_id` | `ToolResultBlock.tool_use_id`. Join key — links back to the corresponding `tool_called`. |
 | `duration_ms` | Orchestrator-measured: monotonic time from `ToolUseBlock` arrival to `ToolResultBlock` arrival. |
 | `is_error` | `ToolResultBlock.is_error`; `false` when the field is absent. |
+| `error_reason` | Text from `ToolResultBlock.content` when `is_error=true`. For Beidou primitives this is the JSON `{error, message, details}` string produced by `beidou/primitives/mcp.py`. For SDK builtin tools it is the raw error text. Truncated to 2000 chars with a `…(truncated)` suffix. `null` when `is_error=false` or when the block carried no extractable text. |
 
 **Pairing rule:** `tool_use_id` is the join key between `tool_called` and
 `tool_result`. Every `tool_called` will be followed by exactly one
@@ -148,6 +149,8 @@ at roughly the same time (the drain loop processes them sequentially but the
 results are produced in parallel by the model). All `duration_ms` values will
 be approximately equal, reflecting the wall-clock time until the slowest tool
 completes. Individual per-tool timing is not measurable from the drain loop.
+
+**Error capture:** `error_reason` is populated by the drain loop in `beidou/sdk_agent.py` only when `is_error=true`. The drain loop concatenates text fragments from `ToolResultBlock.content` (which may be a string or a list of `{type,text}` blocks); non-text fragments (image blocks, etc.) are skipped. The field is the same on disk in JSONL and in the SQLite event row — no separate persistence path. Survives page refresh because the JSONL is replayed in full on every WebSocket connect (see `beidou/web/tail.py`).
 
 ---
 

@@ -65,7 +65,7 @@ export type ToolResultEvent = {
   tool_use_id: string;
   duration_ms: number | null;
   is_error: boolean;
-  // NOTE: result body is NOT in the event stream — see plan §6.
+  error_reason?: string | null; // error_reason carries the failure text when is_error=true (truncated to 2000 chars).
 };
 
 export type TurnUsageEvent = {
@@ -228,6 +228,7 @@ export type ToolStreamItem = {
   input?: Record<string, unknown>;
   duration_ms: number | null;   // null = pending
   is_error: boolean | null;     // null = pending
+  error_reason?: string | null; // null until tool_result arrives or no error
   expanded?: boolean;           // UI-local
 };
 

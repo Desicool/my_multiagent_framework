@@ -599,6 +599,49 @@ def _build_options(
 
 
 # ---------------------------------------------------------------------------
+# Helper: extract error text from a ToolResultBlock.
+# ---------------------------------------------------------------------------
+
+_ERROR_REASON_MAX = 2000
+
+
+def _extract_error_reason(block: object) -> "str | None":
+    """Extract a text reason from a ToolResultBlock when is_error=True.
+
+    Joins text fragments from `block.content` (which may be a string, a list
+    of dicts like {"type":"text","text":"..."}, or a list of objects with a
+    `.text` attribute). Returns None if nothing extractable. Truncates to
+    _ERROR_REASON_MAX chars with a "…(truncated)" suffix.
+    """
+    content = getattr(block, "content", None)
+    if content is None:
+        return None
+    parts: list[str] = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                t = item.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            else:
+                t = getattr(item, "text", None)
+                if isinstance(t, str):
+                    parts.append(t)
+    if not parts:
+        return None
+    text = "".join(parts)
+    if not text:
+        return None
+    if len(text) > _ERROR_REASON_MAX:
+        text = text[:_ERROR_REASON_MAX] + "…(truncated)"
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Entry point.
 # ---------------------------------------------------------------------------
 
@@ -906,6 +949,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                             if start is not None
                             else None
                         )
+                        is_err = bool(getattr(block, "is_error", False))
+                        error_reason = _extract_error_reason(block) if is_err else None
                         orch.emit_event(
                             "tool_result",
                             {
@@ -913,7 +958,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                                 "caller_id": spec.caller_id,
                                 "tool_use_id": tool_use_id,
                                 "duration_ms": duration_ms,
-                                "is_error": getattr(block, "is_error", False) or False,
+                                "is_error": is_err,
+                                "error_reason": error_reason,
                             },
                         )
                         _turn_result_info[tool_use_id] = getattr(block, "is_error", False) or False

@@ -643,6 +643,7 @@ def test_tool_called_and_result_events_paired(tmp_path, monkeypatch):
     assert isinstance(tr["duration_ms"], int)
     assert tr["duration_ms"] >= 0
     assert tr["is_error"] is False
+    assert tr["error_reason"] is None
 
     # Pairing: same tool_use_id.
     assert tc["tool_use_id"] == tr["tool_use_id"]
@@ -690,6 +691,86 @@ def test_tool_result_without_prior_tool_called_emits_none_duration(tmp_path, mon
     assert tr["tool_use_id"] == "toolu_orphan"
     assert tr["duration_ms"] is None
     assert tr["is_error"] is True
+
+
+def test_tool_result_captures_error_reason(tmp_path, monkeypatch):
+    """ToolResultBlock with is_error=True and text content surfaces error_reason in the event."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_err_reason")
+
+    messages = [
+        UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id="toolu_err1",
+                    is_error=True,
+                    content=[{"type": "text", "text": "plan_incomplete"}],
+                ),
+            ],
+        ),
+        ResultMessage(
+            total_cost_usd=0.0,
+            usage={},
+            num_turns=1,
+        ),
+    ]
+    _install_fake_query(monkeypatch, messages)
+
+    spec = SpawnSpec(
+        caller_id="ag_err_reason",
+        skill_name="fake_skill",
+        skill_root=skill_root,
+        task="t",
+    )
+    asyncio.run(run_agent(orch, spec))
+
+    tool_result_events = [p for n, p in orch.events if n == "tool_result"]
+    assert len(tool_result_events) == 1
+    tr = tool_result_events[0]
+    assert tr["is_error"] is True
+    assert tr["error_reason"] == "plan_incomplete"
+
+
+def test_tool_result_truncates_long_error_reason(tmp_path, monkeypatch):
+    """ToolResultBlock with is_error=True and >2000-char content is truncated with suffix."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_trunc")
+
+    long_text = "x" * 5000
+    messages = [
+        UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id="toolu_trunc",
+                    is_error=True,
+                    content=[{"type": "text", "text": long_text}],
+                ),
+            ],
+        ),
+        ResultMessage(
+            total_cost_usd=0.0,
+            usage={},
+            num_turns=1,
+        ),
+    ]
+    _install_fake_query(monkeypatch, messages)
+
+    spec = SpawnSpec(
+        caller_id="ag_trunc",
+        skill_name="fake_skill",
+        skill_root=skill_root,
+        task="t",
+    )
+    asyncio.run(run_agent(orch, spec))
+
+    tool_result_events = [p for n, p in orch.events if n == "tool_result"]
+    assert len(tool_result_events) == 1
+    tr = tool_result_events[0]
+    assert tr["is_error"] is True
+    assert tr["error_reason"].endswith("…(truncated)")
+    assert len(tr["error_reason"]) == 2000 + len("…(truncated)")
 
 
 # ---------------------------------------------------------------------------
