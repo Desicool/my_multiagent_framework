@@ -901,3 +901,156 @@ def test_watchdog_pass_b_suppresses_nudge_for_intermediate_hop(tmp_path):
         future.result()  # confirm it resolved cleanly
 
     asyncio.run(body())
+
+
+def test_watchdog_liveness_escalation_delivers_answer_to_parked_agent(tmp_path):
+    """_watchdog_ask_and_deliver_liveness_answer must put a liveness_answer message
+    into the agent's inbox after the user answers via the gateway.
+
+    Regression test for the bug in tsk_cc3ad62b where the watchdog-owned background
+    task dropped the returned answer instead of forwarding it to the parked agent.
+    """
+    from beidou.orchestrator import AgentRecord, Orchestrator
+    from beidou.events import EventEmitter
+
+    class _SyncEmitter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event: str, agent_id: str = "", team_id=None, **kwargs) -> None:
+            self.events.append((event, {"agent_id": agent_id, **kwargs}))
+
+    async def body():
+        emitter = _SyncEmitter()
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir(exist_ok=True)
+        orch = Orchestrator(
+            task_id="tsk_watchdog_answer",
+            emitter=emitter,  # type: ignore[arg-type]
+            skill_root=skill_root,
+        )
+
+        # Register a real agent record so deliver_message has somewhere to put the message.
+        rec = AgentRecord(
+            agent_id="root_ag",
+            task_id="tsk_watchdog_answer",
+            team_id=None,
+            role="root",
+            skill_name="fake",
+            model=None,
+            inbox=asyncio.Queue(),
+            create_team_lock=asyncio.Lock(),
+        )
+        orch._agents["root_ag"] = rec
+        orch._root_id = "root_ag"
+
+        # Construct the gateway AFTER orch so the closure over orch is valid.
+        class _Gateway:
+            async def surface_question(self, qid, body, questions):
+                # Simulate user answering immediately when the question surfaces.
+                orch.resolve_question(
+                    qid,
+                    [{"selected_labels": [], "text": "continue"}],
+                    answerer="USER",
+                )
+
+        orch.gateway = _Gateway()
+
+        q = [
+            {
+                "question": (
+                    "Agent root_ag has been idle 999s with no progress."
+                    " Approve continuation, redirect, or abort?"
+                ),
+                "header": "",
+                "multiSelect": False,
+                "options": [],
+            }
+        ]
+
+        await orch._watchdog_ask_and_deliver_liveness_answer("root_ag", q)
+
+        # The parked agent must have received a liveness_answer inbox message.
+        msg = await asyncio.wait_for(rec.inbox.get(), timeout=1.0)
+        assert msg.kind == "liveness_answer"
+        assert msg.from_id == "beidou"
+        # The message body must contain the original question text and the user's answer.
+        assert "Approve continuation, redirect, or abort?" in msg.content
+        assert "continue" in msg.content
+
+    asyncio.run(body())
+
+
+def test_watchdog_liveness_escalation_noops_if_agent_is_gone(tmp_path):
+    """_watchdog_ask_and_deliver_liveness_answer must return cleanly when the agent
+    disappears between question registration and answer delivery.
+
+    Exercises the existing deliver_message no-op semantics for an unknown to_id.
+    """
+    from beidou.orchestrator import AgentRecord, Orchestrator
+    from beidou.events import EventEmitter
+
+    class _SyncEmitter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event: str, agent_id: str = "", team_id=None, **kwargs) -> None:
+            self.events.append((event, {"agent_id": agent_id, **kwargs}))
+
+    async def body():
+        emitter = _SyncEmitter()
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir(exist_ok=True)
+        orch = Orchestrator(
+            task_id="tsk_watchdog_gone",
+            emitter=emitter,  # type: ignore[arg-type]
+            skill_root=skill_root,
+        )
+
+        # Register the agent so post_question can look it up, but we will
+        # remove it before answer delivery to simulate a crashed/terminated agent.
+        rec = AgentRecord(
+            agent_id="gone_ag",
+            task_id="tsk_watchdog_gone",
+            team_id=None,
+            role="root",
+            skill_name="fake",
+            model=None,
+            inbox=asyncio.Queue(),
+            create_team_lock=asyncio.Lock(),
+        )
+        orch._agents["gone_ag"] = rec
+        orch._root_id = "gone_ag"
+
+        class _Gateway:
+            async def surface_question(self, qid, body, questions):
+                # Remove the agent BEFORE resolving — simulates agent gone between
+                # escalation and answer delivery.
+                del orch._agents["gone_ag"]
+                orch.resolve_question(
+                    qid,
+                    [{"selected_labels": [], "text": "continue"}],
+                    answerer="USER",
+                )
+
+        orch.gateway = _Gateway()
+
+        q = [
+            {
+                "question": (
+                    "Agent gone_ag has been idle 999s with no progress."
+                    " Approve continuation, redirect, or abort?"
+                ),
+                "header": "",
+                "multiSelect": False,
+                "options": [],
+            }
+        ]
+
+        # Must return cleanly without raising even though the agent is gone.
+        await orch._watchdog_ask_and_deliver_liveness_answer("gone_ag", q)
+
+        # No agents remain, no message was delivered anywhere.
+        assert "gone_ag" not in orch._agents
+
+    asyncio.run(body())

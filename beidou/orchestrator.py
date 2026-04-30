@@ -1240,6 +1240,36 @@ class Orchestrator:
                     {"exception": type(exc).__name__, "msg": str(exc), "tb": tb, "ts": time.time()},
                 )
 
+    async def _watchdog_ask_and_deliver_liveness_answer(
+        self,
+        agent_id: str,
+        questions: list[dict],
+    ) -> None:
+        """Watchdog-local helper: ask the user gateway, then deliver the answer to the parked agent.
+
+        The parked agent's prior SDK turn has already drained, so it is waiting on
+        inbox.get() — not awaiting the question future.  resolve_question sets the
+        future (which no one is awaiting here), so we must explicitly forward the
+        answer into the agent's inbox via deliver_message.
+
+        No try/except needed: deliver_message already no-ops silently if the recipient
+        is gone, and an unexpected exception in a background task is acceptable (the
+        _bg_tasks.discard callback handles cleanup).
+        """
+        result = await self.gateway_ask_user_structured(agent_id, questions, None)
+        prompt_text = render_prompt_text(questions)
+        answer_text = result["answer_text"]
+        self.deliver_message(
+            from_id="beidou",
+            to_id=agent_id,
+            body=(
+                "[LIVENESS ANSWER from user]\n"
+                f"{prompt_text}\n\n"
+                f"User answer: {answer_text}"
+            ),
+            kind="liveness_answer",
+        )
+
     async def _watchdog_tick(self) -> None:
         """One tick of the watchdog: Pass A (review escalation) + Pass B (liveness nudge).
 
@@ -1418,7 +1448,9 @@ class Orchestrator:
                             "options": [],
                         }
                     ]
-                    _t = asyncio.create_task(self.gateway_ask_user_structured(agent_id, _q, None))
+                    _t = asyncio.create_task(
+                        self._watchdog_ask_and_deliver_liveness_answer(agent_id, _q)
+                    )
                     self._bg_tasks.add(_t)
                     _t.add_done_callback(self._bg_tasks.discard)
 

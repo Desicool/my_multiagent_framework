@@ -308,8 +308,12 @@ call `report_status(done)` if finished, or call `ask_user` if blocked). After th
 now so the next threshold counts from this ping.
 
 Same 3-strike escalation as Pass A: nudge #1, nudge #2 (with escalation
-warning), then `gateway_ask_user` (best-effort). Events: `liveness.nudge`
-(every fired nudge) and `liveness.escalated_to_user` (on escalation).
+warning), then a watchdog-owned background ask to the user gateway. When the
+user answers, that same watchdog task delivers the answer into the asking
+agent's inbox via `deliver_message(kind="liveness_answer")`, because the
+agent's prior SDK turn has already drained and it is parked on inbox, not
+awaiting the question future. Events: `liveness.nudge` (every fired nudge)
+and `liveness.escalated_to_user` (on escalation).
 
 ### In-flight tracking
 
