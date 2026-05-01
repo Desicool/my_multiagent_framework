@@ -12,14 +12,17 @@ Every rule enforced here is load-bearing; see:
   on contract violations; N=3 escalation to leader (gateway for root).
 * ``docs/limits.md`` — every numeric boundary this file references.
 * ``docs/observability.md`` — event catalogue.
+
+Data structures (AgentRecord, TeamRecord, Message, etc.) live in
+``beidou/engine/``. SDK-aware agent loop and hooks live in
+``beidou/agent/``. This file is the conductor that wires them together.
 """
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -28,12 +31,22 @@ import json
 from beidou import db as _db
 from beidou import plans as _plans
 from beidou import sdk_agent
-from beidou.events import EventEmitter
-from beidou.primitives.core import (
+from beidou.engine.graph import USER_SENTINEL, TeamRecord, _slug_role
+from beidou.engine.inbox import INBOX_CAP, Message
+from beidou.engine.lifecycle import (
     CONTRACT_STRIKES,
     CRASH_STRIKES,
-    INBOX_CAP,
-    Message,
+    AgentRecord,
+)
+from beidou.engine.watchdog import (
+    IDLE_NUDGE_S,
+    MAX_PINGS_BEFORE_ESCALATION,
+    REVIEW_PING_INTERVAL_S,
+    TERMINATE_GRACE_S,
+    WATCHDOG_INTERVAL_S,
+)
+from beidou.events import EventEmitter
+from beidou.primitives.core import (
     Peer,
     PrimitiveError,
 )
@@ -43,103 +56,6 @@ from beidou.workspace import agent_workspace, team_workspace
 
 if TYPE_CHECKING:  # pragma: no cover
     from beidou.gateways.base import BaseGateway
-
-
-# Sentinel leader-id for the root agent.  The root agent has no team and no
-# leader; USER_SENTINEL is stored as ``leader_id`` in any context object that
-# needs a "who leads the root?" answer (e.g. spawn context template_vars).
-USER_SENTINEL = "__user__"
-
-# Watchdog tunables — implementation constants, NOT in docs/limits.md.
-WATCHDOG_INTERVAL_S = 30.0
-REVIEW_PING_INTERVAL_S = 60.0
-IDLE_NUDGE_S = 120.0
-MAX_PINGS_BEFORE_ESCALATION = 3
-TERMINATE_GRACE_S = 60.0
-
-
-# ---------------------------------------------------------------------------
-# Name helpers.
-# ---------------------------------------------------------------------------
-
-
-def _slug_role(role: str) -> str:
-    """Convert a role string into a clean slug component.
-
-    Steps: lowercase → replace runs of [^a-z0-9] with '-' → strip
-    leading/trailing '-' → collapse repeated '-' → truncate to 24 chars →
-    fall back to 'agent' if the result is empty.
-    """
-    s = role.lower()
-    s = re.sub(r"[^a-z0-9]+", "-", s)
-    s = s.strip("-")
-    s = re.sub(r"-{2,}", "-", s)
-    s = s[:24]
-    return s or "agent"
-
-
-# ---------------------------------------------------------------------------
-# Records.
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AgentRecord:
-    agent_id: str
-    task_id: str
-    team_id: str | None                # team this agent is a MEMBER of; None for teamless root
-    role: str
-    skill_name: str
-    model: Optional[str]
-    inbox: asyncio.Queue
-    # Field name is `create_team_lock` for backward-compat with test fixtures;
-    # access via the `spawn_lock` property (limits.md #5 rename).
-    create_team_lock: asyncio.Lock
-    name: str = ""                    # human-readable display name, e.g. "frontend-engineer-a3b2"
-    last_status: str = "working"
-    last_status_detail: str = ""
-    contract_strikes: int = 0
-    run_task: Optional[asyncio.Task] = None
-    terminate_consumed: bool = False
-    terminate_grace_deadline: Optional[float] = None
-    total_tokens: int = 0
-    # Completion-review state (Phase 2 foundation — bd issue 8z3).
-    completion_pending: bool = False
-    completion_pending_ts: Optional[float] = None
-    last_progress_ts: float = field(default_factory=time.time)
-    last_drain_ts: Optional[float] = None
-    review_ping_count: int = 0
-    # Watchdog fields (bd issue qj2).
-    inflight_tools: int = 0
-    idle_nudge_count: int = 0
-    # Plan-task association. Set when this agent was spawned via spawn_for_task;
-    # stays None for the root agent and for legacy create_team-spawned members.
-    plan_task_id: Optional[str] = None
-    plan_id: Optional[str] = None
-    # Crash recovery (agent-runtime.md §5.1).
-    crash_strikes: int = 0
-    last_session_id: Optional[str] = None
-    last_crash_stderr: str = ""
-
-    @property
-    def spawn_lock(self) -> asyncio.Lock:
-        """Alias for create_team_lock (limits.md #5 rename; field kept for test compat)."""
-        return self.create_team_lock
-
-
-@dataclass
-class TeamRecord:
-    team_id: str
-    name: str
-    leader_id: str                    # MUST equal caller_id of create_team / spawn_for_task
-    depth: int                        # 0 for root
-    member_ids: list[str] = field(default_factory=list)
-    rules: list[str] = field(default_factory=list)
-    parent_team_id: Optional[str] = None
-    # `task` is dead metadata — only written by legacy create_team callers,
-    # never read by the orchestrator. Kept as optional with a default so
-    # existing test fixtures still pass; will be removed in a follow-up commit.
-    task: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +357,7 @@ class Orchestrator:
                 rec.completion_pending = False
                 rec.completion_pending_ts = None
                 rec.review_ping_count = 0
+                rec.idle_nudge_count = 0
                 content_preview = (msg.content or "")[:200]
                 self.emit_event(
                     "completion.rework",
@@ -460,6 +377,17 @@ class Orchestrator:
                         "ts": time.time(),
                     },
                 )
+                footer = (
+                    "\n\n---\n"
+                    "[REWORK COMPLETION REMINDER]\n"
+                    "When you have addressed all the feedback above, follow the SAME "
+                    "completion handoff as your first submission:\n"
+                    "1. Write the [REVIEW REQUIRED] envelope as the LAST text in your turn\n"
+                    "2. In the SAME turn, call mcp__beidou__report_status(state=\"done\", detail=\"...\")\n"
+                    "Do NOT just say \"done\" or call TodoWrite — report_status is the ONLY "
+                    "signal your leader receives."
+                )
+                msg.content = (msg.content or "") + footer
 
     def inbox_size(self, agent_id: str) -> int:
         return self._agents[agent_id].inbox.qsize()
@@ -2482,9 +2410,26 @@ class Orchestrator:
                 pass
 
 
+# ------------------------------------------------------------------
+# Re-export data structures that moved to beidou.engine for backward
+# compatibility.  New code should import from beidou.engine directly.
+# ------------------------------------------------------------------
+# (AgentRecord, TeamRecord, USER_SENTINEL, Message, INBOX_CAP,
+#  CONTRACT_STRIKES, CRASH_STRIKES, and watchdog tunables are imported
+#  at the top of this file and re-exported here.)
+
 __all__ = [
-    "Orchestrator",
     "AgentRecord",
+    "CONTRACT_STRIKES",
+    "CRASH_STRIKES",
+    "IDLE_NUDGE_S",
+    "INBOX_CAP",
+    "MAX_PINGS_BEFORE_ESCALATION",
+    "Message",
+    "Orchestrator",
+    "REVIEW_PING_INTERVAL_S",
+    "TERMINATE_GRACE_S",
     "TeamRecord",
     "USER_SENTINEL",
+    "WATCHDOG_INTERVAL_S",
 ]
