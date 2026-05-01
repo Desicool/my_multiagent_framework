@@ -13,6 +13,7 @@ Given a change kind, open these files FIRST (top-to-bottom), then code.
 | Agent tool surface (adding/removing/renaming a primitive, input schema, error shape) | `tool-surface.md`, `agent-runtime.md`, `limits.md` |
 | A retry count, timeout, fan-out cap, recursion depth, token ceiling, inbox cap, workspace cap | `limits.md` (then the primitive spec in `tool-surface.md`) |
 | A skill (new SKILL.md, new frontmatter field, template substitution rules, loader behaviour) | `skills.md`, `agent-runtime.md` |
+| A skill module (module.toml, gate.py, eval.py, hook points, handler signatures) | `skill-modules.md`, `limits.md` |
 | The orchestrator <-> SDK boundary, event drain, context propagation, process layout | `architecture.md`, `agent-runtime.md` |
 | Team topology: leader/member semantics, cascade termination, liveness, message routing | `orchestration.md`, `tool-surface.md` (create_team, terminate_child, send_message) |
 | Event schema, JSONL/SQLite fields, accounting, turn-level usage, cost rollups | `observability.md` |
@@ -33,7 +34,7 @@ Any diff that:
 specific boundary and proposed new value via `AskUserQuestion`. Bug fixes that
 preserve all documented boundaries proceed without approval.
 
-## The ten specs
+## The eleven specs
 
 1. `README.md` - this index.
 2. `architecture.md` - orchestrator/SDK split, process layout, context propagation, event flow.
@@ -45,6 +46,7 @@ preserve all documented boundaries proceed without approval.
 8. `limits.md` - every hard limit; every line is a boundary.
 9. `workflows.md` - per-change-kind checklist for developers.
 10. `web-ui.md` - frontend layout, event-to-state reducer, build instructions, bundle policy.
+11. `skill-modules.md` - module.toml schema, gate/eval handler signatures, typed hook context types, discovery and loading.
 
 ## Working rules
 

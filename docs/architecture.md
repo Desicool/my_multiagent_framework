@@ -12,16 +12,21 @@ via an in-process MCP server, and drains their message stream for observability.
 |  CLI / task input                                            |
 |      |                                                       |
 |      v                                                       |
-|  Orchestrator  (beidou/orchestrator.py)                      |
-|    - resolves task -> team composition                       |
-|    - spawns each agent via sdk_agent.run(...)                |
-|    - drains each agent's async message iterator              |
-|        -> events: agent_started / tool_called /              |
-|           turn.usage / run.cost / agent_completed            |
-|    - routes A2A traffic (send_message)                       |
-|    - maintains the team graph / inbox registry               |
-|    - persists events to ~/.beidou/ (unchanged sinks)         |
-|    - workspaces live in the project dir (--workspace)        |
+|  beidou/engine/                                              |
+|    graph.py       — team graph, depth/fan-out caps           |
+|    inbox.py       — message routing, termination cascade     |
+|    lifecycle.py   — AgentRecord, spawn, recovery policy      |
+|    watchdog.py    — liveness, review escalation              |
+|    dispatcher.py  — internal event bus for eval handlers     |
+|    config.py      — AgentConfig (pure-data boundary)         |
+|      |                                                       |
+|      |  AgentConfig (paths, strings, lists — no objects)     |
+|      v                                                       |
+|  beidou/agent/                                               |
+|    loop.py        — SDK drain loop, input stream, RunResult  |
+|    prompts.py     — system prompt assembly                   |
+|    hooks.py       — built-in hooks + user gate/eval loading  |
+|    context.py     — typed hook context dataclasses           |
 |                                                              |
 |  Per-spawn MCP server (create_sdk_mcp_server)                |
 |    - one server instance per agent spawn                     |
@@ -39,19 +44,50 @@ via an in-process MCP server, and drains their message stream for observability.
 +------------------------------------------------------------+
 ```
 
-## File map (intended layout)
+## File map
+
+### Engine layer (SDK-agnostic)
 
 | File | Role |
 |---|---|
-| `beidou/orchestrator.py` (to be built) | Composes teams, spawns SDK agents, drains streams, routes A2A. |
-| `beidou/sdk_agent.py` (to be built) | Thin wrapper around `claude_agent_sdk.query(...)`; builds `ClaudeAgentOptions`; emits Beidou events from the message iterator. |
-| `beidou/primitives/core.py` (to be built) | Pure-Python implementation of each primitive; takes explicit `caller_id` and orchestrator handle, no module globals. |
-| `beidou/primitives/mcp.py` (to be built) | `@tool`-decorated wrappers around `core.py`, packaged via `create_sdk_mcp_server`. |
-| `beidou/skills/loader.py` (to be built) | Parses SKILL.md frontmatter -> `ClaudeAgentOptions`. |
-| `beidou/events.py` (existing) | `EventEmitter`: JSONL + SQLite sinks. Unchanged. |
-| `beidou/db.py` (existing) | SQLite schema. Unchanged. |
-| `beidou/workspace.py` (existing) | Workspace helpers. Updated for three-tier workspace model (project + team). |
-| `beidou/context.py` (existing) | `AgentContext` still carries `task_id`, `workspace`, `project_workspace`, `emitter`, `caller_id` down spawn chain. `on_llm_call` / `on_tool_call` hooks are retired. |
+| `beidou/engine/config.py` | `EngineConfig` + `AgentConfig` dataclasses — the pure-data boundary between engine and agent. |
+| `beidou/engine/graph.py` | Team graph, self-lead invariant, depth/fan-out caps. |
+| `beidou/engine/inbox.py` | Per-agent inbox (asyncio.Queue), send_message routing, termination cascade. |
+| `beidou/engine/lifecycle.py` | AgentRecord, spawn, terminate, recovery policy (contract/crash strikes). |
+| `beidou/engine/watchdog.py` | Pass A (review escalation) + Pass B (liveness nudge) + Pass C (grace backstop). |
+| `beidou/engine/dispatcher.py` | Internal event bus for eval handler subscriptions (separate from JSONL/SQLite EventEmitter). |
+
+### Agent layer (SDK-aware)
+
+| File | Role |
+|---|---|
+| `beidou/agent/loop.py` | `run_agent()`: SDK drain loop, input stream generator, `RunResult`. |
+| `beidou/agent/prompts.py` | System prompt assembly (5 sections, template substitution). |
+| `beidou/agent/hooks.py` | `HookRegistry`: loads `module.toml`, registers user gate/eval handlers, builds SDK `HookMatcher` dicts. Also contains the three built-in hooks (AskUserQuestion bridge, review gate, completion routing). |
+| `beidou/agent/context.py` | Typed per-hook-point context dataclasses (`ToolCallContext`, `TurnEvalContext`, etc.) for user gate/eval handlers. |
+
+### Primitives and skills
+
+| File | Role |
+|---|---|
+| `beidou/primitives/core.py` | Pure-Python implementation of each primitive; takes explicit `caller_id` and orchestrator handle. |
+| `beidou/primitives/mcp.py` | `@tool`-decorated wrappers around `core.py`, packaged via `create_sdk_mcp_server`. |
+| `beidou/skills/loader.py` | Parses SKILL.md frontmatter, resolves allowed-tools, provisions skill files into team workspaces. |
+| `beidou/skills/<domain>/<name>/SKILL.md` | Skill prompt body with YAML frontmatter. |
+| `beidou/skills/<domain>/<name>/module.toml` | Optional hook declarations (gate/eval handler registration). |
+| `beidou/skills/<domain>/<name>/gate.py` | Optional gate handler implementations. |
+| `beidou/skills/<domain>/<name>/eval.py` | Optional eval handler implementations. |
+
+### Infrastructure (unchanged)
+
+| File | Role |
+|---|---|
+| `beidou/orchestrator.py` | Thin facade re-exporting from `beidou/engine/` and `beidou/agent/`. |
+| `beidou/sdk_agent.py` | Deprecated shim re-exporting from `beidou/agent/loop.py`. |
+| `beidou/events.py` | `EventEmitter`: JSONL + SQLite sinks. Unchanged. |
+| `beidou/db.py` | SQLite schema. Unchanged. |
+| `beidou/workspace.py` | Workspace helpers. Updated for three-tier workspace model (project + team). |
+| `beidou/context.py` | Deprecated. Kept only for legacy tool files that still import it; no longer on the hot path. |
 
 ## Per-spawn MCP server
 
@@ -201,3 +237,30 @@ mapping and the deduplication rules (assistant-message fragments share a
   belongs in the orchestrator boundary.
 - Tools-as-MCP means the agent-facing surface is declarative: changes flow
   through `tool-surface.md` and the primitives module, without touching the SDK.
+- The engine/agent split (May 2026) separates SDK-agnostic policy (graph, inbox,
+  lifecycle, watchdog) from SDK-aware runtime (drain loop, hooks, prompts) with
+  `AgentConfig` as a pure-data boundary. See `docs/skill-modules.md` for the
+  user-extensible hook system built on this split.
+
+## Hook system
+
+Beidou provides three **built-in hooks** registered on every agent spawn (owned
+by the runtime, not by any skill):
+
+| Hook | SDK Hook Type | Purpose |
+|------|--------------|---------|
+| `on_ask_user_question` | PreToolUse | Intercept raw `AskUserQuestion` calls, route to human gateway |
+| `on_review_gate` | PreToolUse | Block leader from advancing while children await review |
+| `on_report_status` | PostToolUse | Completion handoff: read assistant text, route to leader/user gateway |
+
+Skills may optionally declare **user hooks** via `module.toml` in the skill
+directory. User hooks are additive — they run **after** built-in hooks pass,
+and cannot override or bypass built-in policy. User hooks come in two kinds:
+
+- **Gate handlers**: synchronous chain, return `Pass` or `Block(reason)`.
+  Mapped to SDK PreToolUse/PostToolUse matchers. Fail-closed.
+- **Eval handlers**: fire-and-forget subscribers, return `None`.
+  Invoked directly from the drain loop or event dispatch side-channel.
+  Fail-open.
+
+Full specification: `docs/skill-modules.md`.

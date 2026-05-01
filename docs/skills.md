@@ -216,3 +216,12 @@ It is **not** a runtime authorization boundary today. A separate code change in
 2. Body: role-specific instructions + lifecycle contract (section 3 of
    `agent-runtime.md`).
 3. No code changes needed. The loader discovers by path.
+
+### Optional: adding code modules
+
+A skill directory may also contain code-level extension modules (`module.toml`,
+`gate.py`, `eval.py`) that plug gate (blocking) and eval (observational)
+handlers into the agent lifecycle. When these files are absent, the skill
+behaves exactly as it does today — code modules are purely additive.
+
+See `docs/skill-modules.md` for the complete specification.

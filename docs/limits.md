@@ -93,4 +93,36 @@ to make the absence explicit.)
 | 6 | Workspace size per team | 500 MiB | Workspace monitor |
 | 7 | Per-agent budget controls | SDK-native (max_turns, max_budget_usd) | ClaudeAgentOptions |
 
-All seven require user approval to change.
+## 8. Skill module code trust boundary
+
+| | |
+|---|---|
+| **Value** | **Skill directories with `gate.py` or `eval.py` execute arbitrary Python at agent spawn time.** |
+| Rationale | Module files turn skill discovery from prompt-only to code-execution. Bundled skills (`beidou/skills/`) are trusted by definition. User skills (`~/.claude/skills/`) and project skills (`{cwd}/.beidou/skills/`) run with the user's privileges — same trust model as running the project code itself. |
+| Enforced in | `HookRegistry.from_module_path()` logs a warning when loading modules from non-bundled paths. Gate handlers are fail-closed (any exception → `Block`). Eval handlers are fail-open (exception logged, eval skipped). |
+| Change policy | Requires user approval to change. |
+
+## 9. Gate handler execution timeout
+
+| | |
+|---|---|
+| **Value** | **600 seconds per gate handler invocation** |
+| Rationale | Gate handlers run on the tool-call path; a slow gate adds latency to tool execution. 600s (~10 min) allows for complex validation (external sandbox checks, large-file pattern scanning) while preventing a truly hung gate from stalling the agent indefinitely. |
+| Enforced in | `beidou/agent/hooks.py` via `asyncio.wait_for(handler(ctx), timeout=600)`. On timeout: gate returns `Block(reason="gate_handler_timeout")`. Eval handlers use the same timeout but are fail-open (timeout logged, eval skipped). |
+| Change policy | Requires user approval to change. |
+
+## Summary table
+
+| # | Boundary | Value | Enforced in |
+|---|---|---|---|
+| 1 | Concurrent in-flight members per team | 8 | `spawn_agent` / `create_team` (deprecated) primitive |
+| 2 | Team nesting depth (depth 0 = teamless agent) | 5 | `spawn_agent` / `create_team` (deprecated) primitive |
+| 3 | Per-agent inbox cap | 1000 | `send_message` primitive |
+| 4 | Contract-violation strikes | 3 | Orchestrator recovery |
+| 5 | Concurrent in-flight team-spawn (`create_team` or `spawn_agent`) per agent | 1 | Orchestrator `spawn_lock` |
+| 6 | Workspace size per team | 500 MiB | Workspace monitor |
+| 7 | Per-agent budget controls | SDK-native (max_turns, max_budget_usd) | ClaudeAgentOptions |
+| 8 | Module code trust boundary | Bundled=trusted, user/project=user's risk | HookRegistry load warning; gates fail-closed, evals fail-open |
+| 9 | Gate handler timeout | 600 s | `asyncio.wait_for` in hook dispatch |
+
+All nine require user approval to change.
