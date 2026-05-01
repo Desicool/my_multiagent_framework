@@ -451,6 +451,15 @@ class Orchestrator:
                         "ts": time.time(),
                     },
                 )
+                self.emit_event(
+                    "status",
+                    {
+                        "agent_id": rec.agent_id,
+                        "state": "working",
+                        "detail": f"rework: {content_preview[:100]}",
+                        "ts": time.time(),
+                    },
+                )
 
     def inbox_size(self, agent_id: str) -> int:
         return self._agents[agent_id].inbox.qsize()
