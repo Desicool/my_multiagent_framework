@@ -261,6 +261,7 @@ def build_hooks(orch: "Orchestrator", caller_id: str, leader_id: str) -> dict:
             rec.completion_pending = True
             rec.completion_pending_ts = time.time()
             rec.last_progress_ts = time.time()
+            rec.idle_nudge_count = 0
 
         # Retrieve the assistant text from the same turn as the report_status call.
         # Exact binding: tool_use_id -> text recorded by the drain loop in the same message.

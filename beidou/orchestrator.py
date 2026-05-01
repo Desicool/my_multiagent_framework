@@ -385,6 +385,7 @@ class Orchestrator:
                 rec.completion_pending = False
                 rec.completion_pending_ts = None
                 rec.review_ping_count = 0
+                rec.idle_nudge_count = 0
                 content_preview = (msg.content or "")[:200]
                 self.emit_event(
                     "completion.rework",
@@ -395,6 +396,17 @@ class Orchestrator:
                         "ts": time.time(),
                     },
                 )
+                footer = (
+                    "\n\n---\n"
+                    "[REWORK COMPLETION REMINDER]\n"
+                    "When you have addressed all the feedback above, follow the SAME "
+                    "completion handoff as your first submission:\n"
+                    "1. Write the [REVIEW REQUIRED] envelope as the LAST text in your turn\n"
+                    "2. In the SAME turn, call mcp__beidou__report_status(state=\"done\", detail=\"...\")\n"
+                    "Do NOT just say \"done\" or call TodoWrite — report_status is the ONLY "
+                    "signal your leader receives."
+                )
+                msg.content = (msg.content or "") + footer
 
     def inbox_size(self, agent_id: str) -> int:
         return self._agents[agent_id].inbox.qsize()
