@@ -1401,6 +1401,7 @@ class Orchestrator:
                     body=body,
                     kind="ping",
                 )
+                rec.idle_nudge_count += 1
             elif rec.idle_nudge_count == 2:
                 # Escalate to user gateway (fire-and-forget — the watchdog
                 # does not await the user's answer).
@@ -1425,8 +1426,11 @@ class Orchestrator:
                     )
                     self._bg_tasks.add(_t)
                     _t.add_done_callback(self._bg_tasks.discard)
+                # Reset idle nudge count so Pass B resumes monitoring after
+                # the escalation round-trip; otherwise the agent is permanently
+                # excluded once nudge_count hits MAX_PINGS_BEFORE_ESCALATION.
+                rec.idle_nudge_count = 0
 
-            rec.idle_nudge_count += 1
             rec.last_progress_ts = now
             self.emit_event(
                 "liveness.nudge",
