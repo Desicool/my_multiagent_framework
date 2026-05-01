@@ -441,6 +441,17 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 # True in the post-loop check.
                 rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
                 if rec is not None:
+                    # Clear any pending reply obligations before returning.
+                    if rec.pending_replies:
+                        for msg_id, obl in rec.pending_replies.items():
+                            orch.emit_event("reply.abandoned", {
+                                "agent_id": spec.caller_id,
+                                "message_id": msg_id,
+                                "from_id": obl["from_id"],
+                                "ts": time.time(),
+                            })
+                        rec.pending_replies.clear()
+                        rec.reply_gate_active = False
                     rec.terminate_consumed = True
                 return  # Closing the generator ends the SDK session.
             # Emit agent_input BEFORE yielding (origin time, not consume time).
@@ -458,8 +469,23 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                     "message_id": msg_in.message_id,
                 },
             )
+            # Register inquiry obligations on the AgentRecord.
+            if msg_in.kind == "inquiry":
+                rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
+                if rec is not None:
+                    priority = getattr(msg_in, "priority", "normal")
+                    rec.pending_replies[msg_in.message_id] = {
+                        "from_id": msg_in.from_id,
+                        "ts": msg_in.ts,
+                        "priority": priority,
+                    }
+                    if priority == "high":
+                        rec.reply_gate_active = True
             # Render peer messages as user-role input to the next turn.
-            content = f"[from {msg_in.from_id}] {msg_in.content}"
+            if msg_in.kind == "inquiry":
+                content = f"[INQUIRY from {msg_in.from_id} — reply expected] {msg_in.content}"
+            else:
+                content = f"[from {msg_in.from_id}] {msg_in.content}"
             yield {
                 "type": "user",
                 "message": {"role": "user", "content": content},
@@ -688,6 +714,48 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                         **result_data,
                     },
                 )
+
+                # --- REPLY OBLIGATION CHECK ---
+                # Fires after EVERY turn. Checks pending_replies and activates the
+                # reply gate if the agent didn't fulfill all reply obligations this turn.
+                # The PostToolUse hook (on_send_message_reply) already clears fulfilled
+                # obligations during the turn. This check catches anything the hook missed
+                # (e.g., text-only turns, or if the hook's matcher didn't trigger).
+                # We re-scan _turn_tool_info here for defense-in-depth.
+                if _drain_rec is not None and getattr(_drain_rec, "pending_replies", None):
+                    for tool_id, (tool_name, tool_input) in _turn_tool_info.items():
+                        if tool_name == "mcp__beidou__send_message":
+                            to = tool_input.get("to", "")
+                            # FIFO: oldest matching obligation
+                            oldest_msg_id = None
+                            oldest_ts_val = None
+                            for msg_id, obl in _drain_rec.pending_replies.items():
+                                if obl["from_id"] == to:
+                                    if oldest_ts_val is None or obl["ts"] < oldest_ts_val:
+                                        oldest_ts_val = obl["ts"]
+                                        oldest_msg_id = msg_id
+                            if oldest_msg_id:
+                                del _drain_rec.pending_replies[oldest_msg_id]
+
+                    if _drain_rec.pending_replies:
+                        # Idempotency guard: don't inject duplicate nudges.
+                        if not _drain_rec.reply_gate_active:
+                            still_pending = list(_drain_rec.pending_replies.values())
+                            from_ids = list(dict.fromkeys(o["from_id"] for o in still_pending))
+                            nudge = (
+                                f"[REPLY REQUIRED] You have unreplied inquiries from: {', '.join(from_ids)}.\n"
+                                f"Call mcp__beidou__send_message(to=<agent>, content='...') to reply before taking other actions."
+                            )
+                            orch.deliver_message(
+                                from_id="beidou",
+                                to_id=spec.caller_id,
+                                body=nudge,
+                                kind="nudge",
+                            )
+                            _drain_rec.reply_gate_active = True
+                    else:
+                        # All obligations cleared this turn.
+                        _drain_rec.reply_gate_active = False
 
             # SystemMessage / UserMessage / anything else: ignored by design.
             # UserMessage carries tool-result echoes; ToolUseBlocks are the

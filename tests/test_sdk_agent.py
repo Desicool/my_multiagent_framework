@@ -77,6 +77,11 @@ class FakeOrchestrator:
                 terminate_consumed=False,
                 inbox=q,
                 inflight_tools=0,
+                last_session_id=None,
+                last_drain_ts=None,
+                last_progress_ts=0.0,
+                pending_replies={},
+                reply_gate_active=False,
             )
         return self._agents[agent_id].inbox
 
@@ -664,6 +669,11 @@ def test_session_id_pre_generated(tmp_path, monkeypatch):
         terminate_consumed=False,
         inbox=asyncio.Queue(),
         inflight_tools=0,
+        last_session_id=None,
+        last_drain_ts=None,
+        last_progress_ts=0.0,
+        pending_replies={},
+        reply_gate_active=False,
     )
 
     orch.mark_terminated("ag_sess")

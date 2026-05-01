@@ -127,16 +127,16 @@ def run(coro: Any) -> Any:
 def _get_review_gate_hook(orch: Orchestrator, caller_id: str, leader_id: str):
     """Extract the on_review_gate hook from build_hooks(...).
 
-    Identifies it as the PreToolUse matcher with matcher=None (match-all).
+    Identifies it as the second PreToolUse matcher with matcher=None (match-all).
+    The first match-all matcher is on_reply_gate (inserted for gate precedence).
     """
     hooks = build_hooks(orch, caller_id=caller_id, leader_id=leader_id)  # type: ignore[arg-type]
     pre_matchers = hooks.get("PreToolUse", [])
-    # on_review_gate is the matcher with matcher=None (match-all).
-    for m in pre_matchers:
-        if m.matcher is None:
-            return m.hooks[0]
+    match_all_matchers = [m for m in pre_matchers if m.matcher is None]
+    if len(match_all_matchers) >= 2:
+        return match_all_matchers[1].hooks[0]
     raise AssertionError(
-        f"No match-all PreToolUse matcher found. Matchers: {[m.matcher for m in pre_matchers]}"
+        f"Expected at least 2 match-all PreToolUse matchers, found {len(match_all_matchers)}. Matchers: {[m.matcher for m in pre_matchers]}"
     )
 
 

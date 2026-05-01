@@ -89,25 +89,27 @@ class TestAskUserQuestionHook:
     """Tests for the PreToolUse AskUserQuestion interceptor hook."""
 
     def test_hook_present_in_build_hooks(self) -> None:
-        """build_hooks includes PreToolUse entries: AskUserQuestion + review_gate (match-all)."""
+        """build_hooks includes PreToolUse entries: AskUserQuestion + reply_gate + review_gate (match-all)."""
         orch = FakeOrchForHooks()
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PreToolUse" in hooks, "No PreToolUse key in hooks dict"
         matchers = hooks["PreToolUse"]
-        # 2 PreToolUse matchers: AskUserQuestion hook (be3) + match-all review gate (be3).
-        assert len(matchers) == 2
+        # 3 PreToolUse matchers: AskUserQuestion hook + reply_gate (match-all) + review_gate (match-all).
+        assert len(matchers) == 3
         matcher_names = [m.matcher for m in matchers]
         assert "AskUserQuestion" in matcher_names, f"Expected AskUserQuestion in {matcher_names}"
         assert None in matcher_names, f"Expected match-all (None) in {matcher_names}"
 
     def test_posttooluse_still_present(self) -> None:
-        """build_hooks still includes the PostToolUse report_status hook."""
+        """build_hooks still includes the PostToolUse report_status and send_message hooks."""
         orch = FakeOrchForHooks()
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PostToolUse" in hooks
         matchers = hooks["PostToolUse"]
-        assert len(matchers) == 1
-        assert matchers[0].matcher == "mcp__beidou__report_status"
+        assert len(matchers) == 2
+        matcher_vals = [m.matcher for m in matchers]
+        assert "mcp__beidou__report_status" in matcher_vals
+        assert "mcp__beidou__send_message" in matcher_vals
 
     def test_positive_single_question(self) -> None:
         """Hook routes question to gateway and returns answer as deny reason."""

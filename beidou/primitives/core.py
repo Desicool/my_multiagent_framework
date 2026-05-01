@@ -79,7 +79,7 @@ class Message:
     content: str
     ts: float           # unix ts
     message_id: str
-    kind: str = "user"  # "user" | "terminate"
+    kind: str = "user"  # "user" | "terminate" | "inquiry"
 
 
 @dataclass
@@ -218,8 +218,14 @@ async def send_message(
     caller_id: str,
     to: str,
     content: str,
+    expects_reply: bool = False,
 ) -> dict:
-    """A2A primitive. See docs/tool-surface.md#send_message."""
+    """A2A primitive. See docs/tool-surface.md#send_message.
+
+    When ``expects_reply`` is True, the Message is created with
+    ``kind="inquiry"`` so the recipient's input stream can render it as a
+    reply-expected inquiry and register a reply obligation.
+    """
     if not orch.agent_exists(to):
         raise PrimitiveError("unknown_recipient", f"no such agent: {to}", to=to)
 
@@ -248,7 +254,7 @@ async def send_message(
         content=content,
         ts=time.time(),
         message_id=message_id,
-        kind="user",
+        kind="inquiry" if expects_reply else "user",
     )
     await orch.inbox_put(to, msg)
     orch.emit_event(

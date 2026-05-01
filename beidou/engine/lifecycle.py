@@ -60,6 +60,10 @@ class AgentRecord:
     crash_strikes: int = 0
     last_session_id: str | None = None
     last_crash_stderr: str = ""
+    # Reply obligation tracking (inquiry handshake).
+    # {message_id: {"from_id": str, "ts": float, "priority": str}}
+    pending_replies: dict = field(default_factory=dict)
+    reply_gate_active: bool = False
 
     @property
     def spawn_lock(self) -> asyncio.Lock:

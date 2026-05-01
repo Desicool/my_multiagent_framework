@@ -161,7 +161,22 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         "send_message",
         "Post a message to another agent's inbox. The only agent-to-agent "
         "primitive. Same-task only; inbox cap enforced by Beidou.",
-        {"to": str, "content": str},
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient agent_id."},
+                "content": {"type": "string", "description": "Message body."},
+                "expects_reply": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional. Default false. When true, the message is "
+                        "created as an inquiry (kind='inquiry') and the "
+                        "recipient sees it as [INQUIRY ... reply expected]."
+                    ),
+                },
+            },
+            "required": ["to", "content"],
+        },
     )
     async def _send_message(args: dict[str, Any]) -> dict[str, Any]:
         return await _wrap(
@@ -172,6 +187,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             caller_id=caller_id,
             to=args["to"],
             content=args["content"],
+            expects_reply=bool(args.get("expects_reply", False)),
         )
 
     @tool(

@@ -34,6 +34,9 @@ class FakeAgentRecord:
     completion_pending: bool = False
     completion_pending_ts: Optional[float] = None
     last_progress_ts: float = dataclasses.field(default_factory=time.time)
+    pending_replies: dict = dataclasses.field(default_factory=dict)
+    reply_gate_active: bool = False
+    idle_nudge_count: int = 0
 
 
 # ---------------------------------------------------------------------------

@@ -80,6 +80,20 @@ ALLOWED_DURING_PENDING_REVIEW = {
     "mcp__beidou__ask_user",
 }
 
+# Tools an agent may call even when the reply gate is active
+# (i.e. when it has unreplied inquiries from its leader or another agent).
+# Read/grep/bash permit information gathering; send_message is the resolution tool;
+# report_status and ask_user are required for the agent to complete or get human input.
+REPLY_GATE_ALLOWLIST = {
+    "Read",
+    "Glob",
+    "Grep",
+    "Bash",
+    "mcp__beidou__send_message",
+    "mcp__beidou__report_status",
+    "mcp__beidou__ask_user",
+}
+
 
 def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> dict:
     """Build hook dicts for the SDK agent.
@@ -203,6 +217,19 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             rec.completion_pending_ts = time.time()
             rec.last_progress_ts = time.time()
             rec.idle_nudge_count = 0
+            # Clear any pending reply obligations -- agent reported done,
+            # reply obligations are moot.
+            if rec.pending_replies:
+                for msg_id, obl in rec.pending_replies.items():
+                    orch.emit_event("reply.abandoned", {
+                        "agent_id": caller_id,
+                        "message_id": msg_id,
+                        "from_id": obl["from_id"],
+                        "reason": "completion_reported",
+                        "ts": time.time(),
+                    })
+                rec.pending_replies.clear()
+                rec.reply_gate_active = False
 
         # Retrieve the assistant text from the same turn as the report_status call.
         # Exact binding: tool_use_id -> text recorded by the drain loop in the same message.
@@ -350,6 +377,68 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         )
         return {}
 
+    async def on_send_message_reply(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """Clear the oldest pending reply obligation when send_message succeeds.
+
+        Fires on every successful ``mcp__beidou__send_message`` call.  Each reply
+        clears one obligation:
+
+        * **Explicit correlation:** if ``in_reply_to`` names a known obligation
+          (the agent is intentionally replying to a specific inquiry), clear
+          that exact message_id.
+        * **FIFO fallback:** otherwise, clear the oldest obligation from the
+          same sender (``to`` field).
+
+        When all obligations are cleared, ``reply_gate_active`` is lifted so
+        the agent regains full tool access.
+        """
+        if input_data.get("tool_name") != "mcp__beidou__send_message":
+            return {}
+        tool_response = input_data.get("tool_response") or {}
+        if isinstance(tool_response, dict) and tool_response.get("is_error"):
+            return {}
+
+        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
+        if rec is None or not rec.pending_replies:
+            return {}
+
+        tool_input = input_data.get("tool_input") or {}
+        to = tool_input.get("to", "")
+        in_reply_to = tool_input.get("in_reply_to", None)
+
+        # Explicit correlation: clear exact message_id if specified.
+        if in_reply_to and in_reply_to in rec.pending_replies:
+            del rec.pending_replies[in_reply_to]
+            orch.emit_event("reply.fulfilled", {
+                "agent_id": caller_id,
+                "message_id": in_reply_to,
+                "method": "explicit",
+                "ts": time.time(),
+            })
+        else:
+            # FIFO: clear oldest obligation from this sender.
+            oldest_msg_id = None
+            oldest_ts = None
+            for msg_id, obl in rec.pending_replies.items():
+                if obl["from_id"] == to:
+                    if oldest_ts is None or obl["ts"] < oldest_ts:
+                        oldest_ts = obl["ts"]
+                        oldest_msg_id = msg_id
+            if oldest_msg_id:
+                del rec.pending_replies[oldest_msg_id]
+                orch.emit_event("reply.fulfilled", {
+                    "agent_id": caller_id,
+                    "message_id": oldest_msg_id,
+                    "method": "fifo",
+                    "ts": time.time(),
+                })
+
+        # If no more pending obligations, lift the gate.
+        if not rec.pending_replies:
+            rec.reply_gate_active = False
+
+        return {}
+
     async def on_review_gate(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
         """Block a leader from advancing while it has direct children awaiting review.
 
@@ -433,12 +522,64 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             }
         }
 
+    async def on_reply_gate(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """Block an agent from taking non-reply actions while reply obligations are pending.
+
+        Fires on EVERY tool call (matcher=None). When ``reply_gate_active`` is
+        True on the agent's record, only tools in ``REPLY_GATE_ALLOWLIST`` are
+        permitted. All other tools are denied with a directive to reply first.
+
+        The gate is activated at turn-end (in the ResultMessage handler) when
+        the agent has unreplied inquiries, and deactivated by the
+        ``on_send_message_reply`` PostToolUse hook once all obligations are
+        cleared.
+        """
+        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
+        if rec is None or not rec.reply_gate_active:
+            return {}
+
+        tool_name = input_data.get("tool_name", "")
+
+        if tool_name in REPLY_GATE_ALLOWLIST:
+            return {}
+
+        # Build deny message naming pending senders.
+        from_ids = list(dict.fromkeys(
+            obl["from_id"] for obl in rec.pending_replies.values()
+        ))
+
+        orch.emit_event("reply_gate.denied", {
+            "agent_id": caller_id,
+            "tool_name": tool_name,
+            "pending_senders": from_ids,
+        })
+
+        reason = (
+            f"Cannot call {tool_name!r} — you have unreplied inquiries from: {', '.join(from_ids)}.\n"
+            f"Call mcp__beidou__send_message(to=<agent>, content='...') to reply first."
+        )
+
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+
     return {
         "PreToolUse": [
             HookMatcher(
                 matcher="AskUserQuestion",
                 hooks=[on_ask_user_question],
                 timeout=HOOK_REVIEW_TIMEOUT_S,
+            ),
+            # Reply gate MUST run before review gate to avoid deadlock when
+            # an agent is both a leader (has pending reviews) and a member
+            # (has pending replies). matcher=None -> fires for every tool call.
+            HookMatcher(
+                matcher=None,
+                hooks=[on_reply_gate],
             ),
             # matcher=None -> fires for every tool call.
             HookMatcher(
@@ -451,6 +592,10 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                 matcher="mcp__beidou__report_status",
                 hooks=[on_report_status],
                 timeout=HOOK_REVIEW_TIMEOUT_S,
+            ),
+            HookMatcher(
+                matcher="mcp__beidou__send_message",
+                hooks=[on_send_message_reply],
             ),
         ],
     }
@@ -1026,6 +1171,7 @@ class HookRegistry:
 __all__ = [
     "ALLOWED_DURING_PENDING_REVIEW",
     "HOOK_REVIEW_TIMEOUT_S",
+    "REPLY_GATE_ALLOWLIST",
     "HookRegistry",
     "build_builtin_hooks",
     "build_hooks",
