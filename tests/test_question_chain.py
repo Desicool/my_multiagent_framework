@@ -1064,13 +1064,12 @@ def test_watchdog_pass_b_skips_running_agent_with_inflight_tool(tmp_path):
     asyncio.run(body())
 
 
-def test_watchdog_pass_b_nudges_leader_even_when_child_has_pending_completion(tmp_path):
-    """Pass B must nudge a leader whose own drain is stale even if a child has completion_pending=True.
+def test_watchdog_pass_b_skips_leader_with_teams(tmp_path):
+    """Pass B skips agents that lead teams — only leaf agents get liveness nudges.
 
-    Regression guard: Pass B must NOT recurse into children to decide freshness.
-    A leader with a pending child needs the nudge precisely because it is the one
-    expected to act on that child (terminate_child / send_message).  Suppressing
-    the nudge while the child waits for review would be the opposite of helpful.
+    Leaders are covered by Pass A (review-pending escalation) and Pass C
+    (terminate-grace backstop).  A leader waiting on children should not receive
+    idle nudges; Pass A already pings them when a child has completion_pending.
     """
     from beidou.orchestrator import (
         AgentRecord, Orchestrator, TeamRecord,
@@ -1145,11 +1144,12 @@ def test_watchdog_pass_b_nudges_leader_even_when_child_has_pending_completion(tm
         nudge_events = [e for e in emitter.events if e[0] == "liveness.nudge"]
         nudged_agents = {e[1].get("agent_id") for e in nudge_events}
 
-        # Leader MUST be nudged — its own drain is stale regardless of child state.
-        assert "leader_ag" in nudged_agents, (
-            f"leader_ag was NOT nudged despite stale drain; events: {nudge_events}"
+        # Leader MUST NOT be nudged by Pass B — Pass B only monitors leaf agents.
+        # Leaders are covered by Pass A (review-pending escalation) and
+        # Pass C (terminate-grace backstop).
+        assert "leader_ag" not in nudged_agents, (
+            f"leader_ag was nudged despite leading a team; events: {nudge_events}"
         )
-        assert len([e for e in nudge_events if e[1].get("agent_id") == "leader_ag"]) == 1
 
         # Child MUST NOT be nudged — completion_pending=True gives it freshness=0.
         assert "child_ag" not in nudged_agents, (

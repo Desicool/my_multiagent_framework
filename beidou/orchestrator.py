@@ -1375,6 +1375,10 @@ class Orchestrator:
             # Skip if already escalated.
             if rec.idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION:
                 continue
+            # Pass B only monitors leaf agents. Leaders are covered by Pass A
+            # (review-pending escalation) and Pass C (terminate-grace backstop).
+            if self.teams_led_by(agent_id):
+                continue
             freshness = self._agent_freshness_ts(agent_id)
             if freshness == 0:
                 continue
