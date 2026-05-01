@@ -2,6 +2,6 @@
 __version__ = "0.1.0"
 
 from beidou.orchestrator import Orchestrator
-from beidou.sdk_agent import RunResult, SpawnSpec, run_agent
+from beidou.agent.loop import RunResult, SpawnSpec, run_agent
 
 __all__ = ["Orchestrator", "RunResult", "SpawnSpec", "run_agent"]

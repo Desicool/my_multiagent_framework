@@ -96,7 +96,7 @@ def test_root_solo_team_id_is_none(tmp_path: Path, monkeypatch) -> None:
             rec.terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         result = await o.run_root("fake", "solve the world")
@@ -174,7 +174,7 @@ def test_root_spawns_team_depth_1_parent_none(tmp_path: Path, monkeypatch) -> No
             return await root_behaviour(orch, spec)
         return await member_behaviour(orch, spec)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         await o.run_root("fake", "delegate-task")
@@ -284,7 +284,7 @@ def test_recursive_spawn_depth_increments(tmp_path: Path, monkeypatch) -> None:
             return await a_leader_behaviour(orch, spec)
         return await leaf_behaviour(orch, spec)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         await o.run_root("fake", "recursive-test")
@@ -363,7 +363,7 @@ def test_user_task_propagates_role_description_stays_clean(tmp_path: Path, monke
             rec.terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         await o.run_root("fake", USER_TASK)

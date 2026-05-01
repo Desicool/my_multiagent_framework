@@ -306,29 +306,12 @@ def load_skill(skill_root: Path, name: str) -> LoadedSkill:
 # ---------------------------------------------------------------------------
 # Template substitution
 # ---------------------------------------------------------------------------
+# render_system_prompt() and build_system_prompt() have moved to
+# beidou/agent/prompts.py.  Re-export here for backward compatibility.
+import beidou.agent.prompts as _agent_prompts  # noqa: E402
 
-# Placeholder = ``{name}`` where name is a Python-identifier-ish token. This
-# deliberately does NOT match ``{role: "..."}`` (contains a colon/space) or
-# ``{task-id}`` (contains a hyphen), so SKILL.md bodies that use brace-heavy
-# JSON-like syntax survive unchanged — consistent with the spec's "literal
-# string replace on ``{key}``" wording.
-_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
-
-def render_system_prompt(skill: LoadedSkill, **substitutions: str) -> str:
-    """Substitute ``{key}`` placeholders in the skill body.
-
-    Unknown placeholders are left literal (no error, no warning here — the
-    sdk_agent layer can log them if it wishes).
-    """
-
-    def _sub(match: re.Match[str]) -> str:
-        key = match.group(1)
-        if key in substitutions:
-            return str(substitutions[key])
-        return match.group(0)
-
-    return _PLACEHOLDER_RE.sub(_sub, skill.system_prompt)
+render_system_prompt = _agent_prompts.render_system_prompt
+build_system_prompt = _agent_prompts.build_system_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -418,112 +401,6 @@ def provision_skills(
         written.append(dst)
 
     return written
-
-
-# ---------------------------------------------------------------------------
-# Per-agent-spawn system prompt assembly
-# ---------------------------------------------------------------------------
-
-# Verbatim section text for the persistent-agent contract block (no substitutions).
-_CONTRACT_BLOCK = """\
-[PERSISTENT-AGENT CONTRACT]
-You do not self-exit. Completion is a state, not an exit: when your task is done,
-call mcp__beidou__report_status(state="done", detail=…).
-
-CRITICAL — completion handoff:
-Before calling report_status(state="done"), you MUST emit a final assistant
-message that summarizes what you accomplished. Beidou forwards exactly that
-text to your leader as the completion report — there is no second chance to
-add information. An empty or terse final message means an empty handoff.
-
-Use send_message only for mid-task progress updates; it is NOT the completion
-mechanism.
-
-Inter-agent communication uses Beidou primitives only — never shell, files,
-or environment variables to talk to other agents."""
-
-_COMPLETION_HANDOFF_BLOCK = """\
-[COMPLETION HANDOFF CONTRACT]
-When your task is complete:
-1. Emit a final assistant message summarizing what you accomplished.
-   List files created, decisions made, and next-step pointers your
-   leader needs.
-2. Then call report_status(state="done", detail="brief summary").
-
-If you call report_status(state="done") without providing a summary,
-Beidou will ask you to provide one before your completion is forwarded
-to your leader."""
-
-_OTHER_SKILLS_BLOCK = """\
-[OTHER SKILLS]
-Other available skills are listed via the `Skill` tool. You MAY invoke them
-when they would genuinely improve the work, but the [ASSIGNED SKILL] above is
-authoritative for your role and approach."""
-
-
-def build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str:
-    """Assemble the five-section system prompt with the skill body first.
-
-    Putting the skill body first is required for cross-agent prompt cache reuse:
-    two agents using the same skill share a common cache prefix (the multi-KB
-    skill block), while per-agent identity (IDENTITY block) comes after and does
-    not break the prefix.
-
-    ``spawn_ctx`` keys:
-        role, role_description, team_name, workspace_path, project_workspace_path, leader_id
-        (all strings; leader_id may be the user-sentinel for a root agent).
-
-    Section order (locked):
-        1. [ASSIGNED SKILL] — skill body with {role}/{role_description}/{team_name}/{workspace_path}/{project_workspace_path} substituted
-        2. [IDENTITY] — per-agent identity filled from spawn_ctx
-        3. [PERSISTENT-AGENT CONTRACT] — verbatim, no substitution
-        4. [COMPLETION HANDOFF CONTRACT] — verbatim, no substitution
-        5. [OTHER SKILLS] — verbatim, no substitution
-    """
-    # -- Section 1: skill body with substitutions (reuse existing helper) --
-    skill_body = render_system_prompt(
-        skill,
-        role=spawn_ctx.get("role", ""),
-        role_description=spawn_ctx.get("role_description", ""),
-        team_name=spawn_ctx.get("team_name", ""),
-        workspace_path=spawn_ctx.get("workspace_path", ""),
-        project_workspace_path=spawn_ctx.get("project_workspace_path", ""),
-    )
-
-    skill_section = (
-        "[ASSIGNED SKILL — authoritative instructions for your role]\n"
-        f"──── BEGIN SKILL: {skill.name} v{skill.version} ────\n"
-        f"{skill_body}\n"
-        "──── END SKILL ────"
-    )
-
-    # -- Section 2: identity block --
-    role = spawn_ctx.get("role", "")
-    team_name = spawn_ctx.get("team_name", "")
-    workspace_path = spawn_ctx.get("workspace_path", "")
-    project_workspace_path = spawn_ctx.get("project_workspace_path", "")
-    leader_id = spawn_ctx.get("leader_id", "unset")
-    if not leader_id:
-        leader_id = "unset"
-
-    identity_section = (
-        "[IDENTITY]\n"
-        f"You are {role} in team {team_name}.\n"
-        f"Workspace: {workspace_path}.\n"
-        f"Project workspace: {project_workspace_path}.\n"
-        f"Leader: {leader_id}."
-    )
-
-    # -- Sections 3, 4, and 5: verbatim blocks --
-    return "\n\n".join(
-        [
-            skill_section,
-            identity_section,
-            _CONTRACT_BLOCK,
-            _COMPLETION_HANDOFF_BLOCK,
-            _OTHER_SKILLS_BLOCK,
-        ]
-    )
 
 
 # ---------------------------------------------------------------------------

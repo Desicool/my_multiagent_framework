@@ -164,7 +164,7 @@ def test_spawn_team_sets_leader_depth_and_members(tmp_path, monkeypatch):
         orch._agents[spec.caller_id].terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         out = await o.spawn_team(
@@ -336,7 +336,7 @@ def test_terminate_root_posts_sentinel_and_fake_agent_exits(tmp_path, monkeypatc
                     rec.terminate_consumed = True
                 return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         # Kick off root in the background, then terminate it.
@@ -432,7 +432,7 @@ def test_cascade_leader_terminates_members_then_exits(tmp_path, monkeypatch):
             return await leader_behaviour(orch, spec)
         return await leaf_behaviour(orch, spec)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         root_task = asyncio.create_task(o.run_root("fake", "lead"))
@@ -468,7 +468,7 @@ def test_contract_violation_single_strike_recovers(tmp_path, monkeypatch):
             return _make_result(terminated=False)
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", fake_run)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", fake_run)
 
     async def body():
         res = await o.run_root("fake", "work")
@@ -503,7 +503,7 @@ def test_contract_violation_three_strikes_escalates_to_leader(tmp_path, monkeypa
     async def always_violate(orch, spec):
         return _make_result(terminated=False, stop_reason="end_turn")
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", always_violate)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", always_violate)
 
     async def body():
         spec = SpawnSpec(
@@ -950,7 +950,7 @@ def test_crash_strike1_resumes_session(tmp_path, monkeypatch):
         orch._agents[spec.caller_id].terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_once)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", crash_once)
 
     async def body():
         spec = SpawnSpec(
@@ -999,7 +999,7 @@ def test_crash_strike2_fresh_restart(tmp_path, monkeypatch):
         orch._agents[spec.caller_id].terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_twice)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", crash_twice)
 
     async def body():
         spec = SpawnSpec(
@@ -1044,7 +1044,7 @@ def test_crash_three_strikes_escalates(tmp_path, monkeypatch):
     async def always_crash(orch, spec):
         raise RuntimeError("always crash")
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", always_crash)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", always_crash)
 
     async def body():
         spec = SpawnSpec(
@@ -1096,7 +1096,7 @@ def test_crash_then_clean_resets_strikes(tmp_path, monkeypatch):
         orch._agents[spec.caller_id].terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_then_ok)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", crash_then_ok)
 
     async def body():
         spec = SpawnSpec(
@@ -1133,7 +1133,7 @@ def test_cancelled_error_not_treated_as_crash(tmp_path, monkeypatch):
     async def raise_cancelled(orch, spec):
         raise asyncio.CancelledError("watchdog cancel")
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", raise_cancelled)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", raise_cancelled)
 
     async def body():
         spec = SpawnSpec(
@@ -1176,7 +1176,7 @@ def test_inflight_tools_reset_on_crash(tmp_path, monkeypatch):
         orch._agents[spec.caller_id].terminate_consumed = True
         return _make_result(terminated=True)
 
-    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_then_ok)
+    monkeypatch.setattr(orch_module._agent_loop, "run_agent", crash_then_ok)
 
     async def body():
         spec = SpawnSpec(

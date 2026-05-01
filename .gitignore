@@ -20,3 +20,5 @@ artifacts/
 # Frontend build artifacts
 beidou/web/frontend/node_modules/
 beidou/web/frontend/dist/
+# bd worktree
+fix/

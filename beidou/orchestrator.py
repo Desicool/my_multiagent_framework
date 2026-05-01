@@ -30,7 +30,7 @@ import json
 
 from beidou import db as _db
 from beidou import plans as _plans
-from beidou import sdk_agent
+from beidou.agent import loop as _agent_loop
 from beidou.engine.graph import USER_SENTINEL, TeamRecord, _slug_role
 from beidou.engine.inbox import INBOX_CAP, Message
 from beidou.engine.lifecycle import (
@@ -51,7 +51,7 @@ from beidou.primitives.core import (
     PrimitiveError,
 )
 from beidou.questions import QuestionRegistry, render_prompt_text
-from beidou.sdk_agent import RunResult, SpawnSpec
+from beidou.agent.loop import RunResult, SpawnSpec
 from beidou.workspace import agent_workspace, team_workspace
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -1486,7 +1486,7 @@ class Orchestrator:
         rec: AgentRecord,
         spec: SpawnSpec,
     ) -> RunResult:
-        """Drive one agent's SDK loop through ``sdk_agent.run_agent``.
+        """Drive one agent's SDK loop through ``_agent_loop.run_agent``.
 
         On contract violation (run ends without terminate), increments
         ``contract_strikes`` and resumes with a nudge. After ``CONTRACT_STRIKES``
@@ -1507,9 +1507,9 @@ class Orchestrator:
         last_result: Optional[RunResult] = None
         while True:
             # Looked up lazily on every iteration so tests can monkeypatch
-            # ``beidou.sdk_agent.run_agent``.
+            # ``beidou._agent_loop.run_agent``.
             try:
-                result = await sdk_agent.run_agent(self, current_spec)
+                result = await _agent_loop.run_agent(self, current_spec)
             except asyncio.CancelledError:
                 # Cancellation is a watchdog signal, not a crash — re-raise
                 # so the asyncio task canceller can process it.
@@ -1570,7 +1570,7 @@ class Orchestrator:
                         resume_session_id=rec.last_session_id,
                     )
                     try:
-                        result = await sdk_agent.run_agent(self, current_spec)
+                        result = await _agent_loop.run_agent(self, current_spec)
                     except asyncio.CancelledError:
                         raise
                     except Exception as resume_exc:
