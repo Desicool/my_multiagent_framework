@@ -1,0 +1,42 @@
+[module]
+name = "custom-skill"
+version = "1.0.0"
+description = "Example skill module: security auditing with gate and eval hooks"
+
+# ── Gate hooks ──────────────────────────────────────────────────────────
+# Gate handlers run on the tool-call path. They receive a typed context and
+# return Pass() to allow, or Block(reason=...) to deny.
+
+[hooks.validate_tool_call]
+handlers = ["gate.block_destructive_commands"]
+mode = "first_block_wins"
+
+[hooks.validate_tool_result]
+handlers = ["gate.warn_on_error"]
+mode = "all_must_pass"
+
+[hooks.filter_output]
+handlers = ["gate.block_secret_leakage"]
+mode = "first_block_wins"
+
+# ── Eval hooks ──────────────────────────────────────────────────────────
+# Eval handlers run off the critical path. They receive a typed context and
+# return None. Exceptions are logged but never block the agent.
+
+[hooks.before_agent_start]
+handlers = ["eval.log_agent_start"]
+mode = "all_run"
+
+[hooks.evaluate_turn]
+handlers = ["eval.score_turn_quality"]
+mode = "all_run"
+
+[hooks.on_event]
+handlers = ["eval.log_error_events"]
+mode = "all_run"
+events = [
+    "tool_result",
+    "agent_error",
+    "contract_violation",
+    "liveness.escalated_to_user",
+]

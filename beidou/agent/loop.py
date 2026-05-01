@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk import ClaudeAgentOptions
 
 from beidou.primitives.core import Message, Orchestrator
 from beidou.primitives.mcp import build_mcp_server_for
@@ -441,8 +441,13 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 "session_id": session_id,
             }
 
+    # Resolve query lazily through beidou.sdk_agent so tests that
+    # monkeypatch sdk_agent.query can still intercept the call.
+    from beidou import sdk_agent as _sdk
+    _query = _sdk.query
+
     try:
-        async for msg in query(prompt=input_stream(), options=options):
+        async for msg in _query(prompt=input_stream(), options=options):
             cls = type(msg).__name__
 
             if cls == "AssistantMessage":
