@@ -566,14 +566,39 @@ def test_peer_snapshot_scopes(tmp_path):
     _seed_team(o, "tm_sub", leader_id="A", depth=1, parent=_TM_TOP)
     _seed_agent(o, "C", "tm_sub")
 
-    team = {p.agent_id for p in o.peer_snapshot("A", "team")}
+    team_peers = o.peer_snapshot("A", "team")
+    team = {p.agent_id for p in team_peers}
     assert team == {"R", "B"}
+    # Leader R must appear with role='leader'
+    r_peer = next(p for p in team_peers if p.agent_id == "R")
+    assert r_peer.role == "leader"
 
     children = {p.agent_id for p in o.peer_snapshot("A", "children")}
     assert children == {"C"}
 
     allp = {p.agent_id for p in o.peer_snapshot("A", "all")}
     assert allp == {"R", "B", "C"}
+
+
+def test_peer_snapshot_includes_leader(tmp_path):
+    """Peer snapshot includes the team leader even when leader is not in member_ids."""
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, _TM_TOP, leader_id="L", depth=0)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
+    _seed_agent(o, "M1", _TM_TOP, role="coder")
+    _seed_agent(o, "M2", _TM_TOP, role="coder")
+    # _seed_agent pushes agents into member_ids; production spawn_team does
+    # NOT push the leader into member_ids. Remove the leader to match.
+    o._teams[_TM_TOP].member_ids.remove("L")
+
+    peers = o.peer_snapshot("M1", "team")
+    ids = {p.agent_id for p in peers}
+    assert ids == {"L", "M2"}, f"Expected {{'L', 'M2'}}, got {ids}"
+
+    # Leader peer must have role='leader' and correct team.
+    leader_peer = next(p for p in peers if p.agent_id == "L")
+    assert leader_peer.role == "leader"
+    assert leader_peer.team_id == _TM_TOP
 
 
 # ---------------------------------------------------------------------------
@@ -896,5 +921,276 @@ def test_watchdog_cancels_run_task_after_grace_deadline(tmp_path):
         assert len(forced2) == 1, (
             "second _watchdog_tick must not re-fire terminate.forced after deadline cleared"
         )
+
+    run(body())
+
+
+# ---------------------------------------------------------------------------
+# Crash recovery (agent-runtime.md §5.1).
+# ---------------------------------------------------------------------------
+
+
+def test_crash_strike1_resumes_session(tmp_path, monkeypatch):
+    """Strike 1: resume via resume_session_id with recovery prompt."""
+    o, emitter = _make_orchestrator(tmp_path)
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "CRASHER", _TM_TOP, role="coder")
+    rec.last_session_id = "sess_strike1_test"
+
+    call_log: list[tuple] = []
+
+    async def crash_once(orch, spec):
+        call_log.append(("run_agent", getattr(spec, "resume_session_id", None), spec.task))
+        if len(call_log) == 1:
+            raise RuntimeError("simulated subprocess crash")
+        # Second call — resume succeeded.
+        orch._agents[spec.caller_id].terminate_consumed = True
+        return _make_result(terminated=True)
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_once)
+
+    async def body():
+        spec = SpawnSpec(
+            caller_id="CRASHER",
+            skill_name="fake",
+            skill_root=o.skill_root,
+            task="do work",
+        )
+        result = await o._run_agent_with_policy(rec, spec)
+        # Drain background emitter tasks.
+        if o._bg_tasks:
+            await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+        assert result.terminated is True
+        # First call: original spec (no resume_session_id).
+        assert call_log[0] == ("run_agent", None, "do work")
+        # Second call: resume with session_id and recovery prompt.
+        assert call_log[1][0] == "run_agent"
+        assert call_log[1][1] == "sess_strike1_test"
+        assert "previous session crashed" in call_log[1][2]
+        # crash_strikes reset after successful run.
+        assert rec.crash_strikes == 0
+        # agent_crashed event emitted.
+        crashed_events = [c for c in emitter.calls if c[0] == "agent_crashed"]
+        assert len(crashed_events) == 1
+
+    run(body())
+
+
+def test_crash_strike2_fresh_restart(tmp_path, monkeypatch):
+    """Strike 2: fresh restart without resume_session_id."""
+    o, emitter = _make_orchestrator(tmp_path)
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "CRASHER2", _TM_TOP, role="coder")
+    rec.last_session_id = "sess_strike2_test"
+
+    call_log: list[tuple] = []
+
+    async def crash_twice(orch, spec):
+        call_log.append(("run_agent", getattr(spec, "resume_session_id", None), spec.task))
+        if len(call_log) <= 2:
+            raise RuntimeError("simulated subprocess crash")
+        # Third call succeeds.
+        orch._agents[spec.caller_id].terminate_consumed = True
+        return _make_result(terminated=True)
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_twice)
+
+    async def body():
+        spec = SpawnSpec(
+            caller_id="CRASHER2",
+            skill_name="fake",
+            skill_root=o.skill_root,
+            task="do work",
+        )
+        result = await o._run_agent_with_policy(rec, spec)
+        # Drain background emitter tasks.
+        if o._bg_tasks:
+            await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+        assert result.terminated is True
+        # Call 1: original.
+        assert call_log[0] == ("run_agent", None, "do work")
+        # Call 2: strike 1 — resume attempt.
+        assert call_log[1][1] == "sess_strike2_test"
+        # Call 3: strike 2 — fresh restart (no session_id, workspace prompt).
+        assert call_log[2][1] is None
+        assert "Start fresh" in call_log[2][2] or "workspace" in call_log[2][2].lower()
+        # Two agent_crashed events.
+        crashed_events = [c for c in emitter.calls if c[0] == "agent_crashed"]
+        assert len(crashed_events) == 2
+        # crash_strikes reset after success.
+        assert rec.crash_strikes == 0
+
+    run(body())
+
+
+def test_crash_three_strikes_escalates(tmp_path, monkeypatch):
+    """Three strikes escalate: message to leader for members, root_crash_escalation for root."""
+    o, emitter = _make_orchestrator(tmp_path)
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+
+    # Test with a non-root member.
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_agent(o, "LEADER", _TM_TOP, role="leader")
+    _seed_team(o, "tm_child", leader_id="LEADER", depth=1, parent=_TM_TOP)
+    rec = _seed_agent(o, "CRASHER3", "tm_child", role="coder")
+
+    async def always_crash(orch, spec):
+        raise RuntimeError("always crash")
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", always_crash)
+
+    async def body():
+        spec = SpawnSpec(
+            caller_id="CRASHER3",
+            skill_name="fake",
+            skill_root=o.skill_root,
+            task="do work",
+        )
+        result = await o._run_agent_with_policy(rec, spec)
+        # Drain emitter.
+        if o._bg_tasks:
+            await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+        assert result.stop_reason == "crash_escalated"
+        assert result.terminated is False
+        assert rec.crash_strikes == 3
+        # Leader received escalation message.
+        leader_inbox = o._agents["LEADER"].inbox
+        assert leader_inbox.qsize() == 1
+        msg = leader_inbox.get_nowait()
+        assert "CRASHER3" in msg.content
+        assert "crashed" in msg.content
+        # Three agent_crashed events.
+        crashed_events = [c for c in emitter.calls if c[0] == "agent_crashed"]
+        assert len(crashed_events) == 3
+
+    run(body())
+
+
+def test_crash_then_clean_resets_strikes(tmp_path, monkeypatch):
+    """A successful run_agent() after a crash resets crash_strikes to 0."""
+    o, emitter = _make_orchestrator(tmp_path)
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "RESETTER", _TM_TOP, role="coder")
+    rec.last_session_id = "sess_reset_test"
+
+    call_count = {"n": 0}
+
+    async def crash_then_ok(orch, spec):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("crash 1")
+        if call_count["n"] == 2:
+            # Strike 1 resume succeeds, but then contract violation.
+            return _make_result(terminated=False)
+        # Call 3: contract resume.
+        orch._agents[spec.caller_id].terminate_consumed = True
+        return _make_result(terminated=True)
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_then_ok)
+
+    async def body():
+        spec = SpawnSpec(
+            caller_id="RESETTER",
+            skill_name="fake",
+            skill_root=o.skill_root,
+            task="do work",
+        )
+        result = await o._run_agent_with_policy(rec, spec)
+        # Drain background emitter tasks.
+        if o._bg_tasks:
+            await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+        assert result.terminated is True
+        # After crash run_agent succeeded (call 2 returned normally), crash_strikes are 0.
+        assert rec.crash_strikes == 0
+        # contract_strikes should be 1 (the one violation on call 2).
+        assert rec.contract_strikes == 1
+        # Exactly one agent_crashed event.
+        crashed_events = [c for c in emitter.calls if c[0] == "agent_crashed"]
+        assert len(crashed_events) == 1
+
+    run(body())
+
+
+def test_cancelled_error_not_treated_as_crash(tmp_path, monkeypatch):
+    """asyncio.CancelledError is re-raised, not caught as a crash."""
+    o, emitter = _make_orchestrator(tmp_path)
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "CANCELLED", _TM_TOP, role="coder")
+
+    async def raise_cancelled(orch, spec):
+        raise asyncio.CancelledError("watchdog cancel")
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", raise_cancelled)
+
+    async def body():
+        spec = SpawnSpec(
+            caller_id="CANCELLED",
+            skill_name="fake",
+            skill_root=o.skill_root,
+            task="do work",
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await o._run_agent_with_policy(rec, spec)
+        # Drain background emitter tasks.
+        if o._bg_tasks:
+            await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+        # No agent_crashed event.
+        crashed_events = [c for c in emitter.calls if c[0] == "agent_crashed"]
+        assert len(crashed_events) == 0
+        # crash_strikes not incremented.
+        assert rec.crash_strikes == 0
+
+    run(body())
+
+
+def test_inflight_tools_reset_on_crash(tmp_path, monkeypatch):
+    """Crash resets inflight_tools to 0 (stale from pre-crash drain)."""
+    o, emitter = _make_orchestrator(tmp_path)
+    import beidou.skills.loader as loader_mod
+    monkeypatch.setattr(loader_mod, "load_skill", lambda r, n: type("S", (), {"name": n})())
+
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    rec = _seed_agent(o, "INFLIGHT", _TM_TOP, role="coder")
+    rec.inflight_tools = 5  # Simulate stale inflight tools from before crash.
+    rec.last_session_id = "sess_inflight_test"
+
+    call_count = {"n": 0}
+
+    async def crash_then_ok(orch, spec):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("crash")
+        orch._agents[spec.caller_id].terminate_consumed = True
+        return _make_result(terminated=True)
+
+    monkeypatch.setattr(orch_module.sdk_agent, "run_agent", crash_then_ok)
+
+    async def body():
+        spec = SpawnSpec(
+            caller_id="INFLIGHT",
+            skill_name="fake",
+            skill_root=o.skill_root,
+            task="do work",
+        )
+        result = await o._run_agent_with_policy(rec, spec)
+        # Drain background emitter tasks.
+        if o._bg_tasks:
+            await asyncio.gather(*list(o._bg_tasks), return_exceptions=True)
+        assert result.terminated is True
+        # inflight_tools was reset to 0 on crash.
+        assert rec.inflight_tools == 0
 
     run(body())

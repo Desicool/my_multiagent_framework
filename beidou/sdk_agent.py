@@ -33,6 +33,7 @@ closes the SDK session cleanly. The agent never sees a "wait" or "receive" tool.
 from __future__ import annotations
 
 import asyncio
+import collections
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -83,6 +84,7 @@ class SpawnSpec:
     cwd: Optional[str] = None
     max_turns: Optional[int] = None
     max_budget_usd: Optional[float] = None
+    resume_session_id: Optional[str] = None
 
 
 @dataclass
@@ -563,6 +565,9 @@ def _build_options(
     hooks: Optional[dict] = None,
     max_turns: Optional[int] = None,
     max_budget_usd: Optional[float] = None,
+    stderr: Any = None,
+    resume: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> ClaudeAgentOptions:
     """Assemble ``ClaudeAgentOptions`` for one SDK agent spawn.
 
@@ -595,6 +600,13 @@ def _build_options(
         kwargs["max_turns"] = max_turns
     if max_budget_usd is not None:
         kwargs["max_budget_usd"] = max_budget_usd
+    if stderr is not None:
+        kwargs["stderr"] = stderr
+    if resume is not None:
+        kwargs["resume"] = resume
+        kwargs["fork_session"] = False
+    if session_id is not None:
+        kwargs["session_id"] = session_id
     return ClaudeAgentOptions(**kwargs)
 
 
@@ -704,6 +716,24 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     leader_id = template_vars.get("leader_id", "")
     hooks = build_hooks(orch, spec.caller_id, leader_id)
 
+    # Pre-generate session_id for crash-recovery tracking.
+    # Stored on _drain_rec BEFORE any SDK call so the orchestrator can
+    # read it even if the process crashes before the first ResultMessage.
+    _drain_rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
+    session_id = str(uuid.uuid4())
+    if _drain_rec is not None:
+        _drain_rec.last_session_id = session_id
+
+    # Stderr capture buffer — the ONLY reliable path for capturing CLI
+    # subprocess error output (ProcessError attributes are lost in SDK
+    # serialization; see query.py:308).
+    stderr_buf: collections.deque[str] = collections.deque(maxlen=200)
+
+    def _on_stderr(line: str) -> None:
+        # Normalize: strip trailing whitespace per line but preserve
+        # empty lines so crash traces are readable.
+        stderr_buf.append(line.rstrip())
+
     options = _build_options(
         system_prompt=rendered_prompt,
         mcp_server=mcp,
@@ -713,6 +743,9 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
         hooks=hooks,
         max_turns=spec.max_turns,
         max_budget_usd=spec.max_budget_usd,
+        stderr=_on_stderr,
+        resume=spec.resume_session_id,
+        session_id=session_id,
     )
 
     orch.emit_event(
@@ -724,6 +757,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             "model": spec.model,
             "role": template_vars.get("role", ""),
             "name": orch.agent_name(spec.caller_id),
+            "session_id": session_id,
             "ts": time.time(),
         },
     )
@@ -753,7 +787,6 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     # on its per-agent queue. The generator owns terminate detection and sets
     # terminate_consumed on the AgentRecord before returning (closing the SDK
     # session). The agent never sees a "wait" or "receive" tool.
-    session_id = spec.caller_id
     # queue_for() is the canonical path on the real Orchestrator. Fall back to
     # an empty Queue when the orchestrator under test doesn't expose it (e.g.
     # FakeOrchestrator in mechanical tests where query() is monkeypatched and
@@ -769,12 +802,12 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             "agent_input",
             {
                 "ts": time.time(),
-                "caller_id": session_id,
+                "caller_id": spec.caller_id,
                 "from": "user",
                 "message_kind": "initial",
                 "source": "initial",
                 "content": spec.task,
-                "message_id": f"{session_id}:initial",
+                "message_id": f"{spec.caller_id}:initial",
             },
         )
         yield {
@@ -800,7 +833,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 "agent_input",
                 {
                     "ts": msg_in.ts,
-                    "caller_id": session_id,
+                    "caller_id": spec.caller_id,
                     "from": msg_in.from_id,
                     "message_kind": msg_in.kind,
                     "source": "queue",
@@ -816,10 +849,6 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 "parent_tool_use_id": None,
                 "session_id": session_id,
             }
-
-    # Obtain the AgentRecord once for the whole drain loop — used for
-    # inflight_tools tracking (bd issue qj2). Safe: everything is single-threaded asyncio.
-    _drain_rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
 
     try:
         async for msg in query(prompt=input_stream(), options=options):
@@ -1010,6 +1039,13 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
 
             elif cls == "ResultMessage":
                 drain_ts = time.time()
+                # Update session_id from ResultMessage — the SDK may have
+                # assigned a different one (e.g. on resume).
+                rmid = getattr(msg, "session_id", None)
+                if rmid is not None:
+                    session_id = rmid
+                    if _drain_rec is not None:
+                        _drain_rec.last_session_id = rmid
                 result_data = {
                     "total_cost_usd": getattr(msg, "total_cost_usd", 0.0) or 0.0,
                     "usage": dict(getattr(msg, "usage", {}) or {}),
@@ -1018,7 +1054,7 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                     "duration_api_ms": getattr(msg, "duration_api_ms", 0) or 0,
                     "num_turns": getattr(msg, "num_turns", 0) or 0,
                     "stop_reason": getattr(msg, "stop_reason", "unknown") or "unknown",
-                    "session_id": getattr(msg, "session_id", None),
+                    "session_id": rmid,
                 }
                 if _drain_rec is not None:
                     _drain_rec.last_drain_ts = drain_ts
@@ -1066,6 +1102,11 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
         )
         raise
     except Exception as exc:
+        # Capture stderr from the buffer — the ONLY reliable path
+        # (ProcessError attributes are lost in SDK serialization).
+        stderr_text = "\n".join(stderr_buf)
+        if _drain_rec is not None:
+            _drain_rec.last_crash_stderr = stderr_text
         orch.emit_event(
             "agent_error",
             {
@@ -1073,6 +1114,16 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                 "exception": type(exc).__name__,
                 "msg": str(exc),
                 "error": str(exc),
+                "stderr": stderr_text,
+                "ts": time.time(),
+            },
+        )
+        orch.emit_event(
+            "agent_completed",
+            {
+                "caller_id": spec.caller_id,
+                "terminated": False,
+                "stop_reason": "crashed",
                 "ts": time.time(),
             },
         )

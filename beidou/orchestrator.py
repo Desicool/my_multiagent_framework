@@ -31,6 +31,7 @@ from beidou import sdk_agent
 from beidou.events import EventEmitter
 from beidou.primitives.core import (
     CONTRACT_STRIKES,
+    CRASH_STRIKES,
     INBOX_CAP,
     Message,
     Peer,
@@ -115,6 +116,10 @@ class AgentRecord:
     # stays None for the root agent and for legacy create_team-spawned members.
     plan_task_id: Optional[str] = None
     plan_id: Optional[str] = None
+    # Crash recovery (agent-runtime.md §5.1).
+    crash_strikes: int = 0
+    last_session_id: Optional[str] = None
+    last_crash_stderr: str = ""
 
     @property
     def spawn_lock(self) -> asyncio.Lock:
@@ -302,6 +307,26 @@ class Orchestrator:
                 if mid == agent_id or mid not in self._agents:
                     continue
                 out.append(_peer(mid))
+            # Include the team leader (leader is not in member_ids in
+            # production -- spawn_team keeps them separate).
+            team = self._teams.get(me.team_id)
+            if team is not None:
+                lid = team.leader_id
+                already_in = {p.agent_id for p in out}
+                if (lid is not None
+                        and lid != agent_id          # self-exclusion
+                        and lid != USER_SENTINEL     # skip sentinel placeholder
+                        and lid in self._agents      # leader must exist
+                        and lid not in already_in):  # defensive dedup
+                    la = self._agents[lid]
+                    out.append(Peer(
+                        agent_id=lid,
+                        role="leader",
+                        team_id=la.team_id,
+                        status=la.last_status,
+                        is_leader_of=self.teams_led_by(lid),
+                        name=la.name or None,
+                    ))
         elif scope == "children":
             seen: set[str] = set()
             for tid in self.teams_led_by(agent_id):
@@ -1532,13 +1557,131 @@ class Orchestrator:
         ``send_message`` (for root: emits ``root_contract_escalation`` and, if
         available, asks the user gateway). Resets the strike counter only on
         a clean terminated exit.
+
+        On crash (subprocess exit code 1, etc.), applies the hybrid retry
+        strategy from agent-runtime.md §5.1:
+          Strike 1 — resume via ``resume=session_id`` with recovery prompt.
+          Strike 2 — fresh restart with recovery prompt pointing at workspace.
+          Strike 3 — escalate to leader (members) or user gateway (root).
+        Resets ``crash_strikes`` to 0 on any successful ``run_agent()`` return.
+        ``asyncio.CancelledError`` is re-raised, not treated as a crash.
         """
         current_spec = spec
         last_result: Optional[RunResult] = None
         while True:
             # Looked up lazily on every iteration so tests can monkeypatch
             # ``beidou.sdk_agent.run_agent``.
-            result = await sdk_agent.run_agent(self, current_spec)
+            try:
+                result = await sdk_agent.run_agent(self, current_spec)
+            except asyncio.CancelledError:
+                # Cancellation is a watchdog signal, not a crash — re-raise
+                # so the asyncio task canceller can process it.
+                raise
+            except Exception as exc:
+                rec.crash_strikes += 1
+                rec.inflight_tools = 0       # stale from pre-crash drain
+                rec.last_progress_ts = time.time()
+
+                # Capture stderr from the sdk_agent drain record if available.
+                stderr_text = rec.last_crash_stderr
+
+                self.emit_event(
+                    "agent_crashed",
+                    {
+                        "caller_id": rec.agent_id,
+                        "exception": type(exc).__name__,
+                        "msg": str(exc),
+                        "strike_count": rec.crash_strikes,
+                        "stderr": stderr_text,
+                        "ts": time.time(),
+                    },
+                )
+
+                if rec.crash_strikes >= CRASH_STRIKES:
+                    await self._escalate_crash(rec)
+                    self.emit_event(
+                        "agent_exited",
+                        {
+                            "caller_id": rec.agent_id,
+                            "strike_count": rec.contract_strikes,
+                            "terminated": False,
+                            "crash_strikes": rec.crash_strikes,
+                            "ts": time.time(),
+                        },
+                    )
+                    self._remove_orphan_plan(rec.agent_id)
+                    return RunResult(
+                        final_text="",
+                        total_cost_usd=0.0,
+                        total_usage={},
+                        num_turns=0,
+                        duration_ms=0,
+                        stop_reason="crash_escalated",
+                        session_id=None,
+                        terminated=False,
+                        contract_violation=False,
+                    )
+
+                if rec.crash_strikes == 1 and rec.last_session_id:
+                    # STRIKE 1: Resume with session history.
+                    # Wrap in try — if resume fails (mid-tool-call 400),
+                    # promote to strike 2 without burning another crash slot.
+                    # fork_session=False — we want continuity, not branching.
+                    current_spec = replace(
+                        current_spec,
+                        task="[beidou] Your previous session crashed. Resume your work.",
+                        resume_session_id=rec.last_session_id,
+                    )
+                    try:
+                        result = await sdk_agent.run_agent(self, current_spec)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as resume_exc:
+                        # Resume failed — promote to strike 2 without extra count.
+                        rec.crash_strikes = 2
+                        stderr_text = rec.last_crash_stderr
+                        self.emit_event(
+                            "agent_crashed",
+                            {
+                                "caller_id": rec.agent_id,
+                                "exception": type(resume_exc).__name__,
+                                "msg": str(resume_exc),
+                                "strike_count": rec.crash_strikes,
+                                "stderr": stderr_text,
+                                "ts": time.time(),
+                            },
+                        )
+                        current_spec = replace(
+                            current_spec,
+                            task=(
+                                "[beidou] Your session crashed and could not be "
+                                "resumed. Start fresh — check your workspace for "
+                                "prior artifacts."
+                            ),
+                            resume_session_id=None,
+                        )
+                        continue
+                    # Resume succeeded — proceed to normal policy handling below.
+                else:
+                    # STRIKE 2+: Fresh restart
+                    current_spec = replace(
+                        current_spec,
+                        task=(
+                            "[beidou] Your session crashed and could not be "
+                            "resumed. Start fresh — check your workspace for "
+                            "prior artifacts."
+                        ),
+                        resume_session_id=None,
+                    )
+                    continue
+
+                # If we reach here, the resume succeeded. Fall through
+                # to the normal policy handling with `result` set.
+                rec.crash_strikes = 0
+            else:
+                # run_agent() returned normally (no exception).
+                rec.crash_strikes = 0
+
             last_result = result
 
             if result.terminated:
@@ -1651,6 +1794,65 @@ class Orchestrator:
                 f"agent {rec.agent_id} has violated the no-self-exit "
                 f"contract {rec.contract_strikes} times. Consider "
                 f"terminate_child({rec.agent_id})."
+            ),
+            ts=time.time(),
+            message_id=str(uuid.uuid4()),
+            kind="user",
+        )
+        try:
+            await self.inbox_put(leader_id, msg)
+        except PrimitiveError:
+            # Leader's inbox full or unknown — best effort.
+            pass
+
+    async def _escalate_crash(self, rec: AgentRecord) -> None:
+        """Escalate after ``CRASH_STRIKES`` consecutive subprocess crashes.
+
+        Mirrors ``_escalate_contract_violation`` but for crash recovery.
+        Members: posts a message to the team leader recommending action.
+        Root: emits ``root_crash_escalation`` and asks the human gateway.
+        """
+        if rec.agent_id == self._root_id:
+            self._schedule_emit(
+                "root_crash_escalation",
+                rec.agent_id,
+                rec.team_id,
+                {
+                    "crash_strikes": rec.crash_strikes,
+                    "stderr": rec.last_crash_stderr,
+                    "ts": time.time(),
+                },
+            )
+            if self.is_gateway_available():
+                try:
+                    await self.gateway_ask_user_structured(
+                        rec.agent_id,
+                        [
+                            {
+                                "question": (
+                                    f"Root agent {rec.agent_id} has crashed "
+                                    f"{rec.crash_strikes} times. "
+                                    f"Last stderr: {rec.last_crash_stderr[:200]}. "
+                                    f"Continue, or terminate the root?"
+                                ),
+                                "header": "",
+                                "multiSelect": False,
+                                "options": [],
+                            }
+                        ],
+                        None,
+                    )
+                except Exception:
+                    # Best-effort; escalation event already logged.
+                    pass
+            return
+
+        leader_id = self.leader_of(rec.team_id)
+        msg = Message(
+            from_id="beidou",
+            content=(
+                f"agent {rec.agent_id} has crashed {rec.crash_strikes} times. "
+                f"Consider terminate_child({rec.agent_id}) or re-spawning."
             ),
             ts=time.time(),
             message_id=str(uuid.uuid4()),
@@ -2131,15 +2333,21 @@ class Orchestrator:
                 if user_skill_path.exists():
                     existing_bytes = user_skill_path.read_bytes()
                     if existing_bytes != bundled_bytes:
-                        self.emit_event(
-                            "config_warning",
-                            {
-                                "agent_id": root_agent_id,
-                                "warning": "user_skill_overwritten",
-                                "skill": loaded.name,
-                                "ts": time.time(),
-                            },
-                        )
+                        # If the destination starts with the Beidou bundled-origin
+                        # marker, it's a stale copy from a previous run — NOT a
+                        # user edit.  Overwrite silently.
+                        if existing_bytes.startswith(b"<!-- beidou-bundled:"):
+                            pass
+                        else:
+                            self.emit_event(
+                                "config_warning",
+                                {
+                                    "agent_id": root_agent_id,
+                                    "warning": "user_skill_overwritten",
+                                    "skill": loaded.name,
+                                    "ts": time.time(),
+                                },
+                            )
 
         # Provision all bundled skills into the project workspace so the SDK's
         # setting_sources=["project"] discovery can find them via .claude/skills/

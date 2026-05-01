@@ -164,7 +164,8 @@ def test_provision_skills_writes_canonical_copies(tmp_path: Path) -> None:
     # At least some files should have been written (we have bundled skills).
     assert len(written) > 0
 
-    # Each written file should exist and be byte-identical to its source SKILL.md.
+    # Each written file should exist and start with the beidou-bundled marker,
+    # followed by the original source bytes.
     for dst in written:
         assert dst.exists(), f"Expected {dst} to exist"
         # Determine which source SKILL.md corresponds to this destination.
@@ -180,14 +181,25 @@ def test_provision_skills_writes_canonical_copies(tmp_path: Path) -> None:
                 source_bytes = src_text
                 break
         assert source is not None, f"Could not find source for skill name {skill_name!r}"
-        assert dst.read_bytes() == source_bytes, (
-            f"Destination {dst} is not byte-identical to source {source}"
+        dst_bytes = dst.read_bytes()
+        # Destination must start with the beidou-bundled marker.
+        assert dst_bytes.startswith(b"<!-- beidou-bundled:"), (
+            f"Destination {dst} missing beidou-bundled marker"
+        )
+        # The marker includes the skill name and version.
+        marker_line_end = dst_bytes.find(b"\n")
+        assert marker_line_end > 0
+        marker_line = dst_bytes[:marker_line_end].decode("utf-8")
+        assert f"<!-- beidou-bundled:{skill_name}:" in marker_line
+        # Rest after the marker newline is the original source content.
+        assert dst_bytes[marker_line_end + 1:] == source_bytes, (
+            f"Destination {dst} content after marker does not match source {source}"
         )
 
         # Confirm NO substitution occurred: if the source has {workspace_path},
-        # so should the destination.
+        # so should the destination (after the marker).
         if b"{workspace_path}" in source_bytes:
-            assert b"{workspace_path}" in dst.read_bytes(), (
+            assert b"{workspace_path}" in dst_bytes, (
                 f"Substitution was applied on disk — it should NOT be"
             )
 
@@ -234,6 +246,106 @@ def test_provision_skills_nonexistent_skill_root(tmp_path: Path) -> None:
     nonexistent = tmp_path / "does_not_exist"
     result = provision_skills(tmp_path / "workspace", skill_root=nonexistent)
     assert result == []
+
+
+def test_provision_skills_prepends_marker(tmp_path: Path) -> None:
+    """Each provisioned file starts with the beidou-bundled marker line."""
+    written = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert len(written) > 0
+    for dst in written:
+        content = dst.read_bytes()
+        assert content.startswith(b"<!-- beidou-bundled:"), (
+            f"Missing marker in {dst}"
+        )
+        # The marker is a single line.
+        newline_idx = content.find(b"\n")
+        assert newline_idx > 0
+        marker_line = content[:newline_idx].decode("utf-8")
+        skill_name = dst.parent.name
+        assert f"<!-- beidou-bundled:{skill_name}:" in marker_line, (
+            f"Marker does not contain skill name {skill_name!r}: {marker_line}"
+        )
+        # After the marker, the content starts with the YAML frontmatter.
+        assert content[newline_idx + 1:].startswith(b"---"), (
+            f"Content after marker is not YAML frontmatter in {dst}"
+        )
+
+
+def test_parse_skill_text_strips_marker(tmp_path: Path) -> None:
+    """_parse_skill_text removes the beidou-bundled marker before YAML parsing."""
+    from beidou.skills.loader import _parse_skill_text
+
+    # Simulate a provisioned file: marker + frontmatter + body.
+    body = (
+        "---\n"
+        "name: test-skill\n"
+        "version: 3.1.0\n"
+        "description: desc\n"
+        "---\n"
+        "This is the body.\n"
+    )
+    marked = "<!-- beidou-bundled:test-skill:3.1.0 -->\n" + body
+    path = tmp_path / "SKILL.md"
+    path.write_text(marked)
+
+    result = _parse_skill_text(marked, path)
+    assert result.name == "test-skill"
+    assert result.version == "3.1.0"
+    assert result.system_prompt == "This is the body."
+
+
+def test_parse_skill_text_strips_marker_load_skill_file(tmp_path: Path) -> None:
+    """load_skill_file works end-to-end on a marker-prepended SKILL.md."""
+    body = (
+        "---\n"
+        "name: marker-skill\n"
+        "version: 2.0.0\n"
+        "description: desc\n"
+        "---\n"
+        "Body text.\n"
+    )
+    marked = "<!-- beidou-bundled:marker-skill:2.0.0 -->\n" + body
+    path = tmp_path / "SKILL.md"
+    path.write_text(marked)
+
+    skill = load_skill_file(path)
+    assert skill.name == "marker-skill"
+    assert skill.version == "2.0.0"
+    assert skill.system_prompt == "Body text."
+
+
+def test_provision_skills_handles_stale_bundled_copy(tmp_path: Path) -> None:
+    """When destination exists with an older bundled-origin marker (different
+    version), provision_skills overwrites silently and returns the path."""
+    # First provision with one version.
+    written1 = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert len(written1) > 0
+
+    # Pick one destination and re-write it with a fake older marker to simulate
+    # a stale bundled copy from a previous software version.
+    target = written1[0]
+    skill_name = target.parent.name
+    old_marker = f"<!-- beidou-bundled:{skill_name}:0.0.1 -->\n".encode("utf-8")
+    after_marker = target.read_bytes().split(b"\n", 1)[1]
+    target.write_bytes(old_marker + after_marker)
+
+    # Second provision: should still rewrite because the marker+content differs.
+    written2 = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert target in written2, (
+        f"Stale bundled copy was not overwritten; written2={written2}"
+    )
+
+
+def test_provision_skills_marker_based_idempotency(tmp_path: Path) -> None:
+    """Re-provisioning with the same skill version correctly skips
+    (destination already has identical marker + content)."""
+    first = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert len(first) > 0
+
+    second = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
+    assert second == [], (
+        f"Second provision should return [] (marker-based idempotent), got {second}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -41,24 +41,60 @@ been recorded (or after the contract-violation escalation ends the agent).
 | Field | Source |
 |---|---|
 | `ts` | Wall clock at loop exit. |
-| `agent_id` | Context. |
-| `exit_reason` | One of: `terminate_ack` (normal), `contract_violation_escalated`, `orchestrator_shutdown`. |
+| `agent_id` | Context (emitted as `caller_id` in the JSONL). |
+| `terminated` | Boolean. `true` when the agent consumed a terminate sentinel. |
+| `stop_reason` | One of: `end_turn` (normal), `no_result`, `cancelled` (CancelledError), `crashed` (subprocess crash before re-raise), `crash_escalated` (crash strikes exhausted). |
+| `exit_reason` | (Legacy) One of: `terminate_ack` (normal), `contract_violation_escalated`, `orchestrator_shutdown`. Present on orchestrator-emitted agent_exited events. |
 
 ---
 
 ### `agent_error`
 
-Emitted when an unhandled exception escapes the SDK iterator before
-`agent_completed` fires. An `agent_completed` event still follows, with its
-`exit_reason` reflecting the error condition.
+Emitted when an unhandled exception escapes the SDK iterator. An
+`agent_completed` event with `stop_reason="crashed"` always follows
+(observability invariant: every `agent_started` has a paired
+`agent_completed`).
 
 | Field | Source |
 |---|---|
 | `ts` | Wall clock at exception. |
-| `agent_id` | Context. |
-| `error_type` | Exception class name. |
-| `message` | Exception message string. |
+| `caller_id` | Agent context. |
+| `exception` | Exception class name (string). |
+| `msg` | Exception message string (synonym: `error`). |
+| `stderr` | Captured subprocess stderr from the ring buffer (via `ClaudeAgentOptions.stderr` callback). May be empty string if no stderr was captured. |
 | `stop_reason` | Stop reason if available at the point of failure, otherwise absent. |
+
+---
+
+### `agent_crashed`
+
+Emitted by the orchestrator (`_run_agent_with_policy`) when a subprocess
+crash is caught. One per crash attempt. Followed by either a resume/restart
+or an escalation.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at crash catch. |
+| `caller_id` | Agent that crashed. |
+| `exception` | Exception class name (string). |
+| `msg` | Exception message string. |
+| `strike_count` | Current crash strike (1-indexed, pre-reset). |
+| `stderr` | Captured subprocess stderr from `AgentRecord.last_crash_stderr`. |
+| `ts` | Wall clock at crash catch. |
+
+---
+
+### `root_crash_escalation`
+
+Emitted when the root agent exhausts `CRASH_STRIKES` and cannot recover.
+Analogous to `root_contract_escalation`.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at escalation. |
+| `agent_id` | The root agent. |
+| `crash_strikes` | Total crash strikes exhausted. |
+| `stderr` | Last captured stderr. |
 
 ---
 

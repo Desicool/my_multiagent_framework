@@ -428,6 +428,58 @@ not been terminated by the runtime:
 If the root agent is the violator, escalation goes to Beidou's user gateway
 (same mechanism as `ask_user`), because the root has no leader.
 
+### 5.1 Crash recovery policy (subprocess crashes)
+
+When the Claude Agent SDK CLI subprocess crashes (exit code 1 as seen by
+`beidou/sdk_agent.py`), the exception propagates into the orchestrator's
+`_run_agent_with_policy` loop. Beidou applies a hybrid retry strategy before
+escalating:
+
+| Strike | Action | Why |
+|---|---|---|
+| 1 | **Resume** via `resume=session_id` + recovery prompt | Preserves full conversation history; handles transient crashes (OOM, network). Wrapped in inner try — if resume fails (mid-tool-call API 400), promoted directly to strike 2 without counting an extra crash strike. |
+| 2 | **Fresh restart** with recovery prompt referencing workspace | Handles deterministic crashes (CLI max turns, context limits) by resetting state. |
+| 3 | **Escalate** to leader (members) or user gateway (root) | Gives up; human/leader decides. |
+
+Reset `crash_strikes` to 0 on any successful `run_agent()` return.
+`asyncio.CancelledError` is re-raised, not treated as a crash (it signals
+watchdog cancellation, not a subprocess failure).
+
+**Constants:** `CRASH_STRIKES = 3` (in `beidou/primitives/core.py`), NOT
+in `docs/limits.md` (implementation constant, not a system boundary).
+
+**Stderr capture:** `ProcessError` attributes (`.exit_code`, `.stderr`) are
+lost in SDK serialization (`query.py:308` serializes only `str(e)`). The
+ONLY reliable capture path is a Python stderr callback wired via
+`ClaudeAgentOptions.stderr`. `beidou/sdk_agent.py::run_agent()` creates a
+`collections.deque(maxlen=200)` buffer and a closure callback; on crash the
+buffer contents are flushed to `AgentRecord.last_crash_stderr` and included
+in the `agent_error` and `agent_crashed` events.
+
+**Session continuity:** `fork_session=False` is set explicitly when resuming
+to ensure session continuity, not branching. `session_id` is pre-generated
+(`str(uuid.uuid4())`) and stored on `AgentRecord.last_session_id` before any
+SDK call, so the orchestrator can read it even if the process crashes before
+the first `ResultMessage`.
+
+**MCP rebuild risk:** MCP server is rebuilt per `run_agent()` call. A resumed
+session may reference stale `tool_use_id`s from the old MCP server. The
+strike-1 inner try/catch handles this: if the resume 400s, it promotes to
+strike 2 (fresh restart with new MCP) without burning another crash slot.
+
+**`agent_crashed` event** is emitted on every crash, carrying `caller_id`,
+`exception`, `msg`, `strike_count`, `stderr`, and `ts`.
+
+**`agent_completed` with `stop_reason="crashed"`** is emitted in the
+`sdk_agent.py` exception handler before re-raising, restoring the
+observability invariant that every `agent_started` is paired with an
+`agent_completed`.
+
+**`root_crash_escalation` event** is emitted when the root agent's crash
+strikes exhaust (mirrors `root_contract_escalation`). For non-root agents,
+the escalation path posts a `send_message` to the team leader recommending
+`terminate_child` or re-spawn.
+
 ## 6. Model-routing caveat
 
 `claude-agent-sdk.query(...)` shells out to the local Claude Code CLI. The

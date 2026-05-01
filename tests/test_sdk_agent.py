@@ -568,6 +568,144 @@ def test_mechanical_exception_emits_agent_error_and_reraises(tmp_path, monkeypat
     assert any(n == "agent_error" for n, _ in orch.events)
 
 
+def test_stderr_callback_wired(tmp_path, monkeypatch):
+    """Stderr callback is passed to ClaudeAgentOptions as a callable."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+    orch.mark_terminated("ag_stderr")
+
+    captured_options: list[dict] = []
+
+    async def fake_query(*, prompt, options):
+        captured_options.append(vars(options) if hasattr(options, "__dict__") else options)
+        yield AssistantMessage(
+            content=[TextBlock("ok")],
+            message_id="m1",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+        yield ResultMessage(
+            total_cost_usd=0.01,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            num_turns=1,
+        )
+
+    monkeypatch.setattr(sdk_agent, "query", fake_query)
+
+    asyncio.run(
+        run_agent(
+            orch,
+            SpawnSpec(
+                caller_id="ag_stderr",
+                skill_name="fake_skill",
+                skill_root=skill_root,
+                task="t",
+            ),
+        )
+    )
+
+    # Options should include a stderr callable.
+    opts = captured_options[0]
+    assert callable(opts.get("stderr")), f"stderr must be callable, got {opts.get('stderr')!r}"
+
+
+def test_agent_error_includes_stderr(tmp_path, monkeypatch):
+    """agent_error event carries stderr captured from the ring buffer."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+
+    captured_stderr_callback = []
+
+    async def fake_query(*, prompt, options):
+        # Capture and call the stderr callback to simulate CLI output.
+        cb = options.stderr if hasattr(options, "stderr") else None
+        if cb is not None:
+            cb("line 1: some error")
+            cb("line 2: more details")
+        yield AssistantMessage(
+            content=[TextBlock("x")],
+            message_id="m",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+        raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(sdk_agent, "query", fake_query)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        asyncio.run(
+            run_agent(
+                orch,
+                SpawnSpec(
+                    caller_id="ag_stderr2",
+                    skill_name="fake_skill",
+                    skill_root=skill_root,
+                    task="t",
+                ),
+            )
+        )
+
+    # agent_error includes stderr.
+    error_events = [p for n, p in orch.events if n == "agent_error"]
+    assert len(error_events) == 1
+    assert "line 1" in error_events[0].get("stderr", "")
+    assert "line 2" in error_events[0].get("stderr", "")
+    # agent_completed with stop_reason="crashed" was also emitted.
+    completed_events = [p for n, p in orch.events if n == "agent_completed"]
+    assert any(p.get("stop_reason") == "crashed" for p in completed_events)
+
+
+def test_session_id_pre_generated(tmp_path, monkeypatch):
+    """session_id is pre-generated and stored on _drain_rec before query()."""
+    skill_root = _make_skill_dir(tmp_path)
+    orch = FakeOrchestrator()
+
+    # Ensure _agents has the caller's record.
+    import types
+    orch._agents["ag_sess"] = types.SimpleNamespace(
+        terminate_consumed=False,
+        inbox=asyncio.Queue(),
+        inflight_tools=0,
+    )
+
+    orch.mark_terminated("ag_sess")
+
+    captured_session_id = []
+
+    async def fake_query(*, prompt, options):
+        sid = options.session_id if hasattr(options, "session_id") else None
+        captured_session_id.append(sid)
+        yield AssistantMessage(
+            content=[TextBlock("ok")],
+            message_id="m1",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+        yield ResultMessage(
+            total_cost_usd=0.01,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            num_turns=1,
+            session_id=sid,
+        )
+
+    monkeypatch.setattr(sdk_agent, "query", fake_query)
+
+    result = asyncio.run(
+        run_agent(
+            orch,
+            SpawnSpec(
+                caller_id="ag_sess",
+                skill_name="fake_skill",
+                skill_root=skill_root,
+                task="t",
+            ),
+        )
+    )
+
+    # session_id is a UUID-like string (36 chars with hyphens).
+    sid = captured_session_id[0]
+    assert isinstance(sid, str)
+    assert len(sid) == 36  # UUID format
+    assert result.session_id == sid
+
+
 # ---------------------------------------------------------------------------
 # tool_called / tool_result pairing tests.
 # ---------------------------------------------------------------------------

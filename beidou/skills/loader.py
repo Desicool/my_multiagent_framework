@@ -119,6 +119,11 @@ _SDK_BUILTIN_MAP: dict[str, str] = {
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?(.*)\Z", re.DOTALL)
 
+# Marker prepended to every provisioned SKILL.md so collision detection can
+# distinguish "stale bundled copy" (overwrite silently) from "user edited this"
+# (warn).  Format: ``<!-- beidou-bundled:<name>:<version> -->\\n``.
+_MARKER_PREFIX = b"<!-- beidou-bundled:"
+
 
 class SkillError(Exception):
     """Base class for all skill-loading errors."""
@@ -185,6 +190,13 @@ def _namespace_tool(name: str) -> str:
 
 
 def _parse_skill_text(text: str, source_path: Path) -> LoadedSkill:
+    # Strip the beidou-bundled marker if present (prepended by provision_skills
+    # in a previous run).  It is always a single line before the YAML frontmatter.
+    if text.startswith("<!-- beidou-bundled:"):
+        newline_idx = text.find("\n")
+        if newline_idx != -1:
+            text = text[newline_idx + 1:]
+
     match = _FRONTMATTER_RE.match(text)
     if not match:
         raise InvalidSkillFile(
@@ -369,10 +381,17 @@ def provision_skills(
         skill_name = loaded.name
         dst = workspace_path / ".claude" / "skills" / skill_name / "SKILL.md"
 
-        # Check idempotency: skip if content is byte-identical.
+        # Prepend the bundled-origin marker so downstream code (collision
+        # detection in run_root, idempotency checks) can tell "our old copy"
+        # from "user edited this".
+        marker = f"<!-- beidou-bundled:{skill_name}:{loaded.version} -->\n".encode("utf-8")
+        provisioned_bytes = marker + text
+
+        # Check idempotency: skip if destination already has byte-identical
+        # content (including the marker).
         if dst.exists():
             existing = dst.read_bytes()
-            if existing == text:
+            if existing == provisioned_bytes:
                 continue  # already up-to-date; don't include in returned list
 
         # Ensure destination directory exists.
@@ -381,7 +400,7 @@ def provision_skills(
         # Atomic write: tempfile in same directory, then os.replace.
         tmp_fd, tmp_name = tempfile.mkstemp(dir=dst.parent)
         try:
-            os.write(tmp_fd, text)
+            os.write(tmp_fd, provisioned_bytes)
             os.close(tmp_fd)
             os.replace(tmp_name, dst)
         except Exception:

@@ -43,6 +43,7 @@ INBOX_CAP = 1000              # limits.md #3
 FAN_OUT_CAP = 8               # limits.md #1
 MAX_DEPTH = 5                 # limits.md #2
 CONTRACT_STRIKES = 3          # limits.md #5 (used by orchestrator, not primitives)
+CRASH_STRIKES = 3             # agent-runtime.md §5.1; NOT in limits.md.
 
 
 # ---------------------------------------------------------------------------
@@ -973,6 +974,7 @@ __all__ = [
     "FAN_OUT_CAP",
     "MAX_DEPTH",
     "CONTRACT_STRIKES",
+    "CRASH_STRIKES",
     # errors / data
     "PrimitiveError",
     "GatewayDeclined",
