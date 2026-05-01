@@ -43,7 +43,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from beidou.primitives.core import Message, Orchestrator
 from beidou.primitives.mcp import build_mcp_server_for
 
-from beidou.agent.hooks import build_hooks
+from beidou.agent.hooks import HookRegistry, build_hooks
 from beidou.agent.prompts import build_system_prompt
 
 from beidou.skills.loader import (
@@ -263,6 +263,17 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     # Build the four-section system prompt (skill body first for cache reuse).
     rendered_prompt = build_system_prompt(skill, template_vars)
 
+    # Discover and load skill module hooks (module.toml + gate.py / eval.py).
+    skill_dir = skill.source_path.parent
+    _hook_registry: HookRegistry | None = None
+    if HookRegistry.has_modules(skill_dir):
+        _hook_registry = HookRegistry(
+            skill_dir=skill_dir,
+            orch=orch,
+            caller_id=spec.caller_id,
+            leader_id=template_vars.get("leader_id", ""),
+        )
+
     mcp = build_mcp_server_for(orch, caller_id=spec.caller_id)
 
     # Resolve allowed_tools. If an explicit override was supplied in the spec,
@@ -306,6 +317,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     # leader_id comes from template_vars (set by orchestrator at spawn time).
     leader_id = template_vars.get("leader_id", "")
     hooks = build_hooks(orch, spec.caller_id, leader_id)
+    if _hook_registry is not None:
+        hooks = _hook_registry.merge_with_builtins(hooks)
 
     # Pre-generate session_id for crash-recovery tracking.
     # Stored on _drain_rec BEFORE any SDK call so the orchestrator can
@@ -352,6 +365,19 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
             "ts": time.time(),
         },
     )
+
+    # Run before_agent_start eval handlers from skill modules.
+    if _hook_registry is not None:
+        from beidou.agent.context import AgentStartContext
+        agent_start_ctx = AgentStartContext(
+            agent_id=spec.caller_id,
+            skill_name=skill.name,
+            team_id=orch.agent_team(spec.caller_id) if hasattr(orch, "agent_team") else None,
+            leader_id=template_vars.get("leader_id", ""),
+            cwd=spec.cwd,
+            emit=lambda n, p: orch.emit_event(n, {"caller_id": spec.caller_id, **p}),
+        )
+        await _hook_registry.run_eval_hook("before_agent_start", agent_start_ctx)
 
     # Per-drain accounting state.
     seen_message_ids: set[str] = set()

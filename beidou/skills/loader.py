@@ -400,6 +400,21 @@ def provision_skills(
 
         written.append(dst)
 
+        # Also copy optional module files (module.toml, gate.py, eval.py)
+        # from the same skill directory to the provisioned destination.
+        skill_src_dir = skill_md.parent
+        for module_file in ("module.toml", "gate.py", "eval.py"):
+            src_module = skill_src_dir / module_file
+            if not src_module.is_file():
+                continue
+            dst_module = dst.parent / module_file
+            src_data = src_module.read_bytes()
+            # Idempotency: skip if destination already has byte-identical content.
+            if dst_module.exists() and dst_module.read_bytes() == src_data:
+                continue
+            dst_module.write_bytes(src_data)
+            written.append(dst_module)
+
     return written
 
 

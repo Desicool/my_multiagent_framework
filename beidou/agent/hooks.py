@@ -13,19 +13,35 @@ registered on every agent spawn:
 These hooks are **not** moving to skill modules. They stay here as built-in
 runtime policy registered on every agent spawn. User gate handlers from
 ``module.toml`` run **after** these built-in hooks pass.
+
+``HookRegistry`` loads skill-module hooks (``module.toml`` + ``gate.py`` /
+``eval.py``) and merges them with the built-in hooks. See
+``docs/skill-modules.md`` for the full specification.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import logging
+import tomllib
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from claude_agent_sdk.types import HookMatcher
 
+from beidou.agent.context import (
+    Block,
+    Pass,
+    ToolCallContext,
+    ToolResultContext,
+)
 from beidou.engine.graph import USER_SENTINEL
 from beidou.primitives.core import Orchestrator
+
+logger = logging.getLogger(__name__)
 
 # Hook execution cap for hooks that block on a human gateway round-trip.
 # Default in claude-code is 60s, which silently truncates real reviews.
@@ -444,9 +460,573 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
 build_hooks = build_builtin_hooks
 
 
+# ---------------------------------------------------------------------------
+# HookRegistry: skill-module hooks (module.toml + gate.py / eval.py)
+# ---------------------------------------------------------------------------
+
+# Hook points that use gate handlers (return Pass/Block).
+_GATE_HOOK_POINTS = frozenset({
+    "validate_tool_call",
+    "validate_tool_result",
+    "filter_input",
+    "filter_output",
+})
+
+# Hook points that use eval handlers (return None, fire-and-forget).
+_EVAL_HOOK_POINTS = frozenset({
+    "before_agent_start",
+    "evaluate_turn",
+    "on_event",
+})
+
+# Hook points integrated via SDK HookMatcher (PreToolUse / PostToolUse).
+_SDK_HOOK_MAP: dict[str, str] = {
+    "validate_tool_call": "PreToolUse",
+    "validate_tool_result": "PostToolUse",
+}
+
+# All valid hook point names recognised by the registry.
+_KNOWN_HOOK_POINTS = _GATE_HOOK_POINTS | _EVAL_HOOK_POINTS
+
+
+class HookRegistry:
+    """Loads and manages skill-module hooks from ``module.toml`` / ``gate.py`` / ``eval.py``.
+
+    Parameters
+    ----------
+    skill_dir:
+        Directory containing ``SKILL.md`` and optionally ``module.toml``,
+        ``gate.py``, ``eval.py``.
+    orch:
+        Orchestrator instance (for event emission).
+    caller_id:
+        The agent id this registry is scoped to.
+    leader_id:
+        The leader's agent id (or ``__user__`` for root).
+    """
+
+    def __init__(
+        self,
+        skill_dir: Path,
+        orch: Orchestrator,
+        caller_id: str,
+        leader_id: str,
+    ):
+        self._skill_dir = Path(skill_dir)
+        self._orch = orch
+        self._caller_id = caller_id
+        self._leader_id = leader_id
+
+        self._config: dict = {}
+        self._gate_module: Any = None
+        self._eval_module: Any = None
+        self._gate_import_error: str | None = None
+        self._eval_import_error: str | None = None
+
+        # Resolved handler config per hook point:
+        #   {hook_point: {"mode": str, "handlers": [callable], "events": list[str]}}
+        self._handlers: dict[str, dict] = {}
+
+        self.load()
+
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def has_modules(cls, skill_dir: Path) -> bool:
+        """Return True if ``skill_dir`` contains a ``module.toml``."""
+        return (Path(skill_dir) / "module.toml").is_file()
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
+    def load(self) -> None:
+        """Parse ``module.toml``, import referenced ``gate.py`` / ``eval.py``,
+        and resolve every declared handler to a callable.
+
+        If a module file cannot be imported, gate hooks are replaced with a
+        blocking sentinel (fail-closed) and eval hooks are silently skipped
+        (fail-open), per ``docs/skill-modules.md``.
+        """
+        toml_path = self._skill_dir / "module.toml"
+        if not toml_path.is_file():
+            return
+
+        # Parse module.toml (binary mode required by tomllib).
+        with open(toml_path, "rb") as fh:
+            self._config = tomllib.load(fh)
+
+        hooks_cfg = self._config.get("hooks", {})
+        if not hooks_cfg:
+            return
+
+        # Determine which module files are referenced by any handler.
+        need_gate = False
+        need_eval = False
+        for _hp, cfg in hooks_cfg.items():
+            for name in cfg.get("handlers", []):
+                if name.startswith("gate."):
+                    need_gate = True
+                elif name.startswith("eval."):
+                    need_eval = True
+
+        # Import gate.py (fail-closed).
+        if need_gate:
+            gate_path = self._skill_dir / "gate.py"
+            if gate_path.is_file():
+                try:
+                    self._gate_module = self._import_module("gate", gate_path)
+                except Exception as exc:
+                    self._gate_import_error = f"{type(exc).__name__}: {exc}"
+                    self._orch.emit_event(
+                        "module.gate_import_error",
+                        {
+                            "caller_id": self._caller_id,
+                            "skill_dir": str(self._skill_dir),
+                            "error": self._gate_import_error,
+                            "ts": time.time(),
+                        },
+                    )
+            else:
+                self._gate_import_error = "gate.py not found"
+
+        # Import eval.py (fail-open).
+        if need_eval:
+            eval_path = self._skill_dir / "eval.py"
+            if eval_path.is_file():
+                try:
+                    self._eval_module = self._import_module("eval", eval_path)
+                except Exception as exc:
+                    self._eval_import_error = f"{type(exc).__name__}: {exc}"
+                    self._orch.emit_event(
+                        "module.eval_import_error",
+                        {
+                            "caller_id": self._caller_id,
+                            "skill_dir": str(self._skill_dir),
+                            "error": self._eval_import_error,
+                            "ts": time.time(),
+                        },
+                    )
+            else:
+                self._eval_import_error = "eval.py not found"
+
+        # Resolve handlers for each declared hook point.
+        for hook_point, cfg in hooks_cfg.items():
+            if hook_point not in _KNOWN_HOOK_POINTS:
+                continue
+
+            mode = cfg.get("mode", "all_must_pass")
+            events = cfg.get("events", [])
+
+            # Gate hook points with a failed gate.py import get a blocking
+            # sentinel instead of trying (and failing) to resolve each name.
+            if hook_point in _GATE_HOOK_POINTS and self._gate_import_error:
+                self._handlers[hook_point] = {
+                    "mode": mode,
+                    "handlers": [self._make_blocking_gate_handler(hook_point)],
+                    "events": events,
+                }
+                continue
+
+            # Eval hook points with a failed eval.py import are silently
+            # skipped — no handlers registered.
+            if hook_point in _EVAL_HOOK_POINTS and self._eval_import_error:
+                continue
+
+            resolved: list = []
+            for handler_name in cfg.get("handlers", []):
+                try:
+                    func = self._resolve_handler(handler_name)
+                    resolved.append(func)
+                except Exception as exc:
+                    self._orch.emit_event(
+                        "module.handler_resolve_error",
+                        {
+                            "caller_id": self._caller_id,
+                            "hook_point": hook_point,
+                            "handler_name": handler_name,
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "ts": time.time(),
+                        },
+                    )
+
+            if resolved:
+                self._handlers[hook_point] = {
+                    "mode": mode,
+                    "handlers": resolved,
+                    "events": events,
+                }
+
+    # ------------------------------------------------------------------
+    # Module import
+    # ------------------------------------------------------------------
+
+    def _import_module(self, name: str, file_path: Path) -> Any:
+        """Import a Python module with a unique name per spawn.
+
+        Uses a UUID hex suffix to prevent cross-agent state leakage
+        (``docs/skill-modules.md`` "Handler resolution").
+        """
+        unique_name = f"beidou_skill_{name}_{uuid.uuid4().hex}"
+        spec = importlib.util.spec_from_file_location(unique_name, str(file_path))
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not create module spec for {file_path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    # ------------------------------------------------------------------
+    # Handler resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_handler(self, handler_name: str):
+        """Resolve ``"module.func_name"`` to the actual callable.
+
+        Raises
+        ------
+        ValueError
+            If the handler name format is invalid or the module prefix is
+            not ``gate`` or ``eval``.
+        ImportError
+            If the referenced module has not been loaded.
+        AttributeError
+            If the named function does not exist on the module.
+        """
+        parts = handler_name.split(".", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid handler name {handler_name!r}: "
+                f"expected 'module.func_name' format"
+            )
+        module_name, func_name = parts
+
+        if module_name == "gate":
+            if self._gate_module is None:
+                raise ImportError("gate.py is not loaded")
+            func = getattr(self._gate_module, func_name, None)
+            if func is None:
+                raise AttributeError(
+                    f"gate.py has no function named {func_name!r}"
+                )
+            return func
+
+        elif module_name == "eval":
+            if self._eval_module is None:
+                raise ImportError("eval.py is not loaded")
+            func = getattr(self._eval_module, func_name, None)
+            if func is None:
+                raise AttributeError(
+                    f"eval.py has no function named {func_name!r}"
+                )
+            return func
+
+        else:
+            raise ValueError(
+                f"Unknown module prefix {module_name!r} in handler {handler_name!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_emit(self):
+        """Return an ``emit(event_type, payload)`` callable bound to this agent.
+
+        Auto-injects ``caller_id`` and ``ts`` so handler authors don't need to
+        manage them manually.
+        """
+        orch = self._orch
+        caller_id = self._caller_id
+
+        def emit(event_type: str, payload: dict) -> None:
+            payload.setdefault("caller_id", caller_id)
+            payload.setdefault("ts", time.time())
+            orch.emit_event(event_type, payload)
+
+        return emit
+
+    def _make_blocking_gate_handler(self, hook_point: str):
+        """Return an async handler that always returns Block.
+
+        Used when gate.py fails to import — the gate is fail-closed so no
+        tool call or output passes through.
+        """
+        reason = (
+            f"gate.py import failed for hook {hook_point}: "
+            f"{self._gate_import_error}"
+        )
+
+        async def _blocking(ctx) -> Block:
+            return Block(reason=reason)
+
+        _blocking.__name__ = f"blocking_gate_{hook_point}"
+        return _blocking
+
+    def _make_context_for(
+        self,
+        hook_point: str,
+        input_data: dict,
+        tool_use_id: Optional[str],
+    ):
+        """Create the typed context dataclass from SDK ``input_data``.
+
+        Only called for the two SDK-integrated hook points
+        (``validate_tool_call`` → ``ToolCallContext``,
+        ``validate_tool_result`` → ``ToolResultContext``).
+        """
+        emit = self._make_emit()
+
+        if hook_point == "validate_tool_call":
+            return ToolCallContext(
+                agent_id=self._caller_id,
+                tool_name=input_data.get("tool_name", ""),
+                tool_input=dict(input_data.get("tool_input", {}) or {}),
+                tool_use_id=input_data.get("tool_use_id", tool_use_id or ""),
+                emit=emit,
+            )
+
+        if hook_point == "validate_tool_result":
+            tool_response = input_data.get("tool_response") or {}
+            if isinstance(tool_response, dict):
+                is_error = bool(tool_response.get("is_error"))
+                duration_ms = tool_response.get("duration_ms", 0)
+                result_val = tool_response
+            else:
+                is_error = False
+                duration_ms = 0
+                result_val = tool_response
+            return ToolResultContext(
+                agent_id=self._caller_id,
+                tool_name=input_data.get("tool_name", ""),
+                tool_use_id=input_data.get("tool_use_id", tool_use_id or ""),
+                result=result_val,
+                is_error=is_error,
+                duration_ms=duration_ms if isinstance(duration_ms, int) else 0,
+                emit=emit,
+            )
+
+        raise ValueError(f"Unsupported SDK hook point: {hook_point!r}")
+
+    # ------------------------------------------------------------------
+    # Gate / eval chain runners
+    # ------------------------------------------------------------------
+
+    async def _run_gate_chain(
+        self,
+        handlers: list,
+        mode: str,
+        ctx,
+    ) -> Pass | Block:
+        """Run gate handlers sequentially, short-circuit on first Block.
+
+        Both ``all_must_pass`` and ``first_block_wins`` execute the same way:
+        handlers run in declaration order; the first Block stops the chain;
+        all must return Pass for the gate to pass.
+
+        **Fail-closed:** any exception raised by a handler is treated as Block.
+        """
+        for handler in handlers:
+            try:
+                result = handler(ctx)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                if isinstance(result, Block):
+                    return result
+                # Pass or None or anything else — continue to next handler.
+            except Exception as exc:
+                return Block(
+                    reason=(
+                        f"gate_handler_error: {type(exc).__name__}: {exc}"
+                    )
+                )
+        return Pass()
+
+    async def _run_eval_chain(self, handlers: list, ctx) -> None:
+        """Run all eval handlers concurrently.
+
+        **Fail-open:** exceptions are logged via ``module.eval_handler_error``
+        events but never block the agent.
+        """
+        orch = self._orch
+
+        async def _safe_run(handler):
+            try:
+                result = handler(ctx)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:
+                orch.emit_event(
+                    "module.eval_handler_error",
+                    {
+                        "caller_id": self._caller_id,
+                        "handler": getattr(handler, "__name__", str(handler)),
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "ts": time.time(),
+                    },
+                )
+
+        await asyncio.gather(*[_safe_run(h) for h in handlers])
+
+    # ------------------------------------------------------------------
+    # SDK hook construction
+    # ------------------------------------------------------------------
+
+    def build_sdk_hooks(self) -> dict:
+        """Build SDK ``HookMatcher`` dicts for the two SDK-integrated hook points.
+
+        Returns a dict with ``"PreToolUse"`` and/or ``"PostToolUse"`` keys,
+        each mapping to a list of ``HookMatcher`` objects.  Returns an empty
+        dict when the skill has no handlers for either point.
+
+        Hook points covered:
+
+        * ``validate_tool_call`` → ``PreToolUse`` (matcher=None, fires every tool)
+        * ``validate_tool_result`` → ``PostToolUse`` (matcher=None, fires every tool)
+
+        The returned dict is suitable for merging with built-in hooks via
+        :meth:`merge_with_builtins`.
+        """
+        result: dict[str, list] = {}
+
+        for hook_point, sdk_event in _SDK_HOOK_MAP.items():
+            if hook_point not in self._handlers:
+                continue
+            cfg = self._handlers[hook_point]
+            handler_func = self._build_sdk_gate_handler(
+                hook_point, cfg["handlers"], cfg["mode"], sdk_event
+            )
+            result.setdefault(sdk_event, []).append(
+                HookMatcher(
+                    matcher=None,
+                    hooks=[handler_func],
+                    timeout=HOOK_REVIEW_TIMEOUT_S,
+                )
+            )
+
+        return result
+
+    def _build_sdk_gate_handler(
+        self,
+        hook_point: str,
+        handlers: list,
+        mode: str,
+        sdk_event_name: str,
+    ):
+        """Build an async handler function suitable for an SDK HookMatcher.
+
+        The returned callable has the signature
+        ``(input_data, tool_use_id, context) -> dict`` required by the SDK.
+        """
+        make_ctx = self._make_context_for
+        run_chain = self._run_gate_chain
+
+        async def _gate_hook(
+            input_data: Any,
+            tool_use_id: Optional[str],
+            context: Any,
+        ) -> dict:
+            ctx = make_ctx(hook_point, input_data, tool_use_id)
+            result = await run_chain(handlers, mode, ctx)
+            if isinstance(result, Block):
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": sdk_event_name,
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": result.reason,
+                    }
+                }
+            return {}
+
+        return _gate_hook
+
+    # ------------------------------------------------------------------
+    # Non-SDK hook point runners
+    # ------------------------------------------------------------------
+
+    async def run_gate_hook(self, hook_point: str, ctx) -> Pass | Block:
+        """Run gate handlers for a non-SDK hook point.
+
+        Used for ``filter_input`` and ``filter_output`` which are called
+        directly from the agent loop, not via SDK hooks.
+
+        Parameters
+        ----------
+        hook_point:
+            One of ``"filter_input"`` or ``"filter_output"``.
+        ctx:
+            The typed context (``InputContext`` or ``OutputContext``).
+        """
+        if hook_point not in self._handlers:
+            return Pass()
+        cfg = self._handlers[hook_point]
+        return await self._run_gate_chain(cfg["handlers"], cfg["mode"], ctx)
+
+    async def run_eval_hook(self, hook_point: str, ctx) -> None:
+        """Run eval handlers for a non-SDK hook point.
+
+        Used for ``before_agent_start``, ``evaluate_turn``, and ``on_event``
+        which are called directly from the agent loop.
+
+        For ``on_event``, the ``events`` subscription list from
+        ``module.toml`` is honoured: if the event type does not appear in the
+        list, the handlers are skipped.
+
+        Parameters
+        ----------
+        hook_point:
+            One of ``"before_agent_start"``, ``"evaluate_turn"``, or ``"on_event"``.
+        ctx:
+            The typed context (``AgentStartContext``, ``TurnEvalContext``,
+            or ``EventContext``).
+        """
+        if hook_point not in self._handlers:
+            return
+        cfg = self._handlers[hook_point]
+
+        # on_event subscription filter.
+        if hook_point == "on_event":
+            subscribed: list[str] = cfg.get("events", [])
+            if subscribed:
+                event_type = getattr(ctx, "event_type", "")
+                if event_type not in subscribed:
+                    return
+
+        await self._run_eval_chain(cfg["handlers"], ctx)
+
+    # ------------------------------------------------------------------
+    # Merge with built-ins
+    # ------------------------------------------------------------------
+
+    def merge_with_builtins(self, builtins_hooks_dict: dict) -> dict:
+        """Merge module SDK hooks **after** built-in hooks.
+
+        Built-in hooks ALWAYS run first per ``docs/skill-modules.md``.
+        Module hooks are appended after them for each SDK event type.
+
+        Parameters
+        ----------
+        builtins_hooks_dict:
+            The dict returned by :func:`build_builtin_hooks`.
+        """
+        merged: dict[str, list] = {}
+
+        # Shallow-copy built-in lists so we don't mutate the original.
+        for event_type, matchers in builtins_hooks_dict.items():
+            merged[event_type] = list(matchers)
+
+        # Append module hooks.
+        for event_type, matchers in self.build_sdk_hooks().items():
+            merged.setdefault(event_type, []).extend(matchers)
+
+        return merged
+
+
 __all__ = [
     "ALLOWED_DURING_PENDING_REVIEW",
     "HOOK_REVIEW_TIMEOUT_S",
+    "HookRegistry",
     "build_builtin_hooks",
     "build_hooks",
 ]
