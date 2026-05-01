@@ -1,95 +1,74 @@
-"""Eval handlers for the custom-skill example.
+"""Example eval handlers for custom-skill.
 
-Each handler is an async function receiving a typed context and returning
-``None``. Results are emitted as events via ``ctx.emit()``.
-
-Eval handlers are **fail-open**: if this module cannot be imported, eval
-hooks are skipped with a warning. If a handler raises an exception, the
-error is logged and eval continues.
-
-See ``docs/skill-modules.md`` for the full specification.
+Eval handlers are fire-and-forget. They return ``None`` and emit results as
+events via ``ctx.emit()``. They are fail-open: exceptions are logged but never
+block the agent.
 """
 
-from __future__ import annotations
+import time
 
 from beidou.agent.context import AgentStartContext, EventContext, TurnEvalContext
 
 
-async def log_agent_start(ctx: AgentStartContext) -> None:
-    """Record agent startup configuration to the event log.
-
-    This handler runs *before* the agent's first SDK message, making it a
-    good place to establish baseline observability.
-    """
+async def baseline_recorder(ctx: AgentStartContext) -> None:
+    """Record agent configuration at spawn time."""
     ctx.emit(
-        "eval.agent_start",
+        "eval.baseline",
         {
+            "agent_id": ctx.agent_id,
             "skill_name": ctx.skill_name,
             "team_id": ctx.team_id,
-            "leader_id": ctx.leader_id,
-            "cwd": ctx.cwd,
+            "spawn_ts": time.time(),
         },
     )
 
 
-async def score_turn_quality(ctx: TurnEvalContext) -> None:
-    """Score each agent turn by tool diversity and output length, then emit.
-
-    Demonstrates how to inspect turn-level metadata and emit structured
-    eval events for downstream analysis (e.g., Grafana dashboard).
-
-    Scores:
-        - ``tool_diversity``: number of unique tool names called this turn.
-        - ``has_output``: whether the agent produced any assistant text.
-        - ``output_length``: character count of assistant text (or 0).
-    """
-    tool_diversity = len(set(ctx.tool_calls))
-    output_length = len(ctx.assistant_text) if ctx.assistant_text else 0
+async def quality_scorer(ctx: TurnEvalContext) -> None:
+    """Score each turn (0-3): output quality + action + efficiency."""
+    score = 0
+    if ctx.assistant_text and len(ctx.assistant_text) > 50:
+        score += 1
+    if ctx.tool_calls:
+        score += 1
+    if ctx.token_usage:
+        total = ctx.token_usage.get("input_tokens", 0) + ctx.token_usage.get(
+            "output_tokens", 0
+        )
+        if total < 2000:
+            score += 1
 
     ctx.emit(
-        "eval.turn_score",
+        "eval.score",
         {
-            "turn_index": ctx.turn_index,
-            "tool_diversity": tool_diversity,
-            "has_output": ctx.assistant_text is not None,
-            "output_length": output_length,
-            "total_tokens": (
-                ctx.token_usage.get("total_tokens")
-                if ctx.token_usage
-                else None
-            ),
+            "agent_id": ctx.agent_id,
+            "turn": ctx.turn_index,
+            "score": score,
+            "max_score": 3,
+            "tool_calls": ctx.tool_calls,
         },
     )
 
 
-async def log_error_events(ctx: EventContext) -> None:
-    """Log a human-readable summary when certain error-level events fire.
-
-    Subscribes via ``module.toml`` to: ``tool_result`` (where is_error=true),
-    ``agent_error``, ``contract_violation``, and ``liveness.escalated_to_user``.
-    """
-    summary = _summarise_event(ctx.event_type, ctx.event_payload)
-    if summary:
-        ctx.emit("eval.event_summary", {"summary": summary})
-
-
-def _summarise_event(event_type: str, payload: dict) -> str | None:
-    """Return a one-line summary for an event, or None to skip."""
-    if event_type == "tool_result" and payload.get("is_error"):
-        return (
-            f"Tool error: {payload.get('tool_name', '?')} "
-            f"failed after {payload.get('duration_ms', '?')}ms"
+async def metrics_collector(ctx: EventContext) -> None:
+    """Collect metrics from tool_result and run.cost events."""
+    if ctx.event_type == "tool_result":
+        payload = ctx.event_payload
+        ctx.emit(
+            "eval.tool_metric",
+            {
+                "agent_id": ctx.agent_id,
+                "tool_name": payload.get("name", "unknown"),
+                "duration_ms": payload.get("duration_ms", 0),
+                "is_error": payload.get("is_error", False),
+            },
         )
-    elif event_type == "agent_error":
-        return f"Agent error: {payload.get('error', '?')}"
-    elif event_type == "contract_violation":
-        return (
-            f"Contract violation by {payload.get('agent_id', '?')}: "
-            f"{payload.get('reason', '?')}"
+    elif ctx.event_type == "run.cost":
+        payload = ctx.event_payload
+        ctx.emit(
+            "eval.cost_metric",
+            {
+                "agent_id": ctx.agent_id,
+                "total_cost_usd": payload.get("total_cost_usd", 0),
+                "num_turns": payload.get("num_turns", 0),
+            },
         )
-    elif event_type == "liveness.escalated_to_user":
-        return (
-            f"Liveness escalated to user by agent "
-            f"{payload.get('agent_id', '?')}"
-        )
-    return None

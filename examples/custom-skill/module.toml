@@ -1,42 +1,35 @@
 [module]
 name = "custom-skill"
 version = "1.0.0"
-description = "Example skill module: security auditing with gate and eval hooks"
+description = "Example skill demonstrating gate and eval modules"
 
-# ── Gate hooks ──────────────────────────────────────────────────────────
-# Gate handlers run on the tool-call path. They receive a typed context and
-# return Pass() to allow, or Block(reason=...) to deny.
-
+# Gate: block dangerous tool calls
 [hooks.validate_tool_call]
-handlers = ["gate.block_destructive_commands"]
+handlers = ["gate.security_check"]
 mode = "first_block_wins"
 
+# Gate: inspect tool results
 [hooks.validate_tool_result]
-handlers = ["gate.warn_on_error"]
+handlers = ["gate.result_inspector"]
 mode = "all_must_pass"
 
+# Gate: filter agent output
 [hooks.filter_output]
-handlers = ["gate.block_secret_leakage"]
-mode = "first_block_wins"
+handlers = ["gate.output_guard"]
+mode = "all_must_pass"
 
-# ── Eval hooks ──────────────────────────────────────────────────────────
-# Eval handlers run off the critical path. They receive a typed context and
-# return None. Exceptions are logged but never block the agent.
-
+# Eval: record baseline at spawn
 [hooks.before_agent_start]
-handlers = ["eval.log_agent_start"]
+handlers = ["eval.baseline_recorder"]
 mode = "all_run"
 
+# Eval: score each turn
 [hooks.evaluate_turn]
-handlers = ["eval.score_turn_quality"]
+handlers = ["eval.quality_scorer"]
 mode = "all_run"
 
+# Eval: collect metrics on tool results and cost
 [hooks.on_event]
-handlers = ["eval.log_error_events"]
+handlers = ["eval.metrics_collector"]
+events = ["tool_result", "run.cost"]
 mode = "all_run"
-events = [
-    "tool_result",
-    "agent_error",
-    "contract_violation",
-    "liveness.escalated_to_user",
-]
