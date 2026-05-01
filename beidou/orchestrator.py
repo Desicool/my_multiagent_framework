@@ -1130,6 +1130,7 @@ class Orchestrator:
                     body=body,
                     kind="ping",
                 )
+                rec.idle_nudge_count += 1
             elif rec.idle_nudge_count == 2:
                 # Escalate to user gateway.
                 self.emit_event(
@@ -1138,7 +1139,7 @@ class Orchestrator:
                 )
                 if self.is_gateway_available():
                     try:
-                        await self.gateway_ask_user_structured(
+                        result = await self.gateway_ask_user_structured(
                             agent_id,
                             [
                                 {
@@ -1153,10 +1154,21 @@ class Orchestrator:
                             ],
                             None,
                         )
+                        answer_text = result.get("answer_text", "")
+                        if answer_text:
+                            self.deliver_message(
+                                from_id="beidou",
+                                to_id=agent_id,
+                                body=f"[LIVENESS ANSWER from user]\n{answer_text}",
+                                kind="liveness_answer",
+                            )
                     except Exception:
                         pass
+                # Reset idle nudge count so Pass B resumes monitoring after
+                # the escalation round-trip; otherwise the agent is permanently
+                # excluded once nudge_count hits MAX_PINGS_BEFORE_ESCALATION.
+                rec.idle_nudge_count = 0
 
-            rec.idle_nudge_count += 1
             rec.last_progress_ts = now
             self.emit_event(
                 "liveness.nudge",
