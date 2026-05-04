@@ -257,6 +257,32 @@ Once Phase 1 converges, orchestrator:
 `ask_user` has no timeout in Beidou (`docs/agent-runtime.md` §7). The
 orchestrator parks on the gateway response and resumes when the user answers.
 
+### 6.1 Orchestrator never answers inbox questions itself
+
+Member `ask_user` calls land in the orchestrator's inbox first as
+`[INBOX QUESTION]` system messages (Beidou's leader-chain routing —
+`docs/agent-runtime.md` §2). In v1 the leader has discretion to either
+`answer_question` (resolve from context) or `escalate_question` (forward
+to the user). **In v2 the orchestrator ALWAYS escalates.** The
+`mcp__beidou__answer_question` primitive is intentionally NOT in
+`coding_v2/orchestrator`'s `allowed-tools`.
+
+Rationale: v2's value proposition over v1 is the user-approved design
+gate. An orchestrator who silently substitutes its own judgment on
+member-asked questions short-circuits that gate — even questions that
+*seem* answerable from `requirements.md`/`spec.md` may carry hidden
+constraints that only the user can adjudicate. Forcing every member
+question through the user keeps decision authority where v2 puts it.
+
+Members are expected to coordinate with each other peer-to-peer via
+`send_message` and only invoke `ask_user` for genuinely user-bound
+choices. When such a question reaches the orchestrator, its role is
+purely routing.
+
+This rule applies only to `[INBOX QUESTION]` items. Agent-vs-agent
+arbitration (`[ESCALATE] issue=issue-{n}`, §4) is still resolved by
+the orchestrator as the technical arbiter.
+
 ---
 
 ## 7. Phase 2 transition
