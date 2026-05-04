@@ -335,12 +335,15 @@ When you believe your work is ready for review:
    ```
    [REVIEW REQUIRED]
    role=<your skill name>     agent=<your agent_id>
+   iteration=<read {project_workspace_path}/design_iteration.json -> design.iteration; default 1 if absent>
    Deliverables:
      - <file path 1> — <one-line description>
      - <file path 2> — …
    Open questions / risks: <one line, or "none">
-   Leader action required: approve (terminate_child) OR rework (send_message)
+   Leader action required: hold for convergence (no terminate_child; remain alive across peer critique and the freeze probe — termination only at the User Approve branch) OR rework (send_message)
    ```
+
+   The `iteration` line is your freshness marker. Read the file with default=1 if absent — do NOT create or write the file (the orchestrator owns it). Stale envelopes from prior iterations are silently dropped by the orchestrator. Note: this Phase-1 envelope shape applies when you are spawned for the design committee (`spec.md`); the Phase-2 `arch_post_approval` re-spawn (which writes `tasks.md`) is a single-shot specialist and uses the default leader-action wording — but in practice you don't need to track this, you just emit the envelope as written here either way; the orchestrator distinguishes Phase-1 from Phase-2 by your `task_id` (`arch` vs `arch_post_approval`).
 
 2. In the SAME turn, call:
      mcp__beidou__report_status(

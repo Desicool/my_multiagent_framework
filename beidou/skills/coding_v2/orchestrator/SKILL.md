@@ -75,6 +75,7 @@ Two-phase coordinator: design-phase arbiter + Phase-2 v1-style coordinator. You 
 - NEVER broadcast `[FREEZE PROBE]` while any issue has `status: open` or `status: escalated`.
 - NEVER skip the integrator step in Phase 2. test/deploy/qa MUST read from `integration/`, not from `artifacts/`. Skipping integrator means downstream agents see scattered per-task outputs instead of an assembled tree, and structural conflicts go undetected.
 - NEVER manually edit `integration/` or `tasks.md`. The integrator owns assembly; arch_post_approval owns tasks.md. Routing a `rework:` message is the only legitimate way to change either.
+- NEVER call `terminate_child` on a design-committee member — i.e. on a child whose `task_id` is in `{pm, arch, ui_ux, test, qa, engineer_advisor}` AND whose `[REVIEW REQUIRED]` envelope `role=` is in `{product_manager_v2, software_architect_v2, ui_ux_designer_v2, test_engineer_v2, qa_engineer_v2, engineer_advisor}` — except on the User Approve branch (after `design_locked.md` is written). Both signals must match (single-signal gating leaks: `software_architect_v2` is reused as Phase-2 `arch_post_approval`; task ids `test`/`qa` recur in Phase 2). A round-done `[REVIEW REQUIRED]` from a committee member is NOT a termination signal — `done` is round-scoped (`docs/coding-v2.md §4`), and the member must survive subsequent peer critiques and the freeze probe (`docs/coding-v2.md §5`). Terminating on first round-done short-circuits the freeze probe and breaks the user-approval-gate contract (`docs/coding-v2.md §6`).
 
 ### Workflow at a glance
 1. `declare_plan` for Phase 1 (6 tasks, all `depends_on: []`). Fan out all 6 in one turn.
@@ -143,6 +144,8 @@ declare_plan(tasks=[
 
 After `declare_plan`, call `mcp__beidou__spawn_agent` for all six task ids in one turn, then end your turn.
 
+Once spawned, all six committee members remain alive throughout Phase 1. Lifecycle: spawn → multi-round design + critique → freeze probe → user approval gate → terminate (only on Approve) or carry into next iteration (on Request Changes). A committee member's `[REVIEW REQUIRED]` envelope is a round-scoped freeze-eligibility signal, not a termination request — see "Reviewing a child's completion request" below.
+
 ## Spawning Phase 1
 
 Fan out all six committee members in the same turn:
@@ -210,7 +213,7 @@ Execute in this order (ordering matters: `remove_plan` fails if any in-flight ch
    - Approved file paths: `requirements.md`, `spec.md`, `ui_ux.md`, `test_plan.md`, `qa_plan.md`, `impl_plan.md`
    - `design.iteration` value (read from `{project_workspace_path}/design_iteration.json`, or 1 if not yet created)
    - Timestamp (ISO 8601)
-2. Call `terminate_child` for each committee member (all six must be in completion-review state after their last `report_status(state="done")`; use `force=true` only if a member is not pending review).
+2. Call `terminate_child` for each committee member. All six are alive at this point because Phase 1 forbids early termination of committee members (see "Reviewing a child's completion request" — design-committee branch); each will be in `state="done"` from their last round and have replied `[FREEZE OK]`. Use `force=true` only if a member somehow reverted to `state="working"` between the freeze probe and the User Approve decision.
 3. Call `remove_plan()`.
 4. Declare Phase 2 plan (see Phase 2 plan section below).
 5. Spawn `arch_post_approval`.
@@ -384,7 +387,29 @@ While an inbox question is unresolved you may still spawn members or take other 
 
 ## Reviewing a child's completion request
 
-When the next user-role turn begins with a message containing `[REVIEW REQUIRED]`:
+When the next user-role turn begins with a message containing `[REVIEW REQUIRED]`, classify the source by **two observable signals together** — both must match for the design-committee branch:
+
+- The child's `task_id` (the id you passed to `spawn_agent`; recoverable by joining the envelope's `agent=<agent_id>` line to the spawn record you hold) is in `{pm, arch, ui_ux, test, qa, engineer_advisor}`.
+- AND the envelope's `role=<skill name>` is in `{product_manager_v2, software_architect_v2, ui_ux_designer_v2, test_engineer_v2, qa_engineer_v2, engineer_advisor}`.
+
+Both signals are required because each leaks alone:
+- `software_architect_v2` is reused in Phase-2's `arch_post_approval` task (different task_id).
+- Task ids `test` and `qa` recur in Phase 2 (different role: v1 `test_engineer`/`qa_engineer`, no `_v2`).
+
+### Stale-review check (applies to the design-committee branch only)
+
+Each committee envelope carries an `iteration=<N>` line (added by Edit 5a in the per-member skills). Read `{project_workspace_path}/design_iteration.json -> design.iteration` (default `1` if the file does not exist). If `envelope.iteration < design.iteration`, the envelope is **stale** — ignore it. Do NOT acknowledge, do NOT terminate, do NOT send rework. The member will re-emit a fresh `[REVIEW REQUIRED]` for the current iteration once it processes the rework broadcast. Stale envelopes do not count toward convergence.
+
+### Design-committee branch (both signals match, envelope iteration current)
+
+1. `[REVIEW REQUIRED]` is a round-scoped freeze-eligibility signal, not a termination request. `done` is round-scoped — the member will revert to `working` and re-emit if a peer's later critique forces revision.
+2. Your response options are:
+     a) **Hold for convergence** — read each Deliverable file; if all artifacts pass your gate, take NO tool action. Continue monitoring convergence pre-conditions (`Convergence and freeze probe` section). The freeze probe + User Approve gate are the canonical sync points; termination of committee members happens ONLY on User Approve.
+     b) If any artifact is missing, wrong, or incomplete, call
+        `mcp__beidou__send_message(to=<that child>, content="rework: <what to fix>")`.
+3. NEVER call `terminate_child` in this branch. The freeze probe and User Approve gate require all six members alive (`docs/coding-v2.md §§5–6`).
+
+### Default branch (either signal fails — Phase-2 specialists or any non-committee child)
 
 1. Your VERY NEXT actions, in this turn or the next, MUST be one of:
      a) Read each Deliverable file. If all artifacts pass your gate,
@@ -392,7 +417,7 @@ When the next user-role turn begins with a message containing `[REVIEW REQUIRED]
      b) If any artifact is missing, wrong, or incomplete, call
         `mcp__beidou__send_message(to=<that child>, content="rework: <what to fix>")`.
 2. You MUST NOT advance to the next phase, spawn new agents, or end the run while ANY child has an unresolved `[REVIEW REQUIRED]`. Resolve every pending review before doing anything else.
-3. The phrase "ending turn to wait" is forbidden after a `[REVIEW REQUIRED]` message — that exact reflex is the failure mode this rule exists to prevent. If you find yourself about to write that, you are wrong; call `terminate_child` or `send_message` instead.
+3. The phrase "ending turn to wait" is forbidden after a `[REVIEW REQUIRED]` message in this branch — that exact reflex is the failure mode this rule exists to prevent. If you find yourself about to write that, you are wrong; call `terminate_child` or `send_message` instead.
 
 ## Completion is a request, not a declaration
 
