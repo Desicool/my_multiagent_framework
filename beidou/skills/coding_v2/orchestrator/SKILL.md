@@ -33,6 +33,7 @@ skills:
   - test_engineer_v2
   - qa_engineer_v2
   - ui_ux_designer_v2
+  - integrator
   - test_engineer
   - qa_engineer
   - junior_engineer
@@ -72,13 +73,15 @@ Two-phase coordinator: design-phase arbiter + Phase-2 v1-style coordinator. You 
 - NEVER terminate the root agent except on a user signal.
 - NEVER re-clone the original task across all committee members — every spawn gets its own `task` field.
 - NEVER broadcast `[FREEZE PROBE]` while any issue has `status: open` or `status: escalated`.
+- NEVER skip the integrator step in Phase 2. test/deploy/qa MUST read from `integration/`, not from `artifacts/`. Skipping integrator means downstream agents see scattered per-task outputs instead of an assembled tree, and structural conflicts go undetected.
+- NEVER manually edit `integration/` or `tasks.md`. The integrator owns assembly; arch_post_approval owns tasks.md. Routing a `rework:` message is the only legitimate way to change either.
 
 ### Workflow at a glance
 1. `declare_plan` for Phase 1 (6 tasks, all `depends_on: []`). Fan out all 6 in one turn.
 2. Monitor inbox: resolve `[INBOX QUESTION]` items immediately; handle `[ESCALATE]` via arbitration handler.
 3. When convergence pre-conditions met: send `[FREEZE PROBE]`; await `[FREEZE OK]` from all six.
 4. Present design package to user via `ask_user`. On Approve → Phase 2. On Request Changes → re-broadcast feedback, bump iteration, re-run committee.
-5. Phase 2: `declare_plan` with `arch_post_approval` first, then impl/test/deploy/qa. Gate on APPROVED `qa_report.md`.
+5. Phase 2: `declare_plan` with `arch_post_approval` → `impl` → `integrator` → `test ∥ deploy` → `qa`. Gate on APPROVED `qa_report.md`. Integrator assembles `artifacts/task-{n}/` into a fresh `integration/` tree that downstream agents read.
 
 ## Granularity rule
 
@@ -234,54 +237,108 @@ declare_plan(tasks=[
   {id: "arch_post_approval", role: "software-architect", skill: "software_architect_v2",
    task: "Read the approved design package per {project_workspace_path}/design_locked.md.
      Specifically read {project_workspace_path}/spec.md. Decompose implementation into a
-     task DAG and write {project_workspace_path}/tasks.md. This is a post-approval bridge
-     artifact — do NOT modify any other design package file.",
+     task DAG and write {project_workspace_path}/tasks.md. tasks.md MUST conform to the
+     manifest-bearing schema (Outputs/Generated/Deletes/Runs_before per entry); a Phase-2
+     integrator agent uses this manifest to assemble artifacts into integration/. Outputs
+     paths are LOGICAL paths from project root, not artifacts paths. No two tasks may
+     claim the same logical path. Use a task-deps task for shared modules. This is a
+     post-approval bridge artifact — do NOT modify any other design package file.",
    depends_on: []},
 
   {id: "impl", role: "implementation-lead", skill: "junior_engineer",
    task: "Read {project_workspace_path}/spec.md and {project_workspace_path}/tasks.md.
      Implement all tasks defined in tasks.md. Each spawned worker automatically receives
-     a [TASK ASSIGNMENT] header with its plan_task_id and artifacts_path. Your final
-     [REVIEW REQUIRED] envelope must list every task-id from tasks.md and confirm each
-     has a DONE.md.",
+     a [TASK ASSIGNMENT] header with its plan_task_id and artifacts_path. Each worker MUST
+     write its files under artifacts/task-{id}/<logical-path>, preserving the directory
+     structure declared in tasks.md Outputs (e.g. Outputs entry 'src/foo.py' is written
+     to artifacts/task-{id}/src/foo.py). Workers MUST produce every file declared in
+     their task's Outputs (the integrator escalates MISSING_OUTPUT). Build caches and
+     scratch files are tolerated — only declared paths transit to integration/. Your
+     final [REVIEW REQUIRED] envelope must list every task-id from tasks.md and confirm
+     each has a DONE.md.",
    model: "claude-haiku-4-5-20251001",
    depends_on: ["arch_post_approval"]},
 
-  {id: "test", role: "tester", skill: "test_engineer",
-   task: "Read {project_workspace_path}/spec.md, {project_workspace_path}/requirements.md,
-     {project_workspace_path}/test_plan.md, and all files in {project_workspace_path}/artifacts/.
-     Run the full test suite. Write {project_workspace_path}/test_report.md.",
+  {id: "integrator", role: "integrator", skill: "integrator",
+   task: "Read {project_workspace_path}/tasks.md. Validate the manifest (no path
+     overlap, no Runs_before cycles). Build a fresh {project_workspace_path}/integration/
+     tree by deleting any prior tree, then copying artifacts/<task-id>/<logical> to
+     integration/<logical> in topological order per Runs_before. Apply Generated and Deletes
+     annotations. Write {project_workspace_path}/integration_report.md with the audit trail.
+     On any validation failure, write the diagnostic to integration_report.md, send
+     [INT-CONFLICT] to me via send_message, and STOP without modifying integration/. Do NOT
+     read file contents — you are a structural assembler.",
    depends_on: ["impl"]},
+
+  {id: "test", role: "tester", skill: "test_engineer",
+   task: "PHASE-2 V2 PATH OVERRIDE: your skill body says to read code from
+     {project_workspace_path}/artifacts/. For coding_v2 Phase 2, artifacts/ is the
+     per-task STAGING area only — the assembled tree is at
+     {project_workspace_path}/integration/. Read your test inputs and source files from
+     integration/, not from artifacts/.
+     Read: {project_workspace_path}/spec.md, {project_workspace_path}/requirements.md,
+     {project_workspace_path}/test_plan.md, {project_workspace_path}/integration_report.md
+     (must end with STATUS: COMPLETE), and the assembled tree at
+     {project_workspace_path}/integration/. Also read
+     {project_workspace_path}/tasks.md to find each task's Verify command — execute
+     each Verify command from {project_workspace_path}/integration/ (cd integration && <cmd>).
+     Run the full test suite against {project_workspace_path}/integration/. Write
+     {project_workspace_path}/test_report.md.",
+   depends_on: ["integrator"]},
 
   {id: "deploy", role: "deployer", skill: "deployment_engineer",
-   task: "Read {project_workspace_path}/spec.md and {project_workspace_path}/requirements.md.
-     Write {project_workspace_path}/deploy.md covering environments, dependencies, health
-     checks, rollback strategy, and CI/CD outline.",
-   depends_on: ["impl"]},
+   task: "PHASE-2 V2 PATH OVERRIDE: artifacts/ is the per-task STAGING area only — the
+     deployment artifact is the assembled tree at {project_workspace_path}/integration/.
+     Read: {project_workspace_path}/spec.md, {project_workspace_path}/requirements.md,
+     {project_workspace_path}/integration_report.md. Write
+     {project_workspace_path}/deploy.md covering environments, dependencies, health
+     checks, rollback strategy, and CI/CD outline — referencing
+     {project_workspace_path}/integration/ as the source tree.",
+   depends_on: ["integrator"]},
 
   {id: "qa", role: "qa", skill: "qa_engineer",
-   task: "Read the full design package from {project_workspace_path}/design_locked.md.
-     Verify the implementation against ALL six approved design documents:
+   task: "PHASE-2 V2 PATH OVERRIDE: your skill body says to read code from
+     {project_workspace_path}/artifacts/. For coding_v2 Phase 2, artifacts/ is the
+     per-task STAGING area only — verify against {project_workspace_path}/integration/,
+     NOT artifacts/.
+     Read the full design package per {project_workspace_path}/design_locked.md.
+     Verify the implementation at {project_workspace_path}/integration/ against ALL six
+     approved design documents plus the integration audit:
      {project_workspace_path}/requirements.md, {project_workspace_path}/spec.md,
      {project_workspace_path}/ui_ux.md, {project_workspace_path}/test_plan.md,
-     {project_workspace_path}/qa_plan.md, {project_workspace_path}/impl_plan.md.
+     {project_workspace_path}/qa_plan.md, {project_workspace_path}/impl_plan.md,
+     {project_workspace_path}/integration_report.md.
      Also read {project_workspace_path}/test_report.md and {project_workspace_path}/deploy.md.
      Write {project_workspace_path}/qa_report.md with APPROVED or REJECTED verdict.",
    depends_on: ["test", "deploy"]},
 ])
 ```
 
-Phase 2 DAG: `arch_post_approval` → `impl` → `test`, `deploy` → `qa`.
+Phase 2 DAG: `arch_post_approval` → `impl` → `integrator` → `test`, `deploy` → `qa`.
 
 ## Phase 2 gates
 
-- **arch_post_approval gate**: `{project_workspace_path}/tasks.md` must exist and be non-empty.
+- **arch_post_approval gate**: `{project_workspace_path}/tasks.md` must exist and be non-empty. Each task entry must include the manifest fields (Outputs, Generated, Deletes, Runs_before).
 - **impl gate**: implementation-lead has reported done; envelope lists all deliverables from `tasks.md`.
+- **integrator gate**: `{project_workspace_path}/integration_report.md` must exist and end with `STATUS: COMPLETE`. If it ends with `STATUS: ESCALATED`, route the conflict per the integrator-escalation handler below — do NOT advance to test/deploy.
 - **test gate**: `{project_workspace_path}/test_report.md` must exist.
 - **deploy gate**: `{project_workspace_path}/deploy.md` must exist.
 - **qa gate**: `{project_workspace_path}/qa_report.md` must exist before checking verdict.
 
 If a gate fails, send a `rework:` message via `send_message` rather than calling `terminate_child`.
+
+## Integrator-escalation handler
+
+When the integrator sends `[INT-CONFLICT] <one-line summary>; see integration_report.md`, this is NOT an `[INBOX QUESTION]`. Handle it as follows:
+
+1. Read `{project_workspace_path}/integration_report.md`. Identify the violation type:
+   - **Path overlap** (two tasks claim the same logical path) → route `rework:` to `arch_post_approval`. tasks.md partition is wrong.
+   - **Missing declared output** (`MISSING_OUTPUT: <task-id> <logical-path>`) → route `rework:` to the implementer of `<task-id>`. The agent declared an output but did not produce the file under `artifacts/`.
+   - **Cycle** in `Runs_before` → route `rework:` to `arch_post_approval`.
+
+   Unlisted files under `artifacts/` (build caches, scratch files) do NOT trigger this handler — the integrator silently ignores them under allow-list semantics.
+2. After the responsible agent reports done from rework, re-spawn the integrator (or `terminate_child` then re-spawn from a fresh declare_plan only if the agent was already terminated).
+3. The integrator deletes `integration/` and rebuilds from scratch on each spawn — do NOT manually clean up.
 
 ## DELIVERY GATE
 
@@ -293,7 +350,8 @@ If `qa_report.md` contains "REJECTED":
   - Read the rejection reasons.
   - Call `mcp__beidou__remove_plan()` (approve or force-terminate any in-flight children first).
   - Declare a corrected plan covering only the phases that need re-running:
-    - If test failures: `impl` → `test`, `deploy` → `qa`.
+    - If test failures: `impl` → `integrator` → `test`, `deploy` → `qa`. The integrator must always re-run after impl changes — it deletes and rebuilds `integration/` from scratch, so partial states from prior runs never leak.
+    - If manifest violation detected post-integration: `arch_post_approval` (fix tasks.md) → `impl` (re-run affected tasks only) → `integrator` → `test`, `deploy` → `qa`.
     - If missing requirements: re-run Phase 2 from `arch_post_approval`.
   - Spawn through to qa again.
 Loop until APPROVED. Never declare the task complete without APPROVED `qa_report.md`.

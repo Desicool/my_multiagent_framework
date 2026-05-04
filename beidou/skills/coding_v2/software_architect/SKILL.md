@@ -237,23 +237,86 @@ STEP 2 — READ APPROVED SPEC
 
 Read `{project_workspace_path}/spec.md`.
 
-STEP 3 — WRITE tasks.md
+STEP 3 — WRITE tasks.md (manifest-bearing)
 
-Write `{project_workspace_path}/tasks.md` with one entry per smallest independent closure:
+Write `{project_workspace_path}/tasks.md` with one entry per smallest independent closure.
+The schema is **manifest-bearing** — Phase 2 contains an `integrator` agent that uses your
+`Outputs` declarations to assemble `artifacts/task-{n}/` into `integration/`. Conformance
+is mandatory:
 
 ```
 ## task-{n}: {short name}
 - What: one-sentence deliverable
-- Inputs: files/interfaces available (paths or names)
-- Outputs: exact files to produce, under artifacts/task-{n}/
-- Verify: bash command exiting 0 if complete and correct
+- Inputs: logical paths produced by upstream tasks (or "none")
+- Outputs:
+    - <logical/path/from/project/root.ext>
+    - <logical/path/from/project/root_test.ext>
+- Generated: <list of files this task regenerates each run, or "none">
+- Deletes: <list of files this task removes from integration, or "none">
+- Runs_before: [task-id-1, task-id-2]
+- Verify: <bash command exiting 0 if the task's artifacts are complete and correct>
 ```
 
-Aim for tasks a junior engineer can complete in a single agent loop without coordinating with
-other tasks. If tasks have dependencies, list them under Inputs.
+Field semantics — internalize these before writing:
 
-DO NOT modify spec.md in Phase 2 — it is locked. If you find an error in spec.md while writing
-tasks.md, report it to orchestrator via `send_message` rather than editing the file.
+- **Outputs are *logical* paths** relative to the project root, NOT to the artifacts dir.
+  The implementer for task-1 with `Outputs: src/foo.py` will write to
+  `artifacts/task-1/src/foo.py`; integrator later moves it to `integration/src/foo.py`.
+- **No two tasks may claim the same logical path** in their `Outputs` lists. The integrator
+  treats overlap as a hard error and escalates to orchestrator. Partition the file space
+  cleanly — that is your job as architect.
+- **Generated** = files the task overwrites each run (lockfiles, compiled assets). Use
+  sparingly; the default is `none`.
+- **Deletes** = files this task explicitly removes from `integration/`. Use only for
+  intentional cleanup (e.g. removing a deprecated module replaced by this task). Default `none`.
+- **Runs_before** declares the dependency edge for the integrator's topological sort. List
+  the task ids whose outputs must be placed before this task's outputs. The integrator
+  detects cycles.
+- **Verify** is a post-integration self-check: it runs against
+  `{project_workspace_path}/integration/` (the assembled tree), executed by
+  test_engineer in the test phase, NOT by the implementer against
+  `artifacts/`. Cross-task imports (e.g. tests in task-1 that import from
+  `task-deps`'s `src/types.py`) only resolve after the integrator copies
+  everything into `integration/`. Write `Verify` accordingly: assume working
+  directory is `integration/` and the full assembled tree is present.
+
+### task-deps convention (use when there are shared modules)
+
+If multiple tasks need shared types, configs, or interface stubs, declare a single
+`task-deps` task that owns those files. Other tasks list `task-deps` in `Runs_before`
+and reference its outputs in `Inputs`. They MUST NOT re-output any path `task-deps`
+already claims.
+
+```
+## task-deps: shared types and configuration
+- What: produce shared modules used by other tasks
+- Inputs: none
+- Outputs:
+    - src/types.py
+    - src/config.py
+- Generated: none
+- Deletes: none
+- Runs_before: []
+- Verify: cd integration && python -c "import sys; sys.path.insert(0, 'src'); import types, config"
+
+## task-1: implement user endpoint
+- What: REST endpoint for user CRUD
+- Inputs: src/types.py, src/config.py
+- Outputs:
+    - src/api/users.py
+    - tests/test_users.py
+- Generated: none
+- Deletes: none
+- Runs_before: [task-deps]
+- Verify: cd integration && pytest tests/test_users.py
+```
+
+Aim for tasks a junior engineer can complete in a single agent loop without coordinating
+with other tasks. If two tasks legitimately need to write to overlapping paths, that is a
+sign your decomposition is wrong — split the file or merge the tasks.
+
+DO NOT modify spec.md in Phase 2 — it is locked. If you find an error in spec.md while
+writing tasks.md, report it to orchestrator via `send_message` rather than editing the file.
 
 When tasks.md is written, submit for review.
 

@@ -261,55 +261,190 @@ orchestrator parks on the gateway response and resumes when the user answers.
 
 ## 7. Phase 2 transition
 
-Phase 2 begins after `design_locked.md` exists. Orchestrator executes a
-bridge step before spawning the v1 implementation flow:
+Phase 2 begins after `design_locked.md` exists. The flow is **manifest-driven**:
+each implementation task writes to its own isolated `artifacts/task-{n}/` directory;
+a dedicated `integrator` agent then assembles those artifacts into a fresh
+`integration/` tree under the manifest declared in `tasks.md`. Test, deploy, and
+qa read from `integration/`, not from `artifacts/`.
 
-**Bridge step.** Orchestrator re-spawns `coding_v2/software_architect` with
-task: "Write `tasks.md` from approved `spec.md` per `design_locked.md`."
-Arch reads the approved `spec.md`, decomposes implementation into a task DAG,
-and writes `tasks.md`. Arch reports done; orchestrator approves via
-`terminate_child`. Only after this does the v1 impl flow begin.
+Two reasons for this shape: (a) **isolation prevents lost-write races**
+between parallel implementer agents (cf. `bd-mem beidou-parallel-subagent-risk`),
+and (b) **structural conflict detection** — a path claimed by two tasks is
+caught by the integrator at integration time rather than by silent overwrite.
+Pure git-merge of LLM-generated files is not used; conflicts on freshly written
+code surface as text-diff hunks that look like bugs to a downstream reader.
+
+### 7.1 Bridge step — arch writes tasks.md
+
+Orchestrator re-spawns `coding_v2/software_architect` with task:
+"Write `tasks.md` from approved `spec.md` per `design_locked.md`."
+Arch decomposes implementation into a DAG and writes the manifest below.
+Arch reports done; orchestrator approves via `terminate_child`.
 
 `tasks.md` is a **post-approval bridge artifact**. Arch MUST NOT write
-`tasks.md` during Phase 1 — that phase's sole arch deliverable is `spec.md`.
+`tasks.md` during Phase 1.
 
-**Phase 2 task sequence (verbatim v1):**
+### 7.2 tasks.md schema (manifest-bearing)
+
+Each task entry MUST conform to:
+
+```markdown
+## task-{id}: {short name}
+- What: one-sentence deliverable
+- Inputs: logical paths produced by upstream tasks (or "none")
+- Outputs:
+    - <logical/path/from/project/root.ext>
+    - <logical/path/from/project/root_test.ext>
+- Generated: <list of files this task regenerates each run, or "none">
+- Deletes: <list of files this task removes from integration, or "none">
+- Runs_before: [task-id-1, task-id-2]   # optional; for dependency ordering
+- Verify: <bash command exiting 0 if the task's artifacts are complete>
+```
+
+Field semantics:
+
+- **Outputs are *logical* paths**, relative to the project root, not to the
+  artifacts directory. The implementer for `task-1` writes its `Outputs` entry
+  `src/foo.py` to disk at `artifacts/task-1/src/foo.py` (preserving relative
+  directory structure). The integrator later moves it to `integration/src/foo.py`.
+- **No two tasks may claim the same logical path** in their `Outputs` lists.
+  This is the structural conflict rule the integrator enforces.
+- **Generated** annotates files that are byproducts of build (e.g. lockfiles,
+  compiled assets). Integrator overwrites them on re-runs without flagging.
+- **Deletes** annotates files the task explicitly removes from `integration/`.
+  Integrator applies these after copying outputs.
+- **Runs_before** declares an ordering edge; the integrator topologically sorts
+  by these edges before copying.
+- **Verify** is a post-integration self-check executed by `test_engineer`
+  in the test phase against `integration/` (not against `artifacts/`).
+  Cross-task imports only resolve after assembly, so Verify commands MUST be
+  written assuming working directory `integration/` and the full assembled
+  tree present (e.g. `cd integration && pytest tests/test_foo.py`).
+
+### 7.3 task-deps convention
+
+Shared utility modules (types, config, common interfaces) belong to a
+designated `task-deps` task that runs first:
+
+```markdown
+## task-deps: shared types and configuration
+- What: produce shared modules used by other tasks
+- Inputs: none
+- Outputs:
+    - src/types.py
+    - src/config.py
+- Verify: python -c "import sys; sys.path.insert(0, 'src'); import types, config"
+
+## task-1: ...
+- Inputs: src/types.py, src/config.py
+- Runs_before: [task-deps]
+- Outputs: ...
+```
+
+Downstream tasks reference `task-deps` Outputs in their `Inputs` and list
+`task-deps` in `Runs_before`. They MUST NOT re-output any file `task-deps`
+already claims — the integrator escalates that as a conflict. This convention
+prevents the common case where two parallel tasks each generate a slightly
+different `src/types.py`.
+
+### 7.4 The integrator agent
+
+`coding_v2/integrator` runs after all implementation tasks complete and
+before test/deploy/qa. Its workflow:
+
+1. Read `tasks.md`. Parse every task's `Outputs`, `Generated`, `Deletes`,
+   `Runs_before` blocks into a manifest map and a DAG.
+2. **Validate the manifest.** Two hard checks:
+   - No logical path appears in two distinct tasks' `Outputs` (overlap → error).
+   - DAG implied by `Runs_before` is acyclic (cycle → error).
+   The manifest uses **allow-list semantics**: files in `artifacts/task-*/`
+   that are NOT listed in any `Outputs`/`Generated` block (build caches like
+   `__pycache__/`, scratch files) are silently ignored, NOT escalated. This
+   prevents implementer-generated cruft from blocking integration. The
+   integrator only copies declared paths.
+   On any error, write the diagnostic to `integration_report.md`, send
+   `[INT-CONFLICT]` to orchestrator via `send_message`, and stop without
+   modifying `integration/`. A separate runtime escalation fires if the
+   implementer fails to produce a *declared* output (`MISSING_OUTPUT`).
+3. **Build a fresh integration tree.** If `integration/` exists, delete it.
+   Re-create it empty. (The pre-existing tree is replaced atomically; partial
+   states from earlier runs do not persist.)
+4. **Place artifacts in topological order.** For each task in the DAG order:
+   - For each `Outputs` entry, copy `artifacts/task-{id}/<logical>` →
+     `integration/<logical>`, creating intermediate directories.
+   - For each `Generated` entry, do the same; if the path already exists in
+     `integration/` from an earlier task, overwrite without warning (this is
+     the documented semantics of `Generated`).
+   - For each `Deletes` entry, remove the path from `integration/` if present;
+     a `Deletes` for a path that was never written is a no-op, not an error.
+5. **Write the audit log.** `integration_report.md` records: total files
+   placed, the manifest map, every `Generated` overwrite, every `Deletes`,
+   any validation warnings, and a final `STATUS: COMPLETE` or
+   `STATUS: ESCALATED` line.
+6. `report_status(state="done")` with the report path in `detail`.
+
+The integrator is **structural**: it never reads file *contents*. Its sole
+job is path-level orchestration plus manifest validation.
+
+### 7.5 Phase 2 task sequence (with integrator)
 
 ```
-arch (post-approval, writes tasks.md)
+arch_post_approval (writes tasks.md per §7.2 schema)
    ↓
-impl (parallel spawn from tasks.md, junior_engineer per task)
+impl (parallel spawn from tasks.md, one junior_engineer per task,
+       each writing to artifacts/task-{n}/<logical-path>)
    ↓
-test ∥ deploy
+integrator (validates manifest, assembles integration/)
    ↓
-qa (APPROVED gate against full design package)
+test ∥ deploy   (both read from integration/)
    ↓
-orchestrator → user delivery
+qa (APPROVED gate against full design package + integration_report.md)
+   ↓
+orchestrator → user delivery (integration/ is the deliverable)
 ```
 
-**Reused v1 sub-skills in Phase 2 (verbatim, no modifications):**
+`integration/` is the user-facing deliverable. The project root continues to
+hold the design docs (requirements.md, spec.md, …, qa_report.md) and the
+`artifacts/` staging area for audit; the assembled code lives under
+`integration/`.
+
+### 7.6 Reused v1 sub-skills in Phase 2
 
 | Sub-skill | Phase 2 role |
 |---|---|
-| `coding/junior_engineer` | Implementer per task |
-| `coding/test_engineer` | Test runner (writes test_report.md) |
-| `coding/deployment_engineer` | Deployment plan |
-| `coding/qa_engineer` | Final APPROVED/REJECTED sign-off (writes qa_report.md) |
+| `coding/junior_engineer` | Implementer per task; writes to `artifacts/task-{n}/` |
+| `coding/test_engineer` | Test runner against `integration/`; writes `test_report.md` |
+| `coding/deployment_engineer` | Deployment plan referencing `integration/` |
+| `coding/qa_engineer` | Final APPROVED/REJECTED sign-off; writes `qa_report.md` |
 
 The Phase-1 v2 forks (`test_engineer_v2`, `qa_engineer_v2`, `ui_ux_designer_v2`)
-are committee-only and not used in Phase 2; their v1 counterparts above are the
-Phase-2 actors.
+are committee-only and not used in Phase 2.
 
 **qa scope expansion.** In Phase 2, the qa_engineer's task description
-includes all six design package paths:
+includes all six design package paths plus `integration_report.md`:
 
 ```
-requirements.md, spec.md, ui_ux.md, test_plan.md, qa_plan.md, impl_plan.md
+requirements.md, spec.md, ui_ux.md, test_plan.md, qa_plan.md, impl_plan.md, integration_report.md
 ```
 
-The `coding/qa_engineer` skill body already handles "verify against the
-package I'm given" — no SKILL.md modification is required. The v2 orchestrator
-passes all six paths in the task field; the v1 qa skill consumes them.
+`coding/qa_engineer` already handles "verify against the package I'm given" —
+no SKILL.md modification required. The v2 orchestrator passes all paths in
+the task field.
+
+### 7.7 On qa REJECTED — re-run policy
+
+If qa returns REJECTED, the rerun affects only the failing phase:
+
+- **Test failures only:** orchestrator instructs implementer(s) of the
+  failing task(s) to revise; integrator re-runs (which deletes and rebuilds
+  `integration/` from scratch — this is why the fresh-tree rule matters);
+  test re-runs.
+- **Manifest violation surfaced post-integration:** orchestrator routes
+  `rework: <conflict>` to arch_post_approval; tasks.md gets fixed;
+  affected impl tasks re-run; integrator re-runs.
+
+The fresh-`integration/` rule guarantees re-runs are deterministic: stale
+files from a prior run never linger.
 
 ---
 
@@ -363,6 +498,37 @@ applies. After three consecutive violations by a committee member, Beidou
 posts to the orchestrator recommending `terminate_child`. The orchestrator
 decides whether to terminate and re-spawn or send a rework message.
 
+### Integrator detects manifest violation (Phase 2)
+
+When the integrator's validation fails — overlapping `Outputs`, cyclic
+`Runs_before`, or a missing declared output detected during assembly — it
+writes the diagnostic to `integration_report.md` and sends
+`[INT-CONFLICT] <one-line summary>` to the orchestrator. On `STATUS: ESCALATED`,
+the orchestrator routes `rework:` to the responsible agent:
+
+- **Two tasks claim same path:** route to `arch_post_approval` (tasks.md
+  partition is wrong).
+- **Missing declared output** (`MISSING_OUTPUT: <task-id> <logical-path>`):
+  route to the implementer of `<task-id>` — the agent declared an output
+  but did not produce the file under `artifacts/`.
+- **Cyclic `Runs_before`:** route to `arch_post_approval`.
+
+Unlisted files in `artifacts/` (build caches, scratch files) do NOT trigger
+this path — they are silently ignored under allow-list semantics.
+
+After the responsible agent finishes its rework, orchestrator re-spawns
+the integrator. The fresh-`integration/` rule means the prior run's
+incomplete state never persists.
+
+### Integrator crash mid-assembly
+
+If the integrator crashes after deleting the prior `integration/` but
+before completing the rebuild, `integration/` is left empty or partial.
+Recovery is automatic: on integrator restart, step 3 of the workflow
+unconditionally deletes `integration/` first, so the partial state is
+discarded. The implementer artifacts under `artifacts/task-*/` are the
+durable source of truth and are not modified by the integrator.
+
 ---
 
 ## 9. Relationship to coding/v1
@@ -391,6 +557,7 @@ decides whether to terminate and re-spawn or send a rework message.
 | `coding_v2/qa_engineer/SKILL.md` | Phase-1 deliverable is `qa_plan.md` defining the acceptance gate (not the verdict); committee-protocol participation absent from v1 body |
 | `coding_v2/ui_ux_designer/SKILL.md` | Phase-1 deliverable is `ui_ux.md` (not `UX_CONCERNS.md`); committee-protocol participation absent from v1 body; `huashu-design` mockup capability preserved |
 | `coding_v2/engineer_advisor/SKILL.md` | New role; not present in v1 |
+| `coding_v2/integrator/SKILL.md` | New role; not present in v1; Phase-2 manifest assembler (§7.4) |
 
 ### Why no shared base
 
