@@ -1159,6 +1159,110 @@ def test_watchdog_pass_b_skips_leader_with_teams(tmp_path):
     asyncio.run(body())
 
 
+def test_watchdog_pass_b_nudges_ex_parent_after_all_children_exit(tmp_path):
+    """Pass B MUST nudge an agent who shed every child but never reported done.
+
+    Regression for tsk_658f44b6: the impl-leader (junior_engineer) terminated
+    its last child via terminate_child, then ended its turn without emitting
+    [REVIEW REQUIRED] + report_status. The old leaf check
+    `if self.teams_led_by(agent_id): continue` excluded any agent that had
+    EVER spawned a team — so the ex-parent never got a Pass-B nudge and the
+    orchestrator hung waiting forever. The 8gen fix replaces the predicate
+    with `has_active_children` (returns True only if a led team has at least
+    one still-registered member). After every child exits, the ex-parent is
+    treated as a leaf and nudged like any leaf.
+    """
+    # bd issue 8gen
+    from beidou.orchestrator import (
+        AgentRecord, Orchestrator, TeamRecord,
+        IDLE_NUDGE_S,
+    )
+
+    class _SyncEmitter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event: str, agent_id: str = "", team_id=None, **kwargs) -> None:
+            self.events.append((event, {"agent_id": agent_id, **kwargs}))
+
+    async def body():
+        emitter = _SyncEmitter()
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir(exist_ok=True)
+        o = Orchestrator(
+            task_id="tsk_8gen_ex_parent",
+            emitter=emitter,  # type: ignore[arg-type]
+            skill_root=skill_root,
+        )
+
+        # ex_parent_ag led tm_inner. tm_inner.member_ids still references the
+        # exited child by id, but the child is NO LONGER in o._agents (the
+        # canonical "alive" registry — agent_exited removes it). This is the
+        # exact post-terminate state of tsk_658f44b6's impl-leader.
+        top_team = TeamRecord(
+            team_id="tm_top", name="top", task="",
+            leader_id="root_ag", depth=1, member_ids=[], rules=[],
+        )
+        inner_team = TeamRecord(
+            team_id="tm_inner", name="inner", task="",
+            leader_id="ex_parent_ag", depth=2,
+            member_ids=["dead_child_ag"],  # id remains; agent record gone
+            rules=[],
+        )
+        o._teams["tm_top"] = top_team
+        o._teams["tm_inner"] = inner_team
+
+        ex_parent_rec = AgentRecord(
+            agent_id="ex_parent_ag", task_id="tsk_8gen_ex_parent", team_id="tm_top",
+            role="ex_parent_ag", skill_name="junior_engineer", model=None,
+            inbox=asyncio.Queue(), create_team_lock=asyncio.Lock(),
+        )
+        o._agents["ex_parent_ag"] = ex_parent_rec
+        top_team.member_ids.append("ex_parent_ag")
+        # Note: dead_child_ag is intentionally NOT registered in o._agents.
+
+        # Spawn a root with no stale state so Pass B doesn't nudge it.
+        root_rec = AgentRecord(
+            agent_id="root_ag", task_id="tsk_8gen_ex_parent", team_id=None,
+            role="root_ag", skill_name="orchestrator", model=None,
+            inbox=asyncio.Queue(), create_team_lock=asyncio.Lock(),
+        )
+        o._agents["root_ag"] = root_rec
+        o._root_id = "root_ag"
+        now = time.time()
+        root_rec.last_drain_ts = now  # fresh — root won't be nudged
+        root_rec.last_progress_ts = now
+
+        # ex_parent_ag has stale drain (idle past IDLE_NUDGE_S), no inflight,
+        # not completion_pending — i.e. has hung and needs a nudge.
+        stale_ts = now - IDLE_NUDGE_S - 10
+        ex_parent_rec.last_drain_ts = stale_ts
+        ex_parent_rec.last_progress_ts = stale_ts - 1
+        ex_parent_rec.inflight_tools = 0
+        ex_parent_rec.completion_pending = False
+        ex_parent_rec.idle_nudge_count = 0
+
+        # Sanity: under the new predicate, ex_parent_ag has no active children.
+        assert o.has_active_children("ex_parent_ag") is False, (
+            "ex_parent_ag should have no active children — dead_child_ag is gone "
+            "from o._agents"
+        )
+
+        await o._watchdog_tick()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        nudge_events = [e for e in emitter.events if e[0] == "liveness.nudge"]
+        nudged_agents = {e[1].get("agent_id") for e in nudge_events}
+
+        assert "ex_parent_ag" in nudged_agents, (
+            f"ex_parent_ag was NOT nudged despite shedding every child and "
+            f"being idle past IDLE_NUDGE_S; events: {nudge_events}"
+        )
+
+    asyncio.run(body())
+
+
 def test_watchdog_liveness_escalation_delivers_answer_to_parked_agent(tmp_path):
     """_watchdog_ask_and_deliver_liveness_answer must put a liveness_answer message
     into the agent's inbox after the user answers via the gateway.

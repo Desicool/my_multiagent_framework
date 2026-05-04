@@ -168,6 +168,18 @@ class Orchestrator:
     def teams_led_by(self, agent_id: str) -> list[str]:
         return [tid for tid, t in self._teams.items() if t.leader_id == agent_id]
 
+    def has_active_children(self, agent_id: str) -> bool:
+        for tid in self.teams_led_by(agent_id):
+            team = self._teams.get(tid)
+            if team is None:
+                continue
+            for mid in team.member_ids:
+                if mid == agent_id:
+                    continue
+                if mid in self._agents:
+                    return True
+        return False
+
     def team_depth(self, team_id: str | None) -> int:
         """Return the depth of team_id, or 0 for None (teamless = depth 0)."""
         if team_id is None:
@@ -1375,9 +1387,13 @@ class Orchestrator:
             # Skip if already escalated.
             if rec.idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION:
                 continue
-            # Pass B only monitors leaf agents. Leaders are covered by Pass A
+            # Pass B only monitors leaf agents (no active children). An agent
+            # that ever spawned a team but has now shed every child is treated
+            # as a leaf — without this, an ex-parent who finishes its last
+            # terminate_child without reporting done hangs forever (see
+            # tsk_658f44b6). Active leaders are still covered by Pass A
             # (review-pending escalation) and Pass C (terminate-grace backstop).
-            if self.teams_led_by(agent_id):
+            if self.has_active_children(agent_id):
                 continue
             freshness = self._agent_freshness_ts(agent_id)
             if freshness == 0:

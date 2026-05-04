@@ -789,6 +789,51 @@ def test_review_gate_denies_SendMessage_classic(tmp_path: Path) -> None:
     )
 
 
+# bd issue 8gen: SDK TodoWrite is a default builtin that competes with
+# mcp__beidou__report_status as a completion signal. tsk_658f44b6 evidence:
+# the impl-leader (junior_engineer) terminated its last child, then called
+# TodoWrite to mark its tasks complete instead of emitting [REVIEW REQUIRED]
+# + report_status — the orchestrator hung waiting forever. The 8gen fix adds
+# TodoWrite to disallowed_tools at agent-spawn (loop.py); the review gate
+# denies it as defense-in-depth (TodoWrite is intentionally NOT in
+# ALLOWED_DURING_PENDING_REVIEW, so the gate refuses on absence).
+def test_review_gate_denies_TodoWrite_classic(tmp_path: Path) -> None:
+    """Leader with 1 pending child must NOT be able to call SDK TodoWrite.
+
+    TodoWrite is suppressed at spawn-time via disallowed_tools in loop.py
+    (so the SDK never surfaces it to the model); the review gate is the
+    second-layer check. tsk_658f44b6 evidence: impl-leader called TodoWrite
+    to declare completion in lieu of report_status; orchestrator hung.
+    """
+    # bd issue 8gen
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
+    child = _seed_agent(o, "C1", "tm_child")
+    child.completion_pending = True
+    child.completion_pending_ts = time.time()
+
+    hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
+    result = run(
+        hook(
+            _input_data(
+                "TodoWrite",
+                {"todos": [{"content": "task-1", "status": "completed",
+                            "activeForm": "Completed task-1"}]},
+            ),
+            tool_use_id="8gen_tw",
+            context=None,
+        )
+    )
+
+    # Review gate denies → returns a non-empty dict with hookSpecificOutput
+    assert result != {}, "Expected review gate to deny TodoWrite classic"
+    assert "hookSpecificOutput" in result or "decision" in result or "permissionDecision" in result, (
+        f"Expected denial structure, got {result!r}"
+    )
+
+
 # bd issue xq1: AskUserQuestion classic name is allowed while pending child exists
 def test_review_gate_allows_AskUserQuestion_classic(tmp_path: Path) -> None:
     """Leader with 1 pending child can call SDK-builtin AskUserQuestion.

@@ -143,46 +143,69 @@ the entries that map to SDK built-in tool names (`Bash`, `Read`, `Write`,
 `WebFetch`, `WebSearch`). Needed because `skills="all"` does NOT auto-add SDK
 builtins — those must be passed explicitly in `allowed_tools`.
 
-### 5. SDK team-mode suppression (three layers)
+### 5. SDK builtin suppression (two-layer pattern)
 
 Beidou implements its own multi-agent topology via the `mcp__beidou__*`
 primitives (`create_team`, `spawn_agent`, `terminate_child`,
-`send_message`, `list_peers`, ...). It does NOT, and MUST NOT, depend on
-the Claude Agent SDK's experimental team-mode tools. When
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in the environment (e.g.
-inherited from a user shell profile), the SDK's CLI binary exposes its
-own competing inter-agent tools (currently `SendMessage`) directly to
-the model. Those tools know nothing about Beidou's agent registry; calls
-return empty content with `is_error=False` (silent no-op), and models
-often misread the silence as "agents are offline" (see `tsk_658f44b6`
-evidence in commit history).
+`send_message`, `list_peers`, ...). The Claude Agent SDK ships several
+default-on builtins that compete with or shadow these primitives. The
+contract: **removing a tool from a skill's `allowed-tools` is NOT
+sufficient** — the SDK runtime exposes its default builtins regardless
+of the per-skill allowlist. Suppression requires an explicit entry at
+spawn time.
 
-`build_options` (`beidou/agent/loop.py`) defends in three layers:
+Two independent reasons a builtin needs suppression have shown up so
+far:
+
+- **Env-flag-gated tools** (e.g. `SendMessage`). When
+  `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in the environment —
+  inherited from a user shell profile — the SDK's CLI binary exposes
+  competing inter-agent tools (currently `SendMessage`; future:
+  `Spawn`, `Task`). Those tools know nothing about Beidou's agent
+  registry; calls return empty content with `is_error=False` (silent
+  no-op), and models often misread the silence as "agents are offline"
+  (see `tsk_658f44b6` evidence in commit history).
+
+- **Always-on default builtins** (e.g. `TodoWrite`). These are exposed
+  by the SDK runtime with no env gate. `TodoWrite` competes with
+  `mcp__beidou__report_status` as a completion signal — in
+  `tsk_658f44b6` the impl-leader (junior_engineer) terminated its last
+  child via `terminate_child`, then called `TodoWrite` to mark its
+  todos complete in lieu of emitting `[REVIEW REQUIRED]` +
+  `report_status`. The orchestrator hung waiting for the report
+  forever. Beidou's task tracking uses `bd` (cross-session) and
+  `report_status` (in-conversation); `TodoWrite` has no role.
+
+`build_options` (`beidou/agent/loop.py`) defends in two layers:
 
 1. **Env scrub** (`env={"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": ""}`).
    The SDK transport merges `options.env` on top of inherited process
    env, so this empty value overrides whatever a user's profile sets
-   globally. With the var empty, the CLI binary does not enable its
-   team-mode tool surface at all — this kills future SDK team tools as
-   they ship (`Spawn`, `Task`, etc.), not just the currently-known
-   `SendMessage`.
+   globally. Disables the experimental team-mode tool surface
+   wholesale; kills future SDK team tools as they ship. **This layer
+   only applies to env-flag-gated tools.** Always-on builtins
+   (`TodoWrite`) ignore it.
 
-2. **disallowed_tools** (`disallowed_tools=["SendMessage"]`). Even if the
-   env scrub leaks (CLI ignores the var, or a future flag re-enables
-   team mode), the SDK respects this disallow list. `SendMessage` is the
-   only currently-known tool name to suppress; expand if new SDK team
-   tools surface in events.
+2. **disallowed_tools** (`disallowed_tools=["SendMessage", "TodoWrite"]`).
+   The SDK respects this list regardless of env state or default-on
+   status. This is the layer that catches both classes:
+   - `SendMessage` — defense-in-depth in case env scrub leaks.
+   - `TodoWrite` — primary suppression (no env layer applies).
+   Expand if new SDK shadow-tools surface in events.
 
-3. **Skill prompt-level NEVER DOs.** The coding_v2 skill bodies all
-   instruct models to use `mcp__beidou__send_message` and explicitly
-   forbid the SDK alias. This is the layer the model sees directly and
-   internalizes.
+A third defense applies at the prompt layer:
+
+3. **Skill prompt-level NEVER DOs.** The coding_v2 skill bodies
+   instruct models to use Beidou primitives and forbid the SDK
+   aliases (`SendMessage`, `TodoWrite`). This is the layer the model
+   internalizes; it is correctness commentary, not a runtime barrier.
 
 All inter-agent messaging in Beidou MUST go through
-`mcp__beidou__send_message`. Skills MUST NOT list `SendMessage` (or any
-other SDK team-mode tool name) in their `allowed-tools`; the disallow
-takes precedence regardless. This is a hard contract: removing
-`SendMessage` from the disallow list, restoring the env var in
+`mcp__beidou__send_message`. All in-conversation completion signals
+MUST go through `mcp__beidou__report_status`. Skills MUST NOT list
+`SendMessage`, `TodoWrite`, or any other SDK shadow-tool name in their
+`allowed-tools`; the disallow takes precedence regardless. Removing
+either entry from the disallow list, restoring the env var in
 `build_options`, or adding a SKILL.md NEVER DO exception requires
 explicit user approval per the docs/README.md cohesion rule.
 

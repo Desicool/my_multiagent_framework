@@ -192,11 +192,18 @@ def _build_options(
         env={"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": ""},
         # Layer 2 — disallowed_tools: even if the env scrub leaks (e.g. CLI
         # ignores the var, or a future flag re-enables team mode), the SDK
-        # respects this list. SendMessage is the only currently-known tool
-        # to suppress; expand if new SDK team tools surface in events.
-        # See bd issue qi0v / commit 3037709 (prompt-level NEVER DOs) and
-        # commit 81bde03 (this disallow list).
-        disallowed_tools=["SendMessage"],
+        # respects this list. Tools listed here are SDK builtins that compete
+        # with Beidou's primitives or default-on tools we never want surfaced:
+        #   - SendMessage: SDK team-mode messaging shadow of mcp__beidou__send_message.
+        #   - TodoWrite: competes with mcp__beidou__report_status as a completion
+        #     signal. Per tsk_658f44b6 the impl-leader called TodoWrite to mark
+        #     its tasks complete in lieu of report_status, hanging the run.
+        #     Beidou tracks tasks via bd (cross-session) and report_status
+        #     (in-conversation); TodoWrite has no role.
+        # Expand if new shadow-tools surface in events. See bd issue qi0v /
+        # commit 3037709 (prompt-level NEVER DOs), commit 81bde03 (SendMessage),
+        # and bd issue 8gen / this commit (TodoWrite).
+        disallowed_tools=["SendMessage", "TodoWrite"],
         permission_mode="bypassPermissions",
         setting_sources=["user", "project"],
         skills="all",

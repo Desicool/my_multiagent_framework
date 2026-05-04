@@ -308,11 +308,21 @@ agent is still active or legitimately waiting:
 
 Freshness equals `last_drain_ts` only when all zero-freshness conditions are
 absent. The Pass B threshold is: `freshness != 0 AND now − freshness >= IDLE_NUDGE_S`.
-The watchdog never inspects children's freshness to decide whether to nudge a
-leader; a leader is judged solely by its own drain state. This means a leader
-whose child has `completion_pending=True` is still eligible for Pass B — the
-leader is the one supposed to review that child, so suppressing the nudge
-while the child waits would be counterproductive.
+
+**Leaf-only restriction.** Pass B only nudges agents that are currently
+**leaves** — agents with no *active* children. The predicate is
+`Orchestrator.has_active_children(agent_id)`: an agent is a leaf iff every
+team it leads has zero still-registered members. An agent that has *ever*
+spawned a team is NOT a leaf only while at least one of its children is
+still alive in `_agents`; once every child has exited (and been removed
+from `_agents`), the ex-parent is treated as a leaf and becomes eligible
+for Pass-B nudges. This rule fixes the `tsk_658f44b6` hang where the
+impl-leader terminated its last child but never reported done — under the
+old "ever-spawned" predicate it was excluded from Pass B forever; under
+the active-children predicate it gets nudged ~`IDLE_NUDGE_S` after going
+idle and either reports done or escalates. Active leaders (those still
+holding children) are still skipped here — Pass A (review-pending
+escalation) and Pass C (terminate-grace backstop) cover them.
 
 `idle_nudge_count >= MAX_PINGS_BEFORE_ESCALATION` — already escalated; skip.
 
