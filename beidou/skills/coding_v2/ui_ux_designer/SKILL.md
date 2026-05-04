@@ -129,8 +129,9 @@ Use `list_peers` to discover the agent_ids of all other committee members
 
 - You can OPEN issues by writing
   `{project_workspace_path}/design_issues/issue-{n}.md`. You are the
-  `opened_by` agent and the sole writer of that file. Schema is in
-  `docs/coding-v2.md` §4.
+  `opened_by` agent and the sole writer of that file. Schema is given in
+  this prompt (canonical spec `docs/coding-v2.md` §4 — informational only,
+  do NOT read).
 - You can RECEIVE issues opened by others. Contribute your argument via:
   `send_message(to=<opener>, content="[issue-{n} round-{k}] <argument>")`
   The opener edits the file; you contribute only via message.

@@ -176,7 +176,11 @@
     </div>
 
     <!-- use class:hidden (display:none) rather than {#if} to preserve form state across collapse cycles -->
-    <div id="question-banner-body" class:hidden={collapsed}>
+    <!-- max-h + overflow-y-auto on the body keeps the banner from pushing its
+         submit row off-screen when the question is tall (many options or
+         long free-text). Submit row uses sticky-bottom inside this container
+         so the Answer button is always visible. -->
+    <div id="question-banner-body" class:hidden={collapsed} class="max-h-[calc(100vh-7rem)] overflow-y-auto">
     <div class="px-4 py-3">
       {#if primary.context_hint}
         <p class="text-xs text-pending/70 italic mb-3">{primary.context_hint}</p>
@@ -289,8 +293,10 @@
         {/each}
       </div>
 
-      <!-- Submit row -->
-      <div class="mt-4 flex items-center gap-3">
+      <!-- Submit row — sticky-bottom so it stays visible when the body
+           scrolls (tall questions). Uses the same banner background tint
+           plus backdrop-blur for legibility over scrolled content. -->
+      <div class="mt-4 sticky bottom-0 -mx-4 -mb-3 px-4 py-3 flex items-center gap-3 bg-surface/95 backdrop-blur border-t border-pending/20 z-10">
         <button
           type="button"
           class="px-4 py-1.5 rounded bg-pending hover:bg-amber-400 text-amber-950 text-sm font-semibold disabled:opacity-50 transition-colors"

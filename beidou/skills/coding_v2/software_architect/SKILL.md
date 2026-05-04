@@ -71,7 +71,9 @@ belongs to the PM, not you.
 
 ### Workflow at a glance (Phase 1)
 
-1. Read `{project_workspace_path}/requirements.md`. Read `docs/coding-v2.md` for committee protocol.
+1. Read `{project_workspace_path}/requirements.md`. The committee protocol
+   (issue ledger, freeze probe, round-scoped done) is inlined below — do
+   NOT try to read external spec files; everything you need is in this prompt.
 2. List remaining tech-only ambiguities. For each, EITHER `ask_user` (only if purely technical
    environment) OR `send_message(to=<pm>)` (if any product/UX flavor at all).
 3. Write initial `{project_workspace_path}/spec.md`.
@@ -114,7 +116,7 @@ you own.
 - Accessibility expectations from a user perspective, success metrics
 - Scope of features, what the system promises the user
 
-**Routing format (normative, from docs/coding-v2.md §3):**
+**Routing format (normative; canonical spec `docs/coding-v2.md` §3 — informational only, do NOT read):**
 
 ```
 send_message(to=<pm_id>, content='need product clarification: <question>; affects: <module/interface>')
@@ -188,7 +190,8 @@ If you and a peer cannot converge after two exchanges, open a design issue:
 ```
 
 with YAML frontmatter `opened_by: <your_agent_id>`, `status: open`, `round: 1`, and the issue
-ledger format from `docs/coding-v2.md §4`. You own this file — only you write it. Other parties
+ledger format described above (canonical spec `docs/coding-v2.md §4` — informational only,
+do NOT read). You own this file — only you write it. Other parties
 contribute via `send_message(to=<your_id>, content="[issue-{n} round-{k}] <argument>")`.
 
 At `round=3` still open:

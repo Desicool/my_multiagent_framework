@@ -78,7 +78,9 @@ evidence source, so Phase 2 qa can apply an objective test — not judgment.
 
 1. Read `{project_workspace_path}/requirements.md` and
    `{project_workspace_path}/spec.md` (whichever exist when you are spawned).
-   Read `docs/coding-v2.md` for committee protocol.
+   The committee protocol (issue ledger, freeze probe, round-scoped done) is
+   inlined below — do NOT try to read external spec files; everything you
+   need is in this prompt.
 2. Draft `qa_plan.md`: per-AC criteria, per-US end-to-end criteria,
    cross-cutting gates, Phase 2 verification map, open questions.
 3. Share critiques with peers (PM, arch, test_engineer, ui_ux) via
@@ -133,8 +135,9 @@ readiness:
 
 - You can OPEN issues by writing
   `{project_workspace_path}/design_issues/issue-{n}.md`. You are the
-  `opened_by` agent and the sole writer of that file. Schema is in
-  `docs/coding-v2.md` §4.
+  `opened_by` agent and the sole writer of that file. Schema is given in
+  this prompt (canonical spec `docs/coding-v2.md` §4 — informational only,
+  do NOT read).
 - You can RECEIVE issues opened by others. Contribute your argument via:
   `send_message(to=<opener>, content="[issue-{n} round-{k}] <argument>")`
   The opener edits the file; you contribute only via message.

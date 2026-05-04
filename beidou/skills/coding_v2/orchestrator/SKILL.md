@@ -92,50 +92,46 @@ Each task's `task` field becomes the spawned agent's first user message. The ori
 
 At the start of the run, call `mcp__beidou__declare_plan` once with all six Phase 1 tasks, all with `depends_on: []`.
 
-Every task field must include `<user task verbatim>` and direct the member to consult `docs/coding-v2.md` for their deliverable schema, the `design_issues/issue-{n}.md` ledger format and ownership rule, and the `[FREEZE PROBE]`/`[FREEZE OK]`/`[FREEZE NACK]` protocol. Sample task fields:
+Every task field must include `<user task verbatim>` and the member's deliverable path. The committee protocol (`design_issues/issue-{n}.md` ledger ownership and update rules; `[FREEZE PROBE]`/`[FREEZE OK]`/`[FREEZE NACK]` handshake; round-scoped done) is already in each member's SKILL.md body — do NOT instruct members to read external spec files. Sample task fields:
 
 ```
 declare_plan(tasks=[
   {id: "pm", role: "product-manager", skill: "product_manager_v2",
    task: "<user task verbatim>. Design committee Phase 1. Deliverable:
      {project_workspace_path}/requirements.md — FR/NFR, user stories, Given/When/Then ACs.
-     Coordinate via send_message. Unresolved in 3 rounds: open issue file, escalate.
-     Consult docs/coding-v2.md §§3-5 for boundary rules, ledger schema, freeze protocol.",
+     Coordinate with peers via send_message. If you and a peer cannot agree
+     after 3 rounds on one issue, open the issue file and escalate to me.",
    depends_on: []},
 
   {id: "arch", role: "software-architect", skill: "software_architect_v2",
    task: "<user task verbatim>. Design committee Phase 1. Deliverable:
      {project_workspace_path}/spec.md — modules, interfaces, data model, deps, constraints.
-     Do NOT write tasks.md in Phase 1. Route product/UX questions to pm via send_message.
-     Consult docs/coding-v2.md §§3-5.",
+     Do NOT write tasks.md in Phase 1. Route product/UX questions to pm via send_message.",
    depends_on: []},
 
   {id: "ui_ux", role: "ui-ux-designer", skill: "ui_ux_designer_v2",
    task: "<user task verbatim>. Design committee Phase 1. Deliverable:
      {project_workspace_path}/ui_ux.md — user flows, interaction patterns, visual guidelines,
-     optional ux/ mockups. Coordinate with pm and arch.
-     Consult docs/coding-v2.md §§4-5 for ledger schema and freeze protocol.",
+     optional ux/ mockups. Coordinate with pm and arch via send_message.",
    depends_on: []},
 
   {id: "test", role: "test-engineer", skill: "test_engineer_v2",
    task: "<user task verbatim>. Design committee Phase 1. Deliverable:
      {project_workspace_path}/test_plan.md — strategy, coverage matrix, critical scenarios.
-     Coordinate with pm, arch, ui_ux.
-     Consult docs/coding-v2.md §§4-5.",
+     Coordinate with pm, arch, ui_ux via send_message.",
    depends_on: []},
 
   {id: "qa", role: "qa-engineer", skill: "qa_engineer_v2",
    task: "<user task verbatim>. Design committee Phase 1. Deliverable:
      {project_workspace_path}/qa_plan.md — acceptance gate criteria tied to PM ACs.
-     Coordinate with pm and test.
-     Consult docs/coding-v2.md §§4-5.",
+     Coordinate with pm and test via send_message.",
    depends_on: []},
 
   {id: "engineer_advisor", role: "engineer-advisor", skill: "engineer_advisor",
    task: "<user task verbatim>. Design committee Phase 1. Deliverable:
      {project_workspace_path}/impl_plan.md — feasibility verdict, complexity hot-spots,
      effort estimate, tech-debt risks. You are a reviewer, not an implementer.
-     Coordinate with arch and test. Consult docs/coding-v2.md §§4-5.",
+     Coordinate with arch and test via send_message.",
    depends_on: []},
 ])
 ```
@@ -175,7 +171,7 @@ When a peer message containing `[ESCALATE] issue=issue-{n}` arrives in your inbo
    ```
    This unblocks parties who were waiting on the ruling to advance their deliverables.
 
-The issue ledger schema and ownership rules are specified in `docs/coding-v2.md §4`.
+The issue ledger schema and ownership rules are inlined in each member's SKILL.md body; canonical spec is `docs/coding-v2.md §4` (informational reference; do NOT instruct agents to read it).
 
 ## Convergence and freeze probe
 
