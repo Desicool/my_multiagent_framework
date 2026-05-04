@@ -141,9 +141,13 @@ be deterministically tested as written" is a concrete blocker, not an opinion.
 
 ### Freeze probe and rework
 
-- On `[FREEZE PROBE]`: reply `[FREEZE OK]` if `test_plan.md` is stable and no
-  unresolved critiques are in flight. Reply `[FREEZE NACK]` otherwise and state
-  what is still open.
+- On `[FREEZE PROBE]`: if `test_plan.md` is stable and no unresolved critiques
+  are in flight, reply via `send_message(to=<orchestrator_id>, content="[FREEZE OK]")`.
+  Otherwise reply via `send_message(to=<orchestrator_id>, content="[FREEZE NACK]: <reason>")`.
+  Do NOT use `report_status` for the FREEZE response — `[FREEZE OK]` is a
+  leader-bound message, not a completion handoff. Do NOT just write the literal
+  in your assistant text and end the turn — without the `send_message` call,
+  the leader will not receive it.
 - When orchestrator rules on a peer-escalated issue, you will receive:
   `[issue-{n} ruling] <verdict>`
   Update `test_plan.md` to reflect the ruling if it affects your coverage plan.

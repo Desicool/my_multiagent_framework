@@ -174,9 +174,15 @@ send: `send_message(to=<orchestrator_id>, content="[ESCALATE] issue=issue-{n}")`
 the verdict into requirements.md and notify the relevant peer(s) that the issue is
 resolved.
 
-**Freeze probe.** When you receive `[FREEZE PROBE]`: if requirements.md is stable
-and you have no pending revisions, reply `[FREEZE OK]`; otherwise reply
-`[FREEZE NACK]`.
+**Freeze probe.** When you receive `[FREEZE PROBE]`: if `requirements.md` is stable
+and you have no pending revisions, reply via
+`send_message(to=<orchestrator_id>, content="[FREEZE OK]")`. Otherwise reply via
+`send_message(to=<orchestrator_id>, content="[FREEZE NACK]: <reason>")`.
+
+Do NOT use `report_status` for the FREEZE response — `[FREEZE OK]` is a
+leader-bound message, not a completion handoff. Do NOT just write the literal
+in your assistant text and end the turn — without the `send_message` call,
+the leader will not receive it.
 
 **Rework from user feedback.** When orchestrator sends `rework: <user feedback>`
 (user requested changes at the approval gate), treat it as a continuation directive:

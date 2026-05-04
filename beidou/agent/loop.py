@@ -43,7 +43,9 @@ from claude_agent_sdk import ClaudeAgentOptions
 from beidou.primitives.core import Message, Orchestrator
 from beidou.primitives.mcp import build_mcp_server_for
 
-from beidou.agent.hooks import HookRegistry, build_hooks
+import re
+
+from beidou.agent.hooks import HookRegistry, V2_DESIGN_COMMITTEE_SKILLS, build_hooks
 from beidou.agent.prompts import build_system_prompt
 
 from beidou.skills.loader import (
@@ -115,6 +117,56 @@ class RunResult:
 # ---------------------------------------------------------------------------
 # Helpers.
 # ---------------------------------------------------------------------------
+
+
+_FREEZE_LINE_RE = re.compile(r"^\s*(\[FREEZE (OK|NACK)[^\]]*\][^\n]*)", re.MULTILINE)
+
+
+def detect_orphaned_freeze(
+    assistant_text: Optional[str],
+    turn_tool_info: dict,
+    leader_id: str,
+) -> Optional[tuple[str, str]]:
+    """Detect a FREEZE reply that was written in text but never sent via send_message.
+
+    Returns ``(freeze_kind, freeze_content)`` — where ``freeze_kind`` is
+    ``"ok"`` or ``"nack"`` and ``freeze_content`` is the full matched line —
+    or ``None`` when no orphaned FREEZE is found (either no pattern in text,
+    or a matching send_message already went out this turn).
+
+    Parameters
+    ----------
+    assistant_text:
+        The agent's last assistant text for this turn. May be None.
+    turn_tool_info:
+        Mapping of ``tool_use_id -> (tool_name, tool_input)`` for this turn.
+    leader_id:
+        The agent's leader id. Used to check whether an existing send_message
+        already delivered the FREEZE to the right recipient.
+    """
+    if not assistant_text:
+        return None
+
+    matches = _FREEZE_LINE_RE.findall(assistant_text)
+    if not matches:
+        return None
+
+    # Use the LAST match (most authoritative).
+    last_line, last_kind = matches[-1]
+    freeze_content = last_line.strip()
+    freeze_kind = "ok" if last_kind.upper() == "OK" else "nack"
+
+    # Check whether a send_message already delivered the FREEZE to the leader.
+    for tool_name, tool_input in turn_tool_info.values():
+        if tool_name != "mcp__beidou__send_message":
+            continue
+        if tool_input.get("to") != leader_id:
+            continue
+        content = tool_input.get("content", "")
+        if content.lstrip().startswith(("[FREEZE OK]", "[FREEZE NACK]")):
+            return None
+
+    return freeze_kind, freeze_content
 
 
 def _resolve_skill(skill_root: Path, skill_name: str) -> LoadedSkill:
@@ -783,6 +835,35 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                     else:
                         # All obligations cleared this turn.
                         _drain_rec.reply_gate_active = False
+
+                # --- FREEZE SYNTHESIS GATE ---
+                # Catches the failure mode where a v2 design-committee agent wrote
+                # "[FREEZE OK]" or "[FREEZE NACK]" in its assistant text but used
+                # report_status (dropped by hook) or no tool at all instead of
+                # send_message, so the leader never received the reply.
+                rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
+                if rec is not None and getattr(rec, "skill_name", None) in V2_DESIGN_COMMITTEE_SKILLS:
+                    _most_recent = getattr(orch, "_most_recent_assistant_text", {})
+                    _asst_text = _most_recent.get(spec.caller_id)
+                    _freeze_result = detect_orphaned_freeze(_asst_text, _turn_tool_info, leader_id)
+                    if _freeze_result is not None:
+                        _freeze_kind, _freeze_content = _freeze_result
+                        orch.deliver_message(
+                            from_id=spec.caller_id,
+                            to_id=leader_id,
+                            body=_freeze_content,
+                            kind="user",
+                        )
+                        orch.emit_event(
+                            "freeze.synthesized_delivery",
+                            {
+                                "caller_id": spec.caller_id,
+                                "leader_id": leader_id,
+                                "freeze_kind": _freeze_kind,
+                                "via": "loop_postdrain",
+                                "ts": time.time(),
+                            },
+                        )
 
             # SystemMessage / UserMessage / anything else: ignored by design.
             # UserMessage carries tool-result echoes; ToolUseBlocks are the
