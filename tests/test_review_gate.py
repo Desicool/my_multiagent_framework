@@ -335,6 +335,38 @@ def test_pretoolc_multiple_pending_children(tmp_path: Path) -> None:
     _assert_gate_denied_event(o, agent_id="L", tool_name="mcp__beidou__create_team", pending=["C1", "C2"])
 
 
+# bd issue uen6: v2 design-committee child must NOT get terminate_child wording in
+# the gate denial reason; v1 child keeps the legacy wording.
+def test_review_gate_v2_committee_resolution_block_has_no_terminate(tmp_path: Path) -> None:
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
+    c1 = _seed_agent(o, "C1", "tm_child", skill="qa_engineer_v2")
+    c2 = _seed_agent(o, "C2", "tm_child", skill="qa_engineer")
+    c1.completion_pending = True
+    c2.completion_pending = True
+
+    hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
+    result = run(hook(
+        _input_data("mcp__beidou__create_team", {"task": "x"}),
+        tool_use_id="t_v2_gate",
+        context=None,
+    ))
+
+    _assert_deny(result)
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # C1 (v2 committee): no terminate_child, has ack: option, has guardrail line.
+    assert 'mcp__beidou__terminate_child(agent_id="C1")' not in reason, reason
+    assert 'send_message(to="C1", content="ack:' in reason, reason
+    assert 'do NOT call terminate_child' in reason, reason
+
+    # C2 (v1): keeps legacy terminate_child wording.
+    assert 'mcp__beidou__terminate_child(agent_id="C2")' in reason, reason
+    assert 'to approve' in reason, reason
+
+
 # ---------------------------------------------------------------------------
 # Assertion helpers — bd issue be3
 # ---------------------------------------------------------------------------

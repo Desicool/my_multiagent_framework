@@ -529,11 +529,21 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                 + " are awaiting your review"
             )
 
-        pending_list = "\n".join(
-            f"  o mcp__beidou__terminate_child(agent_id=\"{pid}\")  to approve, OR\n"
-            f"    mcp__beidou__send_message(to=\"{pid}\", content=\"rework: <what>\")  to ask for changes."
-            for pid in pending_ids
-        )
+        def _resolution_block(pid: str) -> str:
+            child_rec = orch._agents.get(pid)  # type: ignore[attr-defined]
+            child_skill = getattr(child_rec, "skill_name", None) if child_rec else None
+            if child_skill in V2_DESIGN_COMMITTEE_SKILLS:
+                return (
+                    f"  o mcp__beidou__send_message(to=\"{pid}\", content=\"rework: <what>\")  to ask for changes, OR\n"
+                    f"    mcp__beidou__send_message(to=\"{pid}\", content=\"ack: <stable so far>\")  to keep them alive while peers converge.\n"
+                    f"    (v2 design-committee member — do NOT call terminate_child until the User Approve gate.)"
+                )
+            return (
+                f"  o mcp__beidou__terminate_child(agent_id=\"{pid}\")  to approve, OR\n"
+                f"    mcp__beidou__send_message(to=\"{pid}\", content=\"rework: <what>\")  to ask for changes."
+            )
+
+        pending_list = "\n".join(_resolution_block(pid) for pid in pending_ids)
 
         reason = (
             f"Cannot call {tool_name!r} -- {pending_desc}.\n"

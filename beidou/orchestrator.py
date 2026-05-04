@@ -31,6 +31,7 @@ import json
 from beidou import db as _db
 from beidou import plans as _plans
 from beidou.agent import loop as _agent_loop
+from beidou.agent.hooks import V2_DESIGN_COMMITTEE_SKILLS
 from beidou.engine.graph import USER_SENTINEL, TeamRecord, _slug_role
 from beidou.engine.inbox import INBOX_CAP, Message
 from beidou.engine.lifecycle import (
@@ -1302,13 +1303,28 @@ class Orchestrator:
 
             child_id = rec.agent_id
             delta_s = int(delta)
+            is_v2_committee = (
+                getattr(rec, "skill_name", None) in V2_DESIGN_COMMITTEE_SKILLS
+            )
+            if is_v2_committee:
+                action_line = (
+                    f" Send rework via mcp__beidou__send_message(to=\"{child_id}\","
+                    f" content=\"rework: ...\") OR ack-only via mcp__beidou__send_message"
+                    f" to keep them alive while peers converge."
+                    f" Do NOT call terminate_child — committee members survive until"
+                    f" the User Approve branch."
+                )
+            else:
+                action_line = (
+                    f" Call mcp__beidou__terminate_child(agent_id=\"{child_id}\") (approve)"
+                    f" OR mcp__beidou__send_message(to=\"{child_id}\", content=\"rework: ...\")."
+                )
 
             if rec.review_ping_count == 0:
                 body = (
                     f"[REVIEW REQUIRED — STILL PENDING {delta_s}s]"
                     f" child={child_id} awaiting your decision."
-                    f" Call mcp__beidou__terminate_child(agent_id=\"{child_id}\") (approve)"
-                    f" OR mcp__beidou__send_message(to=\"{child_id}\", content=\"rework: ...\")."
+                    f"{action_line}"
                     f" Do not end your turn before deciding."
                 )
                 self.deliver_message(
@@ -1328,8 +1344,7 @@ class Orchestrator:
                 body = (
                     f"[REVIEW REQUIRED — STILL PENDING {delta_s}s]"
                     f" child={child_id} awaiting your decision."
-                    f" Call mcp__beidou__terminate_child(agent_id=\"{child_id}\") (approve)"
-                    f" OR mcp__beidou__send_message(to=\"{child_id}\", content=\"rework: ...\")."
+                    f"{action_line}"
                     f" Do not end your turn before deciding."
                     f"\n\nIf you do not act on this ping, this will escalate to the user gateway in ~60s."
                 )
@@ -1355,13 +1370,22 @@ class Orchestrator:
                     {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ts": now},
                 )
                 if self.is_gateway_available():
+                    if is_v2_committee:
+                        question_text = (
+                            f"Root agent's leader {leader} has not decided on review for v2"
+                            f" design-committee member {child_id} ({rec.skill_name}) after 3 pings."
+                            f" Continue waiting for freeze convergence, force a rework with custom"
+                            f" feedback, or abort the design-committee phase?"
+                        )
+                    else:
+                        question_text = (
+                            f"Root agent's leader {leader} has not decided on completion"
+                            f" review for {child_id} after 3 pings."
+                            f" Approve (terminate_child), rework, or abort?"
+                        )
                     _q = [
                         {
-                            "question": (
-                                f"Root agent's leader {leader} has not decided on completion"
-                                f" review for {child_id} after 3 pings."
-                                f" Approve (terminate_child), rework, or abort?"
-                            ),
+                            "question": question_text,
                             "header": "",
                             "multiSelect": False,
                             "options": [],
