@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import { questions, triggerRepoll } from '../../stores/questions.svelte';
   import { events } from '../../stores/events.svelte';
-  import { pinAgent } from '../../stores/ui.svelte';
+  import { ui, pinAgent } from '../../stores/ui.svelte';
   import { submitAnswer } from '../../lib/api';
   import type { StructuredAnswer } from '../../lib/types';
   import { shortId } from '../../lib/format';
@@ -22,8 +22,19 @@
   let error         = $state<string | null>(null);
   let collapsed     = $state(false);
 
-  let primary    = $derived(questions.list[0] ?? null);
-  let rest       = $derived(questions.list.slice(1));
+  // Scope the banner to the currently-pinned agent's task. Without this scope
+  // the banner shows ANY pending question regardless of which task the user is
+  // looking at, which surprises users switching between tasks.
+  let scopedTaskId = $derived(
+    ui.pinnedAgentId ? events.agentsById[ui.pinnedAgentId]?.task_id ?? null : null
+  );
+  let scopedList = $derived(
+    scopedTaskId == null
+      ? []
+      : questions.list.filter((q) => q.task_id === scopedTaskId)
+  );
+  let primary    = $derived(scopedList[0] ?? null);
+  let rest       = $derived(scopedList.slice(1));
   // Track only the qid string — polling replaces `primary` with a fresh object
   // reference every 5s, but the qid stays === stable, so the reset effect only
   // fires when the question genuinely changes.

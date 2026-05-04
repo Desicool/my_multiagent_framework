@@ -322,6 +322,7 @@ export type TaskRecord = {
 
 export type PendingQuestion = {
   qid: string;
+  task_id?: string | null;         // asker's task — used by UI to scope the banner per-task
   asker_agent_id: string;
   questions: SubQuestion[];        // Claude Code wire shape
   prompt: string;                  // derived plain-text fallback (still emitted by backend)

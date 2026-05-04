@@ -238,8 +238,15 @@ def create_app(orch=None, task_id=None) -> "FastAPI":
             # Only surface questions whose current target is the user gateway.
             if not pq.chain or pq.chain[-1] != "USER":
                 continue
+            # Look up the asker's task_id so the UI can scope the banner to
+            # the currently-viewed task. Falls back to None if the agent is
+            # no longer in the registry (shouldn't happen for a pending
+            # question, but defensive).
+            agent_rec = orch._agents.get(pq.asker_agent_id) if hasattr(orch, "_agents") else None
+            task_id = agent_rec.task_id if agent_rec is not None else None
             questions.append({
                 "qid": pq.qid,
+                "task_id": task_id,
                 "asker_agent_id": pq.asker_agent_id,
                 "questions": pq.questions,
                 "prompt": _render_prompt(pq.questions),

@@ -83,11 +83,20 @@ fails?", "Does this naming match the user's mental model from requirements.md?",
 
 ### Workflow at a glance
 
-1. Read `{project_workspace_path}/requirements.md` and
-   `{project_workspace_path}/spec.md` (whichever exist when you are spawned).
-2. Determine whether a UI surface exists; if none, produce a CLI-shape
+1. **Your starting input is the user task** (delivered as your first user-role
+   message). **Do NOT read peer deliverables on round 1** — all six committee
+   members spawn in parallel; `requirements.md`, `spec.md`, etc. **do not
+   exist yet** and will return File-Not-Found errors. Begin drafting `ui_ux.md`
+   directly from the user task. In LATER rounds, use `Bash` `ls
+   {project_workspace_path}` first, then `Read` only what exists.
+2. **Deliverable path discipline.** Write `ui_ux.md` to
+   **`{project_workspace_path}/ui_ux.md`** (the project root from your task
+   field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
+   Mockups go to `{project_workspace_path}/ux/` likewise (project root, not
+   artifacts).
+3. Determine whether a UI surface exists; if none, produce a CLI-shape
    ui_ux.md instead.
-3. Draft `{project_workspace_path}/ui_ux.md` per the schema below.
+4. Draft `{project_workspace_path}/ui_ux.md` per the schema below.
 4. Optionally generate mockups via huashu-design; reference them from ui_ux.md.
 5. Critique peers via `send_message`; revise ui_ux.md as the committee
    converges.

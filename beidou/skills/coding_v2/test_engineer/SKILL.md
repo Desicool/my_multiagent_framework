@@ -71,9 +71,17 @@ Phase 2 exactly where to look.
 
 ### Workflow at a glance
 
-1. Read `{project_workspace_path}/requirements.md` and
-   `{project_workspace_path}/spec.md` (whichever exist when spawned).
-2. Draft `test_plan.md` — strategy, coverage matrix, critical scenarios,
+1. **Your starting input is the user task** (delivered as your first user-role
+   message). **Do NOT read peer deliverables on round 1** — all six committee
+   members spawn in parallel; `requirements.md`, `spec.md`, `ui_ux.md`, etc.
+   **do not exist yet** and will return File-Not-Found errors. Begin drafting
+   `test_plan.md` directly from the user task. In LATER rounds, use `Bash`
+   `ls {project_workspace_path}` first to see what peers have published, then
+   `Read` only what exists.
+2. **Deliverable path discipline.** Write `test_plan.md` to
+   **`{project_workspace_path}/test_plan.md`** (the project root from your
+   task field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
+3. Draft `test_plan.md` — strategy, coverage matrix, critical scenarios,
    pressure cases, testability gaps.
 3. Critique peer drafts (especially spec.md gaps and ui_ux.md state coverage)
    via `send_message`.

@@ -76,11 +76,17 @@ evidence source, so Phase 2 qa can apply an objective test — not judgment.
 
 ### Workflow at a glance
 
-1. Read `{project_workspace_path}/requirements.md` and
-   `{project_workspace_path}/spec.md` (whichever exist when you are spawned).
-   The committee protocol (issue ledger, freeze probe, round-scoped done) is
-   inlined below — do NOT try to read external spec files; everything you
-   need is in this prompt.
+1. **Your starting input is the user task** (delivered as your first user-role
+   message). **Do NOT read peer deliverables on round 1** — all six committee
+   members spawn in parallel; `requirements.md`, `spec.md`, etc. **do not exist
+   yet** and will return File-Not-Found errors. Begin drafting `qa_plan.md`
+   directly from the user task. In LATER rounds, use `Bash` `ls
+   {project_workspace_path}` first to see what peers have published, then
+   `Read` only what exists. The committee protocol (issue ledger, freeze probe,
+   round-scoped done) is inlined below — do NOT read external spec files.
+2. **Deliverable path discipline.** Write `qa_plan.md` to
+   **`{project_workspace_path}/qa_plan.md`** (the project root from your task
+   field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
 2. Draft `qa_plan.md`: per-AC criteria, per-US end-to-end criteria,
    cross-cutting gates, Phase 2 verification map, open questions.
 3. Share critiques with peers (PM, arch, test_engineer, ui_ux) via

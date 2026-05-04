@@ -90,10 +90,17 @@ sees*; *how it's built* belongs to the architect.
 1. Read user task and `{role_description}`. The design-committee protocol
    (issue ledger, freeze probe, round-scoped done) is inlined below — do
    NOT try to read external spec files; everything you need is in this prompt.
-2. Decide whether to interview: count derivable ACs, look for user-story patterns,
+   **Do NOT read peer deliverables on round 1** — all six committee members
+   spawn in parallel; `spec.md`, `ui_ux.md`, etc. **do not exist yet** and
+   will return File-Not-Found errors. In LATER rounds, use `Bash` `ls
+   {project_workspace_path}` first, then `Read` only what exists.
+2. **Deliverable path discipline.** Write `requirements.md` to
+   **`{project_workspace_path}/requirements.md`** (the project root from your
+   task field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
+3. Decide whether to interview: count derivable ACs, look for user-story patterns,
    count vague verbs ("manage", "handle", "support"). If sparse → interview via
    `ask_user`.
-3. Write initial draft of `{project_workspace_path}/requirements.md`.
+4. Write initial draft of `{project_workspace_path}/requirements.md`.
 4. Participate in design committee: respond to peer critiques arriving as
    send_message; revise requirements.md; open issues in
    `{project_workspace_path}/design_issues/issue-{n}.md` if a peer's critique
