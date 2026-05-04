@@ -177,6 +177,15 @@ def _build_options(
         system_prompt=system_prompt,
         mcp_servers={"beidou": mcp_server},
         allowed_tools=list(allowed_tools),
+        # Defensively suppress the SDK's experimental inter-agent SendMessage
+        # tool, which is exposed when CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
+        # in the environment. SDK SendMessage knows nothing about the Beidou
+        # agent registry — calls silently no-op (empty content, is_error=False),
+        # and models tend to interpret the silence as "agents are offline".
+        # All inter-agent messaging in Beidou MUST go through
+        # mcp__beidou__send_message. See bd issue qi0v / commit 3037709 for
+        # the prompt-level fix and tsk_658f44b6 evidence.
+        disallowed_tools=["SendMessage"],
         permission_mode="bypassPermissions",
         setting_sources=["user", "project"],
         skills="all",

@@ -54,12 +54,17 @@ HOOK_REVIEW_TIMEOUT_S: float = 1800.0
 #
 # bd issue xq1: also include SDK-builtin classic names that skill
 # allowed-tools entries may resolve to via _SDK_BUILTIN_MAP or directly.
-# - SendMessage: SDK-builtin classic for inter-agent messaging
 # - AskUserQuestion: SDK-builtin; on_ask_user_question handles review-gate
 #   semantics when pending children exist -- on_review_gate should pass through
 # - Write, Edit: SDK-builtin file tools leaders may need during review
 # - WebSearch, WebFetch: SDK-builtin web tools mapped from web_search/web_fetch
 # MCP-namespaced versions are kept alongside for skills using lowercase MCP names.
+#
+# bd issue qi0v: SendMessage is intentionally OMITTED here. The SDK's
+# experimental SendMessage tool is now suppressed at agent-spawn time via
+# disallowed_tools in beidou/agent/loop.py. Beidou's only sanctioned
+# inter-agent send is mcp__beidou__send_message; allowing the SDK alias
+# during review created the tsk_658f44b6 silent-failure bug.
 ALLOWED_DURING_PENDING_REVIEW = {
     "Read",
     "Glob",
@@ -68,7 +73,6 @@ ALLOWED_DURING_PENDING_REVIEW = {
     # SDK-builtin classic names (bd issue xq1)
     "Write",
     "Edit",
-    "SendMessage",
     "AskUserQuestion",
     "WebSearch",
     "WebFetch",

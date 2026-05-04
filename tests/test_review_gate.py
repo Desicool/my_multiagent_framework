@@ -746,15 +746,21 @@ def test_watchdog_starts_lazily_on_register(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-# bd issue xq1: SendMessage classic name is allowed while pending child exists
-def test_review_gate_allows_SendMessage_classic(tmp_path: Path) -> None:
-    """Leader with 1 pending child can call SDK-builtin SendMessage (classic name).
+# bd issue qi0v: SDK SendMessage is now suppressed at agent-spawn time via
+# disallowed_tools=['SendMessage'] in beidou/agent/loop.py — the SDK never
+# exposes the tool to models, so the review-gate never has to allowlist it.
+# The historical xq1 fix (which permitted SendMessage during pending review)
+# is superseded: SendMessage should now be DENIED at the review gate as a
+# defense-in-depth check; if a model somehow conjures the tool name, the gate
+# blocks it instead of waving it through.
+def test_review_gate_denies_SendMessage_classic(tmp_path: Path) -> None:
+    """Leader with 1 pending child must NOT be able to call SDK SendMessage.
 
-    Concrete repro from tsk_e92d672b.jsonl (10:10:29): leader called
-    SendMessage(to=ag_2145d837, ...) while child had completion_pending=True
-    → review_gate.denied fired incorrectly. After xq1 fix, must be allowed.
+    Replaces the xq1 'allow' test. tsk_658f44b6 evidence: 6 of 7 agents called
+    SDK SendMessage 34 times; 32 silently no-opped. The qi0v fix removes
+    SendMessage from ALLOWED_DURING_PENDING_REVIEW; the review gate now denies.
     """
-    # bd issue xq1
+    # bd issue qi0v (supersedes xq1)
     o, _ = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
@@ -764,7 +770,6 @@ def test_review_gate_allows_SendMessage_classic(tmp_path: Path) -> None:
     child.completion_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
-    # Input shape from the events trace (tsk_e92d672b.jsonl)
     result = run(
         hook(
             _input_data(
@@ -772,13 +777,16 @@ def test_review_gate_allows_SendMessage_classic(tmp_path: Path) -> None:
                 {"to": "ag_2145d837", "message": "proceed", "type": "directive",
                  "recipient": "ag_2145d837", "content": "proceed"},
             ),
-            tool_use_id="xq1_sm",
+            tool_use_id="qi0v_sm",
             context=None,
         )
     )
 
-    assert result == {}, f"Expected allow (empty dict), got {result!r}"
-    _check_no_gate_denied_event(o)
+    # Review gate denies → returns a non-empty dict with hookSpecificOutput
+    assert result != {}, "Expected review gate to deny SendMessage classic"
+    assert "hookSpecificOutput" in result or "decision" in result or "permissionDecision" in result, (
+        f"Expected denial structure, got {result!r}"
+    )
 
 
 # bd issue xq1: AskUserQuestion classic name is allowed while pending child exists

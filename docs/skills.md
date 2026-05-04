@@ -143,6 +143,22 @@ the entries that map to SDK built-in tool names (`Bash`, `Read`, `Write`,
 `WebFetch`, `WebSearch`). Needed because `skills="all"` does NOT auto-add SDK
 builtins — those must be passed explicitly in `allowed_tools`.
 
+### 5. Hard-disallowed SDK tools
+
+`build_options` (`beidou/agent/loop.py`) sets
+`disallowed_tools=["SendMessage"]` on every `ClaudeAgentOptions` it
+constructs. Rationale: when `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set
+in the environment, the Claude Agent SDK exposes its own experimental
+inter-agent `SendMessage` tool. That tool knows nothing about Beidou's
+agent registry — calls return empty content with `is_error=False` (a
+silent no-op), and models often misread the silence as "agents are
+offline" (see `tsk_658f44b6` evidence in commit history). All inter-agent
+messaging in Beidou MUST go through `mcp__beidou__send_message`. Skills
+must NOT list `SendMessage` in their `allowed-tools`; the disallow takes
+precedence regardless. This is a hard contract: removing `SendMessage`
+from the disallow list requires explicit user approval per the
+docs/README.md cohesion rule.
+
 ## Leadership and delegation
 
 Any skill MAY include `create_team` in its `allowed-tools` list and thereby
