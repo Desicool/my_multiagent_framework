@@ -60,6 +60,8 @@ Phase 2 exactly where to look.
 
 ### Core NEVER DOs
 
+- NEVER call the SDK-built-in `SendMessage` tool. Beidou's inter-agent primitive is `mcp__beidou__send_message` — that is the ONLY one wired to the Beidou agent registry. SDK `SendMessage` silently no-ops (returns empty content, no is_error flag), so peers never receive the message; the model often misreads the silence as "agents are offline". ALL inter-agent sends MUST use `mcp__beidou__send_message`. Same rule for any other SDK alias (e.g. `Send`, `Message`): always prefer the `mcp__beidou__` prefixed primitives.
+- NEVER probe the team workspace cwd or `.beidou/` subdirectories for hidden config files (e.g. `config.json`, `agents.json`, `team.json`). Beidou does not place agent-readable config there. Everything you need is in this prompt and the user task; random environment exploration just produces File-Not-Found noise.
 - NEVER write actual test code in Phase 1. You write the PLAN. Phase 2's v1
   `test_engineer` writes and runs tests.
 - NEVER mark an under-specified criterion as "testable by interpretation" —
@@ -83,11 +85,11 @@ Phase 2 exactly where to look.
    task field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
 3. Draft `test_plan.md` — strategy, coverage matrix, critical scenarios,
    pressure cases, testability gaps.
-3. Critique peer drafts (especially spec.md gaps and ui_ux.md state coverage)
+4. Critique peer drafts (especially spec.md gaps and ui_ux.md state coverage)
    via `send_message`.
-4. Revise `test_plan.md` as the committee converges through rounds.
-5. Respond to `[FREEZE PROBE]`.
-6. Submit for review with `[REVIEW REQUIRED]`.
+5. Revise `test_plan.md` as the committee converges through rounds.
+6. Respond to `[FREEZE PROBE]`.
+7. Submit for review with `[REVIEW REQUIRED]`.
 
 ---
 
