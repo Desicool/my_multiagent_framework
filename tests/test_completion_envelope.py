@@ -399,3 +399,57 @@ class TestEnvelopeGuard:
         # The delivered body must contain the original assistant text.
         body = orch.delivered_bodies()[0]
         assert assistant_text in body
+
+    def test_synth_envelope_v2_committee_uses_hold_for_convergence(self) -> None:
+        """bd issue q5mk: v2 design-committee child (qa_engineer_v2) reports done without
+        an embedded envelope → synthesized body must use the v2 hold-for-convergence
+        wording and must NOT contain the v1 terminate_child approve reflex."""
+        orch = FakeOrchForEnvelope(
+            assistant_text=None,
+            agent_id="ag_qa_v2",
+            skill_name="qa_engineer_v2",
+        )
+        hook = _get_posttooluse_hook(orch, caller_id="ag_qa_v2", leader_id="ag_leader")
+
+        asyncio.run(
+            hook(_make_input(state="done", detail="all tests passed"), tool_use_id="toolu_v2a", context=None)
+        )
+
+        # Synthesis must have fired.
+        synthesized_events = orch.events_named("completion.envelope_synthesized")
+        assert len(synthesized_events) == 1
+
+        body = orch.delivered_bodies()[0]
+
+        # v2 wording present.
+        assert "hold for convergence" in body
+        assert "no terminate_child" in body
+
+        # v1 approve-terminate reflex must NOT appear.
+        assert "approve (terminate_child) OR rework" not in body
+
+    def test_synth_envelope_v1_skill_keeps_legacy_wording(self) -> None:
+        """bd issue q5mk: a v1 skill (qa_engineer, no _v2 suffix) reports done without
+        an embedded envelope → synthesized body must keep the legacy v1 wording."""
+        orch = FakeOrchForEnvelope(
+            assistant_text=None,
+            agent_id="ag_qa_v1",
+            skill_name="qa_engineer",
+        )
+        hook = _get_posttooluse_hook(orch, caller_id="ag_qa_v1", leader_id="ag_leader")
+
+        asyncio.run(
+            hook(_make_input(state="done", detail="QA complete"), tool_use_id="toolu_v1a", context=None)
+        )
+
+        # Synthesis must have fired.
+        synthesized_events = orch.events_named("completion.envelope_synthesized")
+        assert len(synthesized_events) == 1
+
+        body = orch.delivered_bodies()[0]
+
+        # Legacy v1 wording must be present.
+        assert "approve (terminate_child) OR rework (send_message)" in body
+
+        # v2 hold-for-convergence wording must NOT appear.
+        assert "hold for convergence" not in body

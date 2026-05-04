@@ -100,6 +100,19 @@ REPLY_GATE_ALLOWLIST = {
     "mcp__beidou__ask_user",
 }
 
+# bd issue q5mk: design-committee skills have a stricter termination contract
+# (coding_v2/orchestrator/SKILL.md line 78 — never terminate until the User
+# Approve branch). The synth envelope must reflect that so leaders don't
+# take the v1 "approve = terminate_child" reflex on synthesized envelopes.
+V2_DESIGN_COMMITTEE_SKILLS = {
+    "product_manager_v2",
+    "software_architect_v2",
+    "ui_ux_designer_v2",
+    "test_engineer_v2",
+    "qa_engineer_v2",
+    "engineer_advisor",
+}
+
 
 def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> dict:
     """Build hook dicts for the SDK agent.
@@ -264,12 +277,21 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             skill_name_for_envelope = (
                 rec.skill_name if rec is not None else caller_id
             )
+            if skill_name_for_envelope in V2_DESIGN_COMMITTEE_SKILLS:
+                leader_action_line = (
+                    "Leader action required: hold for convergence "
+                    "(no terminate_child; remain alive across peer critique and "
+                    "the freeze probe — termination only at the User Approve branch) "
+                    "OR rework (send_message)"
+                )
+            else:
+                leader_action_line = "Leader action required: approve (terminate_child) OR rework (send_message)"
             synthesized_body = (
                 f"[REVIEW REQUIRED]\n"
                 f"role={skill_name_for_envelope}     agent={caller_id}\n"
                 f"Deliverables: (none provided -- child failed to embed envelope)\n"
                 f"Open questions / risks: (none provided)\n"
-                f"Leader action required: approve (terminate_child) OR rework (send_message)\n"
+                f"{leader_action_line}\n"
                 f"\n\n"
                 f"Original child body:\n"
                 f"{summary}"
