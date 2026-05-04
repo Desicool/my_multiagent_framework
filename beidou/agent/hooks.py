@@ -82,6 +82,8 @@ ALLOWED_DURING_PENDING_REVIEW = {
     "mcp__beidou__list_pending_reviews",
     "mcp__beidou__report_status",
     "mcp__beidou__ask_user",
+    "mcp__beidou__answer_question",
+    "mcp__beidou__escalate_question",
 }
 
 # Tools an agent may call even when the reply gate is active

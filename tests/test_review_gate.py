@@ -236,6 +236,62 @@ def test_pretoolc_pending_child_allows_send_message(tmp_path: Path) -> None:
     _check_no_gate_denied_event(o)
 
 
+# bd issue xq1 (7pbj): pending child → escalate_question allowed (pure routing)
+def test_pretoolc_pending_child_allows_escalate_question(tmp_path: Path) -> None:
+    """Leader with pending child CAN call mcp__beidou__escalate_question (allowlist).
+
+    escalate_question is pure question-routing — it resolves an [INBOX QUESTION]
+    already in the leader's inbox. Blocking it while a sibling has completion_pending
+    forces unnatural ordering and breaks the v2 mandate (§6.1) that root ALWAYS
+    escalates inbox questions.
+    """
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
+    child = _seed_agent(o, "C1", "tm_child")
+    child.completion_pending = True
+
+    hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
+    result = run(hook(
+        _input_data("mcp__beidou__escalate_question", {"qid": "q_test", "reason": "human_needed"}),
+        tool_use_id="t_esc",
+        context=None,
+    ))
+
+    assert result == {}, f"Expected allow (empty dict), got {result!r}"
+    _check_no_gate_denied_event(o)
+
+
+# bd issue xq1 (7pbj): pending child → answer_question allowed (pure routing)
+def test_pretoolc_pending_child_allows_answer_question(tmp_path: Path) -> None:
+    """Leader with pending child CAN call mcp__beidou__answer_question (allowlist).
+
+    answer_question is pure question-routing — it resolves an [INBOX QUESTION]
+    that was received via leader-chain routing. Blocking it while a sibling has
+    completion_pending forces unnatural ordering.
+    """
+    o, _ = _make_orchestrator(tmp_path)
+    _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
+    _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
+    _seed_agent(o, "L", _TM_TOP, role="leader")
+    child = _seed_agent(o, "C1", "tm_child")
+    child.completion_pending = True
+
+    hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
+    result = run(hook(
+        _input_data("mcp__beidou__answer_question", {
+            "qid": "q_test",
+            "answers": [{"selected_labels": ["x"], "text": "y"}],
+        }),
+        tool_use_id="t_ans",
+        context=None,
+    ))
+
+    assert result == {}, f"Expected allow (empty dict), got {result!r}"
+    _check_no_gate_denied_event(o)
+
+
 # bd issue be3: pending child → Read allowed (leader can inspect artifacts)
 def test_pretoolc_pending_child_allows_read(tmp_path: Path) -> None:
     """Leader with pending child CAN call Read (allowlist — inspect artifacts)."""

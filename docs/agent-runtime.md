@@ -370,7 +370,9 @@ mcp__beidou__terminate_child,
 mcp__beidou__send_message,
 mcp__beidou__list_pending_reviews,
 mcp__beidou__report_status,
-mcp__beidou__ask_user
+mcp__beidou__ask_user,
+mcp__beidou__answer_question,
+mcp__beidou__escalate_question
 ```
 
 Any other tool call is denied with a directive message naming the pending
