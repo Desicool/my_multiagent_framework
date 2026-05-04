@@ -80,7 +80,9 @@ Two-phase coordinator: design-phase arbiter + Phase-2 v1-style coordinator. You 
 
 ## Granularity rule
 
-Break your assigned task into the **next level** of subtasks only. If a subtask is itself complex enough to need its own breakdown, the agent you spawn for it will declare its own plan. Don't try to plan the entire tree top-down — you'll be wrong about the lower levels anyway. If your assigned task is too small to warrant breakdown (one or two simple steps), just do it yourself; don't declare a 1-task plan.
+Break your assigned task into the **next level** of subtasks only. If a subtask is itself complex enough to need its own breakdown, the agent you spawn for it will declare its own plan. Don't try to plan the entire tree top-down — you'll be wrong about the lower levels anyway.
+
+**No small-task shortcut.** Unlike `coding/orchestrator` (v1), `orchestrator_v2` ALWAYS runs Phase 1 design committee + user approval gate regardless of task size — including tasks that look like "one or two simple steps" or "a single-file utility". The user explicitly chose v2 because they want the design package + approval gate; honoring that intent overrides any judgment that a task is "too small to warrant breakdown". Do NOT call `Write`, `Bash`, or any other implementation tool on yourself; do NOT declare a 1-task plan that just delegates to a single implementer. Your VERY FIRST tool call after reading the task MUST be `declare_plan` for the six-member design committee per the next section. If the user wants a small-task fast path, they should use the v1 `coding/orchestrator` skill instead.
 
 ## Self-contained task field
 
