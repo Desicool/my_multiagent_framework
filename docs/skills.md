@@ -143,21 +143,48 @@ the entries that map to SDK built-in tool names (`Bash`, `Read`, `Write`,
 `WebFetch`, `WebSearch`). Needed because `skills="all"` does NOT auto-add SDK
 builtins — those must be passed explicitly in `allowed_tools`.
 
-### 5. Hard-disallowed SDK tools
+### 5. SDK team-mode suppression (three layers)
 
-`build_options` (`beidou/agent/loop.py`) sets
-`disallowed_tools=["SendMessage"]` on every `ClaudeAgentOptions` it
-constructs. Rationale: when `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set
-in the environment, the Claude Agent SDK exposes its own experimental
-inter-agent `SendMessage` tool. That tool knows nothing about Beidou's
-agent registry — calls return empty content with `is_error=False` (a
-silent no-op), and models often misread the silence as "agents are
-offline" (see `tsk_658f44b6` evidence in commit history). All inter-agent
-messaging in Beidou MUST go through `mcp__beidou__send_message`. Skills
-must NOT list `SendMessage` in their `allowed-tools`; the disallow takes
-precedence regardless. This is a hard contract: removing `SendMessage`
-from the disallow list requires explicit user approval per the
-docs/README.md cohesion rule.
+Beidou implements its own multi-agent topology via the `mcp__beidou__*`
+primitives (`create_team`, `spawn_agent`, `terminate_child`,
+`send_message`, `list_peers`, ...). It does NOT, and MUST NOT, depend on
+the Claude Agent SDK's experimental team-mode tools. When
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in the environment (e.g.
+inherited from a user shell profile), the SDK's CLI binary exposes its
+own competing inter-agent tools (currently `SendMessage`) directly to
+the model. Those tools know nothing about Beidou's agent registry; calls
+return empty content with `is_error=False` (silent no-op), and models
+often misread the silence as "agents are offline" (see `tsk_658f44b6`
+evidence in commit history).
+
+`build_options` (`beidou/agent/loop.py`) defends in three layers:
+
+1. **Env scrub** (`env={"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": ""}`).
+   The SDK transport merges `options.env` on top of inherited process
+   env, so this empty value overrides whatever a user's profile sets
+   globally. With the var empty, the CLI binary does not enable its
+   team-mode tool surface at all — this kills future SDK team tools as
+   they ship (`Spawn`, `Task`, etc.), not just the currently-known
+   `SendMessage`.
+
+2. **disallowed_tools** (`disallowed_tools=["SendMessage"]`). Even if the
+   env scrub leaks (CLI ignores the var, or a future flag re-enables
+   team mode), the SDK respects this disallow list. `SendMessage` is the
+   only currently-known tool name to suppress; expand if new SDK team
+   tools surface in events.
+
+3. **Skill prompt-level NEVER DOs.** The coding_v2 skill bodies all
+   instruct models to use `mcp__beidou__send_message` and explicitly
+   forbid the SDK alias. This is the layer the model sees directly and
+   internalizes.
+
+All inter-agent messaging in Beidou MUST go through
+`mcp__beidou__send_message`. Skills MUST NOT list `SendMessage` (or any
+other SDK team-mode tool name) in their `allowed-tools`; the disallow
+takes precedence regardless. This is a hard contract: removing
+`SendMessage` from the disallow list, restoring the env var in
+`build_options`, or adding a SKILL.md NEVER DO exception requires
+explicit user approval per the docs/README.md cohesion rule.
 
 ## Leadership and delegation
 

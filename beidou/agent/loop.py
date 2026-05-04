@@ -177,14 +177,25 @@ def _build_options(
         system_prompt=system_prompt,
         mcp_servers={"beidou": mcp_server},
         allowed_tools=list(allowed_tools),
-        # Defensively suppress the SDK's experimental inter-agent SendMessage
-        # tool, which is exposed when CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
-        # in the environment. SDK SendMessage knows nothing about the Beidou
-        # agent registry — calls silently no-op (empty content, is_error=False),
-        # and models tend to interpret the silence as "agents are offline".
-        # All inter-agent messaging in Beidou MUST go through
-        # mcp__beidou__send_message. See bd issue qi0v / commit 3037709 for
-        # the prompt-level fix and tsk_658f44b6 evidence.
+        # Three layers of defense against SDK team-mode tool shadowing.
+        #
+        # Layer 1 — env scrub: clear CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS in
+        # the SDK subprocess env. SDK transport merges ``options.env`` on top
+        # of inherited process env, so an empty value here overrides whatever
+        # the user's profile (e.g. ~/profiles/beidou_minimax.sh) set globally.
+        # The CLI binary only enables its experimental team-mode tool surface
+        # when this var is truthy, so an empty value disables it. Beidou
+        # implements its own team primitives via mcp__beidou__* — it does
+        # not, and must not, depend on the SDK's experimental team mode.
+        # This kills future SDK team tools too (Spawn, Task, etc. as they
+        # ship), not just SendMessage.
+        env={"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": ""},
+        # Layer 2 — disallowed_tools: even if the env scrub leaks (e.g. CLI
+        # ignores the var, or a future flag re-enables team mode), the SDK
+        # respects this list. SendMessage is the only currently-known tool
+        # to suppress; expand if new SDK team tools surface in events.
+        # See bd issue qi0v / commit 3037709 (prompt-level NEVER DOs) and
+        # commit 81bde03 (this disallow list).
         disallowed_tools=["SendMessage"],
         permission_mode="bypassPermissions",
         setting_sources=["user", "project"],
