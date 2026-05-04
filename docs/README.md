@@ -48,6 +48,12 @@ preserve all documented boundaries proceed without approval.
 10. `web-ui.md` - frontend layout, event-to-state reducer, build instructions, bundle policy.
 11. `skill-modules.md` - module.toml schema, gate/eval handler signatures, typed hook context types, discovery and loading.
 
+## Skill-pack specifications
+
+These describe individual built-in skill packages (multi-agent flows shipped under `beidou/skills/`). They are normative for that skill pack but do not change framework boundaries.
+
+- `coding-v2.md` - two-phase coding flow (design committee + user-approval gate, then implementation reusing `coding/v1`). Forks v1's PM/architect/orchestrator into `*_v2` skills and adds a new `engineer_advisor` skill.
+
 ## Working rules
 
 - Before any non-trivial edit, open this README, follow to the relevant specs,

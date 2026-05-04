@@ -217,6 +217,22 @@ It is **not** a runtime authorization boundary today. A separate code change in
    `agent-runtime.md`).
 3. No code changes needed. The loader discovers by path.
 
+The `name` field must be unique across the entire `beidou/skills/` tree —
+`load_skill(skill_root, name)` raises `DuplicateSkill` (loader.py:302) when two
+SKILL.md files share a name, and `provision_skills` uses `name` as the
+destination directory (loader.py:365), so duplicates also collide on disk. When
+forking an existing skill (e.g. `coding/product_manager` to `coding_v2/product_manager`)
+the new file's `name` MUST differ from the original — by convention the new
+copy uses a `_v2` (or similar) suffix; see `coding-v2.md` for an example. A
+brand-new skill with no fork relationship can keep its directory name as its
+`name` directly.
+
+## Skill-pack examples
+
+Multi-agent skill packs (collections of SKILL.md files that orchestrate a
+flow together) are documented under `docs/<pack-name>.md`. See
+`docs/coding-v2.md` for the canonical example.
+
 ### Optional: adding code modules
 
 A skill directory may also contain code-level extension modules (`module.toml`,
