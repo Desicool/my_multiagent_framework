@@ -81,6 +81,7 @@ ALLOWED_DURING_PENDING_REVIEW = {
     "mcp__beidou__send_message",
     "mcp__beidou__list_pending_reviews",
     "mcp__beidou__report_status",
+    "mcp__beidou__signal_review",
     "mcp__beidou__ask_user",
     "mcp__beidou__answer_question",
     "mcp__beidou__escalate_question",
@@ -89,7 +90,7 @@ ALLOWED_DURING_PENDING_REVIEW = {
 # Tools an agent may call even when the reply gate is active
 # (i.e. when it has unreplied inquiries from its leader or another agent).
 # Read/grep/bash permit information gathering; send_message is the resolution tool;
-# report_status and ask_user are required for the agent to complete or get human input.
+# signal_review, report_status and ask_user are required for the agent to complete or get human input.
 REPLY_GATE_ALLOWLIST = {
     "Read",
     "Glob",
@@ -97,6 +98,7 @@ REPLY_GATE_ALLOWLIST = {
     "Bash",
     "mcp__beidou__send_message",
     "mcp__beidou__report_status",
+    "mcp__beidou__signal_review",
     "mcp__beidou__ask_user",
 }
 
@@ -128,20 +130,15 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         Emits a synthetic ``tool_called`` + ``tool_result`` pair so the UI/JSONL log
         reflects what happened.
 
-    **PostToolUse -- mcp__beidou__report_status**
+    **PostToolUse -- mcp__beidou__report_status (deprecated, use signal_review)**
         Fires when the agent calls ``mcp__beidou__report_status(state="done")``.
         Reads the agent's last assistant text (bound to that turn) from the orchestrator
         and delivers it to the leader's inbox as a ``completion_report`` message.
 
-        If ``leader_id`` is the user-sentinel (root agent), the hook still registers but
-        emits ``completion.empty`` with reason ``root_no_leader`` instead of delivering.
-
-        Guards:
-        - Wrong tool_name: return early (the HookMatcher should filter this, but be safe).
-        - state != "done": no-op.
-        - is_error=True: the report_status call failed; skip delivery.
-        - Empty summary: emit completion.empty with reason "no summary in report_status turn".
-        - leader inbox_full: handled inside deliver_message, which emits completion.empty.
+    **PostToolUse -- mcp__beidou__signal_review**
+        Fires when the agent calls ``mcp__beidou__signal_review(detail="...")``.
+        Delivers the detail to the leader's inbox (non-root) or human gateway (root).
+        The primitive already sets ``completion_pending``; the hook handles routing.
     """
 
     async def on_ask_user_question(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
@@ -371,6 +368,80 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                     })
                 rec.pending_replies.clear()
                 rec.reply_gate_active = False
+        return {}
+
+    async def on_signal_review(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """PostToolUse hook for ``mcp__beidou__signal_review``.
+
+        Delivers the review detail to the leader's inbox (non-root) or to the
+        human gateway (root). The primitive already sets ``completion_pending``;
+        this hook handles message routing.
+        """
+        # Guard: wrong tool (HookMatcher should filter, but be defensive).
+        if input_data.get("tool_name") != "mcp__beidou__signal_review":
+            return {}
+        # Guard: failed calls are a no-op here.
+        tool_response = input_data.get("tool_response") or {}
+        if isinstance(tool_response, dict) and tool_response.get("is_error"):
+            return {}
+
+        detail = (input_data.get("tool_input") or {}).get("detail") or ""
+        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
+
+        # Root agent: route through the human gateway.
+        if leader_id == USER_SENTINEL:
+            try:
+                answer = await orch.gateway_ask_user_structured(
+                    caller_id,
+                    [{
+                        "question": detail,
+                        "header": "Review",
+                        "multiSelect": False,
+                        "options": [
+                            {"label": "Approve", "description": "Accept and terminate.", "value": "approve"},
+                            {"label": "Rework", "description": "Send rework feedback.", "value": "rework", "requires_text": True},
+                        ],
+                    }],
+                    "Root completion review",
+                )
+            except Exception as e:
+                orch.emit_event("completion.empty", {
+                    "agent_id": caller_id, "leader_id": leader_id,
+                    "reason": f"gateway_failure: {type(e).__name__}",
+                })
+                return {}
+
+            sub = (answer.get("answers") or [{}])[0]
+            selected = sub.get("selected_values") or sub.get("selected_labels") or []
+            decision = (selected[0] if selected else "").lower()
+            if not decision:
+                typed = (sub.get("text") or "").strip().lower()
+                if typed in {"approve", "approved", "yes", "y", "ok", "lgtm"}:
+                    decision = "approve"
+
+            if decision in ("approve", "approved"):
+                orch.emit_event("completion.reported", {
+                    "agent_id": caller_id, "leader_id": leader_id,
+                    "via": "user_gateway", "decision": "approve",
+                })
+                await orch.terminate_root()
+            else:
+                rework_text = sub.get("text") or "(no rework details provided)"
+                orch.deliver_message(from_id="user", to_id=caller_id, body=f"rework: {rework_text}")
+                orch.emit_event("completion.reported", {
+                    "agent_id": caller_id, "leader_id": leader_id,
+                    "via": "user_gateway", "decision": "rework",
+                })
+            return {}
+
+        # Non-root path: deliver to leader's inbox.
+        orch.deliver_message(
+            from_id=caller_id, to_id=leader_id,
+            body=detail, kind="completion_report",
+        )
+        orch.emit_event("completion.reported", {
+            "agent_id": caller_id, "leader_id": leader_id, "via": "hook",
+        })
         return {}
 
     async def on_send_message_reply(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
@@ -653,6 +724,11 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             HookMatcher(
                 matcher="mcp__beidou__report_status",
                 hooks=[on_report_status],
+                timeout=HOOK_REVIEW_TIMEOUT_S,
+            ),
+            HookMatcher(
+                matcher="mcp__beidou__signal_review",
+                hooks=[on_signal_review],
                 timeout=HOOK_REVIEW_TIMEOUT_S,
             ),
             HookMatcher(

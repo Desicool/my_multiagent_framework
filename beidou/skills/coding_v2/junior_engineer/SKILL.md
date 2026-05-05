@@ -6,13 +6,14 @@ description: |
   the integrator from per-task impl plans), spawns ONE child per task, reviews
   each child's deliverable, terminates after approval. Never writes code
   itself. After the last child terminates, mandatorily emits the
-  [REVIEW REQUIRED] envelope + report_status(state="done").
+  [REVIEW REQUIRED] envelope + signal_review(detail=...).
 allowed-tools:
   - bash
   - file_read
   - file_write
   - send_message
   - report_status
+  - signal_review
   - declare_plan
   - remove_plan
   - spawn_agent
@@ -64,7 +65,7 @@ never edit `artifacts/task-*/` yourself — that is each child's owned scope.
 - **NEVER write code yourself.** Every task in `tasks.md` is delegated
   to a child. If a task seems too small to delegate, delegate anyway —
   uniformity outweighs the spawn cost.
-- **NEVER skip the `[REVIEW REQUIRED]` + `report_status(state="done")`
+- **NEVER skip the `[REVIEW REQUIRED]` envelope + `signal_review(detail=...)`
   sequence after the final `terminate_child`.** This is the bug pattern
   from `tsk_658f44b6` (impl-leader terminated last child, never completed,
   team parked) and the reason this skill exists.
@@ -142,8 +143,7 @@ The moment your final child's review is approved and you call
 
 2. In the SAME turn, call:
    ```
-   mcp__beidou__report_status(
-     state="done",
+   mcp__beidou__signal_review(
      detail="<paste the same envelope above into detail verbatim>"
    )
    ```

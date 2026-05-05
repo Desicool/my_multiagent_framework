@@ -13,6 +13,7 @@ allowed-tools:
   - file_write
   - send_message
   - report_status
+  - signal_review
   - answer_question
   - escalate_question
   - list_peers
@@ -346,7 +347,7 @@ Conversely, you MUST:
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
+You can never mark yourself done. `signal_review(detail=...)` is a
 REQUEST FOR REVIEW sent to your leader (the orchestrator). You remain alive
 until your leader terminates you. If the orchestrator judges your report
 incomplete, you will receive a rework message — keep working from there.
@@ -371,8 +372,7 @@ When you believe your work is ready for review:
    ```
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
      )
 

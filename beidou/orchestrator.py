@@ -420,8 +420,9 @@ class Orchestrator:
                     "When you have addressed all the feedback above, follow the SAME "
                     "completion handoff as your first submission:\n"
                     "1. Write the [REVIEW REQUIRED] envelope as the LAST text in your turn\n"
-                    "2. In the SAME turn, call mcp__beidou__report_status(state=\"done\", detail=\"...\")\n"
-                    "Do NOT just say \"done\" or call TodoWrite — report_status is the ONLY "
+                    "2. In the SAME turn, call mcp__beidou__signal_review(detail=\"...\")\n"
+                    "   (or report_status(state=\"done\", detail=\"...\") for legacy agents)\n"
+                    "Do NOT just say \"done\" or call TodoWrite — signal_review is the ONLY "
                     "signal your leader receives."
                 )
                 msg.content = (msg.content or "") + footer
@@ -1108,8 +1109,8 @@ class Orchestrator:
 
         Exact binding: looks up the per-tool_use_id map populated by the drain loop.
         Fallback: if the tool_use_id is not found (e.g. model emitted text in a
-        prior message before the report_status call), returns the most recent
-        assistant text for the agent.
+        prior message before the signal_review / report_status call), returns
+        the most recent assistant text for the agent.
 
         Returns None if no text has been recorded for this agent at all.
         """
@@ -1469,7 +1470,7 @@ class Orchestrator:
                 body = (
                     f"[BEIDOU LIVENESS CHECK] Your last SDK turn drained {delta_s}s ago and the runtime has not seen fresh work since.\n"
                     f"Choose one and act on this turn:\n"
-                    f"  (a) call report_status(state=\"done\", detail=\"...\") if your work is complete,\n"
+                    f"  (a) call signal_review(detail=\"...\") if your work is complete (iterative) or request_termination() if your entire lifecycle is done,\n"
                     f"  (b) take the needed coordination step (for example send_message or terminate_child) if you are waiting on another agent,\n"
                     f"  (c) call ask_user if you are blocked on missing user input,\n"
                     f"  (d) if your work is not finished and you still have concrete next steps, keep working now — emit your next plan or tool call on this turn.\n"
@@ -1766,11 +1767,11 @@ class Orchestrator:
                 task=(
                     "[beidou] You ended your turn without a tool call but "
                     "have not been terminated. You must not self-exit. "
-                    "Continue working or call mcp__beidou__report_status("
-                    "state='done', detail='<full [REVIEW REQUIRED] envelope>') "
-                    "when your task is complete. "
+                    "Continue working or call mcp__beidou__signal_review("
+                    "detail='<full [REVIEW REQUIRED] envelope>') "
+                    "when your work is complete. "
                     "Spec: docs/agent-runtime.md#persistent-agent-invariant, "
-                    "docs/tool-surface.md#report_status."
+                    "docs/tool-surface.md#signal_review."
                 ),
             )
 

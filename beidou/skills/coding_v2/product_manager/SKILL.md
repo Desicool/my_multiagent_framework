@@ -13,6 +13,7 @@ allowed-tools:
   - web_search
   - send_message
   - report_status
+  - signal_review
   - ask_user
   - answer_question
   - escalate_question
@@ -191,7 +192,7 @@ re-submit with `[REVIEW REQUIRED]` when stable.
 
 **"Done" is round-scoped.** If a peer's critique after you've reported done requires
 revision, revert to `state="working"`, edit requirements.md, then call
-`report_status(state="done")` again. Each new `[REVIEW REQUIRED]` submission
+`signal_review(detail="[REVIEW REQUIRED]...")` again. Each new `[REVIEW REQUIRED]` submission
 supersedes the prior one.
 
 ---
@@ -298,7 +299,7 @@ source pattern; reuse its rules).
 
 ## 7. Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
+You can never mark yourself done. `signal_review(detail="[REVIEW REQUIRED]...")` is a
 REQUEST FOR REVIEW sent to your leader. You remain alive until your
 leader terminates you. If your leader judges your work incomplete, you
 will receive a rework message — keep working from there.
@@ -327,8 +328,7 @@ When you believe your work is ready for review:
    The `iteration` line is your freshness marker. Read the file with default=1 if absent — do NOT create or write the file (the orchestrator owns it). Stale envelopes from prior iterations are silently dropped by the orchestrator.
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
      )
 

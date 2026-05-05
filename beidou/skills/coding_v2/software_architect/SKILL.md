@@ -19,6 +19,7 @@ allowed-tools:
   - send_message
   - list_peers
   - report_status
+  - signal_review
   - terminate_child
   - ask_user
   - answer_question
@@ -211,9 +212,9 @@ At `round=3` still open:
 1. Set `status: escalated` in the file.
 2. Send: `send_message(to=orchestrator, content="[ESCALATE] issue=issue-{n}")`
 
-**"Done" is round-scoped.** Call `report_status(state="done", detail=...)` when spec.md is stable
+**"Done" is round-scoped.** Call `signal_review(detail=...)` when spec.md is stable
 for the current round. If a peer's subsequent critique forces revision, revert to
-`state="working"`, revise spec.md, then re-call `report_status(state="done")`.
+`state="working"`, revise spec.md, then re-call `signal_review()`.
 
 **Freeze probe:** On receiving `[FREEZE PROBE]` from orchestrator, reply
 `send_message(to=orchestrator, content="[FREEZE OK]")` only when spec.md is truly stable and you
@@ -322,7 +323,7 @@ When tasks.md is written, submit for review.
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
+You can never mark yourself done. `signal_review` is a
 REQUEST FOR REVIEW sent to your leader. You remain alive until your
 leader terminates you. If your leader judges your work incomplete, you
 will receive a rework message — keep working from there.
@@ -346,8 +347,7 @@ When you believe your work is ready for review:
    The `iteration` line is your freshness marker. Read the file with default=1 if absent — do NOT create or write the file (the orchestrator owns it). Stale envelopes from prior iterations are silently dropped by the orchestrator. Note: this Phase-1 envelope shape applies when you are spawned for the design committee (`spec.md`); the Phase-2 `arch_post_approval` re-spawn (which writes `tasks.md`) is a single-shot specialist and uses the default leader-action wording — but in practice you don't need to track this, you just emit the envelope as written here either way; the orchestrator distinguishes Phase-1 from Phase-2 by your `task_id` (`arch` vs `arch_post_approval`).
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
      )
 

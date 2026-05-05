@@ -107,14 +107,15 @@ class TestAskUserQuestionHook:
         assert matcher_names.count(None) == 2, f"Expected 2 match-all entries in {matcher_names}"
 
     def test_posttooluse_still_present(self) -> None:
-        """build_hooks still includes the PostToolUse report_status and send_message hooks."""
+        """build_hooks includes PostToolUse hooks for report_status, signal_review, and send_message."""
         orch = FakeOrchForHooks()
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PostToolUse" in hooks
         matchers = hooks["PostToolUse"]
-        assert len(matchers) == 2
+        assert len(matchers) == 3
         matcher_vals = [m.matcher for m in matchers]
         assert "mcp__beidou__report_status" in matcher_vals
+        assert "mcp__beidou__signal_review" in matcher_vals
         assert "mcp__beidou__send_message" in matcher_vals
 
     def test_redirects_with_questions(self) -> None:

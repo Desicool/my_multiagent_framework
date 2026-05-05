@@ -908,7 +908,7 @@ def test_watchdog_pass_b_nudges_stale_leaf_worker_with_keep_working_option(tmp_p
     """Pass B must nudge a leaf worker whose last_drain_ts is old and no inflight activity.
 
     Regression guard for the leaf-worker exclusion that was removed in favour of the
-    freshness signal. The nudge body must include both the report_status(done) option
+    freshness signal. The nudge body must include both the signal_review option
     and the keep-working escape hatch.
     """
     from pathlib import Path
@@ -981,8 +981,8 @@ def test_watchdog_pass_b_nudges_stale_leaf_worker_with_keep_working_option(tmp_p
 
         # Verify body content via inbox message.
         msg = await asyncio.wait_for(worker_rec.inbox.get(), timeout=1.0)
-        assert "report_status(state=\"done\"" in msg.content, (
-            f"Nudge body missing report_status(state=\"done\" option: {msg.content!r}"
+        assert "signal_review(detail=" in msg.content, (
+            f"Nudge body missing signal_review option: {msg.content!r}"
         )
         assert "keep working now" in msg.content, (
             f"Nudge body missing keep-working escape hatch: {msg.content!r}"

@@ -15,6 +15,7 @@ allowed-tools:
   - file_write
   - send_message
   - report_status
+  - signal_review
   - declare_plan
   - remove_plan
   - spawn_agent
@@ -169,7 +170,7 @@ readiness:
   re-submit with `[REVIEW REQUIRED]`.
 - "Done" is round-scoped, not permanent. If a peer's later critique requires
   revision, revert to `state="working"`, update `qa_plan.md`, then re-call
-  `report_status(state="done")`.
+  `signal_review(detail=...)`.
 
 ---
 
@@ -229,7 +230,7 @@ belongs to `coding/qa_engineer`.
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
+You can never mark yourself done. `signal_review(detail=...)` is a
 REQUEST FOR REVIEW sent to your leader. You remain alive until your
 leader terminates you. If your leader judges your work incomplete, you
 will receive a rework message — keep working from there.
@@ -258,8 +259,7 @@ When you believe your work is ready for review:
    The `iteration` line is your freshness marker. Read the file with default=1 if absent — do NOT create or write the file (the orchestrator owns it). Stale envelopes from prior iterations are silently dropped by the orchestrator.
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
      )
 

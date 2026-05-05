@@ -19,6 +19,7 @@ allowed-tools:
   - web_fetch
   - send_message
   - report_status
+  - signal_review
   - list_peers
   - list_pending_reviews
   - answer_question
@@ -166,7 +167,7 @@ Use `list_peers` to discover the agent_ids of all other committee members
   re-submit with `[REVIEW REQUIRED]`.
 - "Done" is round-scoped, not permanent. If a peer's later critique requires
   revision, revert to `state="working"`, update `ui_ux.md`, then re-call
-  `report_status(state="done")`.
+  `signal_review()`.
 
 ---
 
@@ -245,7 +246,7 @@ that implementation belongs to `junior_engineer` in Phase 2.
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
+You can never mark yourself done. `signal_review` is a
 REQUEST FOR REVIEW sent to your leader. You remain alive until your leader
 terminates you. If your leader judges your work incomplete, you will receive
 a rework message — keep working from there.
@@ -274,8 +275,7 @@ When you believe your work is ready for review:
    The `iteration` line is your freshness marker. Read the file with default=1 if absent — do NOT create or write the file (the orchestrator owns it). Stale envelopes from prior iterations are silently dropped by the orchestrator.
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
      )
 

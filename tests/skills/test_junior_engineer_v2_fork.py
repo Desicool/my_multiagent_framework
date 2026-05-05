@@ -58,13 +58,13 @@ def test_v2_body_forbids_todowrite():
 
 
 def test_v2_body_has_post_terminate_completion_checklist():
-    """The contract that closes tsk_658f44b6: emit envelope + report_status after final terminate_child."""
+    """The contract that closes tsk_658f44b6: emit envelope + signal_review after final terminate_child."""
     body = _V2_SKILL.read_text()
     # Markers that together prove the checklist exists in the body.
     assert "After the LAST child terminates" in body
     assert "[REVIEW REQUIRED]" in body
-    assert 'report_status(' in body
-    assert 'state="done"' in body
+    assert 'signal_review(' in body
+    assert 'detail="' in body
     assert "tsk_658f44b6" in body, "rationale link to the originating bug should be present"
 
 
