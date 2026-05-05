@@ -1730,8 +1730,11 @@ class Orchestrator:
                 task=(
                     "[beidou] You ended your turn without a tool call but "
                     "have not been terminated. You must not self-exit. "
-                    "Continue working or call report_status(state='done') "
-                    "when your task is complete."
+                    "Continue working or call mcp__beidou__report_status("
+                    "state='done', detail='<full [REVIEW REQUIRED] envelope>') "
+                    "when your task is complete. "
+                    "Spec: docs/agent-runtime.md#persistent-agent-invariant, "
+                    "docs/tool-surface.md#report_status."
                 ),
             )
 
@@ -1777,8 +1780,11 @@ class Orchestrator:
             from_id="beidou",
             content=(
                 f"agent {rec.agent_id} has violated the no-self-exit "
-                f"contract {rec.contract_strikes} times. Consider "
-                f"terminate_child({rec.agent_id})."
+                f"contract {rec.contract_strikes} times (per "
+                f"docs/agent-runtime.md#5-orchestrator-recovery-policy). "
+                f"Consider mcp__beidou__terminate_child({rec.agent_id}) if "
+                f"the work is unsalvageable, or send_message a corrective "
+                f"directive if you want it to keep going."
             ),
             ts=time.time(),
             message_id=str(uuid.uuid4()),

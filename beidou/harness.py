@@ -1,32 +1,39 @@
-"""Post-turn completion handoff repair.
+"""Post-turn completion handoff repair (safety net).
 
-When a model provider emits ToolUseBlock without preceding TextBlock,
-the on_report_status PostToolUse hook can't find assistant text to
-forward.  This module detects that case and returns a nudge message
-to inject into the agent's inbox.
+After commit 82d5290 the canonical contract is: detail MUST contain the
+[REVIEW REQUIRED] envelope, and the report_status primitive rejects calls
+without it (envelope_missing). The PostToolUse hook then forwards detail
+verbatim. So in practice this safety-net rarely fires — envelope_missing
+catches the empty-detail case at the primitive layer and the agent sees
+the error in its next tool result.
 
-Multi-level fallback:
-  L1: assistant_text in same turn           -> pass (hook handles it)   (free)
-  L2: detail arg from report_status input   -> pass (hook handles it)   (free)
-  L3: inject nudge asking for summary       -> agent gets extra turn    (cheap)
-  L4: already nudged                        -> don't loop forever       (free)
+This nudge remains as a backstop for the historical edge case it was
+named after: a successful report_status(state='done') call (envelope_missing
+did NOT trip — detail had something) where the agent also produced no
+surrounding assistant text and detail itself was somehow degraded.
+The text now points at the canonical contract (envelope-in-detail).
+
+Path semantics:
+  L1: assistant_text in same turn           -> pass (hook handles it)
+  L2: detail arg from report_status input   -> pass (hook handles it)
+  L3: neither                                -> inject nudge (rarely reached)
+  L4: already nudged                         -> don't loop forever
 """
 
 COMPLETION_HANDOFF_NUDGE = """\
-Your previous turn could not be forwarded to your leader because it contained \
-no summary text before the report_status call.
+The completion handoff for your last report_status(state="done") call did \
+not produce a summary for your leader.
 
-What happened: you called report_status(state="done") but the system had no \
-TextBlock in that same turn to capture as a completion summary. \
-Some model providers emit tool calls without preceding text, which breaks the \
-handoff path.
+Re-call:
+  mcp__beidou__report_status(state="done", detail="<full envelope>")
 
-Please:
-1. Summarise what you accomplished — files created or changed, key decisions, \
-and any next steps for your leader.
-2. Then re-call: report_status(state="done", detail="your brief summary here")
+The detail argument MUST contain the [REVIEW REQUIRED] envelope: role, \
+agent, Deliverables, Open questions / risks, Leader action required. The \
+runtime forwards detail verbatim to your leader; there is no fallback that \
+reads your assistant text.
 
-This extra turn ensures your leader receives a proper handoff."""
+Spec: docs/agent-runtime.md#completion-reporting, \
+docs/tool-surface.md#report_status."""
 
 
 def repair_completion_handoff(orch, caller_id, turn, nudged):

@@ -823,7 +823,11 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                             from_ids = list(dict.fromkeys(o["from_id"] for o in still_pending))
                             nudge = (
                                 f"[REPLY REQUIRED] You have unreplied inquiries from: {', '.join(from_ids)}.\n"
-                                f"Call mcp__beidou__send_message(to=<agent>, content='...') to reply before taking other actions."
+                                f"Call mcp__beidou__send_message(to=<agent>, content='...') to reply "
+                                f"before taking other actions. The reply gate will block every other "
+                                f"tool until each pending sender has been answered. "
+                                f"Spec: docs/agent-runtime.md#reply-obligation, "
+                                f"docs/tool-surface.md#send_message."
                             )
                             orch.deliver_message(
                                 from_id="beidou",
