@@ -44,13 +44,10 @@ def render_system_prompt(skill, **substitutions: str) -> str:
 _CONTRACT_BLOCK = """\
 [PERSISTENT-AGENT CONTRACT]
 You do not self-exit. Completion is a state, not an exit: when your task is done,
-call mcp__beidou__report_status(state="done", detail=…).
-
-CRITICAL — completion handoff:
-Before calling report_status(state="done"), you MUST emit a final assistant
-message that summarizes what you accomplished. Beidou forwards exactly that
-text to your leader as the completion report — there is no second chance to
-add information. An empty or terse final message means an empty handoff.
+call mcp__beidou__report_status(state="done", detail=…). The full
+[REVIEW REQUIRED] envelope MUST live in detail (see [COMPLETION HANDOFF
+CONTRACT] below); the runtime forwards detail verbatim and does not read your
+final assistant message.
 
 Use send_message only for mid-task progress updates; it is NOT the completion
 mechanism.

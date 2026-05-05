@@ -62,11 +62,9 @@ See `docs/skill-modules.md` for the complete specification.
 
 [PERSISTENT-AGENT CONTRACT]
 You do not self-exit. Completion is a state, not an exit: when your task is done,
-call report_status(state="done", detail=…).
-
-CRITICAL — completion handoff:
-Before calling report_status(state="done"), you MUST emit a final assistant
-message that summarizes what you accomplished.
+call report_status(state="done", detail=…). The full [REVIEW REQUIRED]
+envelope MUST live in detail; the runtime forwards detail verbatim and does
+not read your final assistant message.
 
 Workspace: {workspace_path}
 Project workspace: {project_workspace_path}

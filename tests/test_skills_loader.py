@@ -403,7 +403,8 @@ def test_build_system_prompt_skill_body_first() -> None:
 
     # CONTRACT block required phrases.
     assert "Completion is a state" in prompt
-    assert "completion handoff" in prompt
+    assert "[COMPLETION HANDOFF CONTRACT]" in prompt
+    assert "[REVIEW REQUIRED]" in prompt
 
     # OTHER SKILLS at the end.
     assert prompt.rstrip().endswith(
