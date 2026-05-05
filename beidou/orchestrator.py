@@ -170,16 +170,40 @@ class Orchestrator:
         return [tid for tid, t in self._teams.items() if t.leader_id == agent_id]
 
     def has_active_children(self, agent_id: str) -> bool:
-        for tid in self.teams_led_by(agent_id):
-            team = self._teams.get(tid)
-            if team is None:
-                continue
-            for mid in team.member_ids:
-                if mid == agent_id:
+        rec = self._agents.get(agent_id)
+        if rec is None:
+            return False
+        return rec.active_descendant_count > 0
+
+    def _refresh_leaf_status(self) -> None:
+        """Single post-order DFS from root; caches active_descendant_count."""
+        for rec in self._agents.values():
+            rec.active_descendant_count = 0
+
+        children_of: dict[str, list[str]] = {}
+        for team in self._teams.values():
+            children_of.setdefault(team.leader_id, []).extend(team.member_ids)
+
+        visited: set[str] = set()
+
+        def _dfs(agent_id: str) -> int:
+            if agent_id in visited:
+                return 0
+            visited.add(agent_id)
+            count = 0
+            for mid in children_of.get(agent_id, ()):
+                rec = self._agents.get(mid)
+                if rec is None:
                     continue
-                if mid in self._agents:
-                    return True
-        return False
+                if not rec.terminate_consumed:
+                    count += 1
+                count += _dfs(mid)
+            if agent_id in self._agents:
+                self._agents[agent_id].active_descendant_count = count
+            return count
+
+        if self._root_id in self._agents:
+            _dfs(self._root_id)
 
     def team_depth(self, team_id: str | None) -> int:
         """Return the depth of team_id, or 0 for None (teamless = depth 0)."""
@@ -1401,6 +1425,7 @@ class Orchestrator:
         # ------------------------------------------------------------------
         # Pass B — general liveness nudge.
         # ------------------------------------------------------------------
+        self._refresh_leaf_status()
         for rec in agents:
             agent_id = rec.agent_id
             # Skip sentinels and terminated agents.
@@ -1594,6 +1619,7 @@ class Orchestrator:
                             "ts": time.time(),
                         },
                     )
+                    rec.terminate_consumed = True
                     self._remove_orphan_plan(rec.agent_id)
                     return RunResult(
                         final_text="",
@@ -1717,10 +1743,7 @@ class Orchestrator:
                         "ts": time.time(),
                     },
                 )
-                # TODO: orphan plan cleanup — contract-escalation path also
-                # removes the agent, but in_flight tasks (children) may still
-                # be running; _remove_orphan_plan handles this safely by
-                # checking in_flight count before removing.
+                rec.terminate_consumed = True
                 self._remove_orphan_plan(rec.agent_id)
                 return result
 
