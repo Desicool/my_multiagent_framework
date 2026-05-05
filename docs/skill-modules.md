@@ -61,7 +61,8 @@ Valid event names are the full catalogue from `docs/observability.md`:
 `status`, `message_sent`, `question_asked`, `question_answered`, `question_escalated`,
 `plan_declared`, `plan_removed`, `task_ready`, `task_spawned`, `task_done`,
 `task_failed`, `completion.reported`, `completion.approved`, `completion.rework`,
-`contract_violation`, `review_gate.denied`, `liveness.nudge`, `liveness.escalated_to_user`,
+`contract_violation`, `review_gate.denied`, `reply_gate.denied`,
+`ask_user_question.redirected`, `liveness.nudge`, `liveness.escalated_to_user`,
 `terminate.forced`.
 
 ## Handler signatures

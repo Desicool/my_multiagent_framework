@@ -537,16 +537,19 @@ terminate sentinels.
   cleanly with no SDK-level timeout.
 - `ask_user` has no timeout. The runtime parks the agent on the gateway
   response future and resumes it when an answer arrives.
-- **SDK-builtin `AskUserQuestion` passthrough.** When a model emits the
+- **SDK-builtin `AskUserQuestion` is rejected.** When a model emits the
   SDK-builtin `AskUserQuestion` tool call, the Beidou hook
-  (`on_ask_user_question` in `sdk_agent.py`) forwards the structured
-  `questions` array unchanged to `gateway_ask_user_structured`. The hook
-  does NOT flatten sub-questions into a composite text prompt — the gateway
-  and UI receive the same wire shape Claude Code uses natively. Both the
-  SDK-builtin path and the MCP `mcp__beidou__ask_user` path produce the
-  same enriched `Question` object via `QuestionBroker.ask(ctx, questions,
-  ...)`, so escalation, persistence, and `question_*` events are identical
-  regardless of which entry point the model uses.
+  (`on_ask_user_question` in `beidou/agent/hooks.py`) returns a
+  `permissionDecision="deny"` whose `permissionDecisionReason` redirects the
+  agent to `mcp__beidou__ask_user`. The hook does NOT call the gateway and
+  does NOT synthesize tool_called/tool_result events — earlier versions did
+  both, which (a) bypassed the leader chain so questions surfaced straight
+  to the user, and (b) followed the same hook-synth bug class fixed in
+  commit 82d5290 (envelope_missing). The hook emits a single
+  `ask_user_question.redirected` event for observability, then the agent
+  re-issues via `mcp__beidou__ask_user`, which routes through the leader
+  chain (`Orchestrator.gateway_ask_via_chain`) so each leader can answer
+  locally before the question reaches the user.
 - Beidou does NOT layer its own retry on top of `query()`. Per-call retries
   are delegated to `ClaudeAgentOptions`.
 - The liveness watchdog (§3.1) is a separate `asyncio.Task` (`beidou-watchdog`)

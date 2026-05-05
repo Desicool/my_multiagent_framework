@@ -1,8 +1,10 @@
 """Unit tests for the ``build_hooks`` PreToolUse AskUserQuestion interceptor.
 
-Tests the ``on_ask_user_question`` hook that intercepts raw ``AskUserQuestion``
-tool calls (emitted by models using the Anthropic-compatible proxy, e.g.
-MiniMax-M2.7) and routes them to the human gateway.
+Post harness-audit Plan B Phase 1: the hook no longer routes the question
+to the gateway. It denies the call with a redirect reason pointing the
+agent at ``mcp__beidou__ask_user``, which routes through the leader chain
+(``orchestrator.gateway_ask_via_chain``). This kills the hook-synth bug
+class fixed in commit 82d5290 (envelope_missing) for the ask_user surface.
 """
 from __future__ import annotations
 
@@ -111,9 +113,9 @@ class TestAskUserQuestionHook:
         assert "mcp__beidou__report_status" in matcher_vals
         assert "mcp__beidou__send_message" in matcher_vals
 
-    def test_positive_single_question(self) -> None:
-        """Hook routes question to gateway and returns answer as deny reason."""
-        orch = FakeOrchForHooks(gateway_answer="yes please")
+    def test_redirects_with_questions(self) -> None:
+        """Non-empty questions list: deny with redirect reason; gateway NEVER called."""
+        orch = FakeOrchForHooks(gateway_answer="should not be used")
         hook = _get_pretooluse_hook(orch)
 
         input_data = {
@@ -131,97 +133,54 @@ class TestAskUserQuestionHook:
 
         result = asyncio.run(hook(input_data, tool_use_id="toolu_fake_123", context=None))
 
-        # Should deny with the user's answer.
+        # Gateway must NOT be called from this hook anymore.
+        assert not orch._gateway_called, "gateway_ask_user_structured must not be invoked"
+
         hs_out = result.get("hookSpecificOutput", {})
         assert hs_out.get("permissionDecision") == "deny"
-        assert hs_out.get("permissionDecisionReason") == "yes please"
         assert hs_out.get("hookEventName") == "PreToolUse"
+        reason = hs_out.get("permissionDecisionReason", "")
+        # Must redirect to the canonical primitive and reference the spec.
+        assert "mcp__beidou__ask_user" in reason
+        assert "docs/tool-surface.md#ask_user" in reason
+        assert "leader chain" in reason
 
-    def test_gateway_called_with_correct_args(self) -> None:
-        """Gateway receives the raw questions array unchanged (no flattening after m4g)."""
-        orch = FakeOrchForHooks(gateway_answer="blue")
+    def test_no_synth_tool_pair_emitted(self) -> None:
+        """The hook must NOT emit synthetic tool_called/tool_result events."""
+        orch = FakeOrchForHooks()
         hook = _get_pretooluse_hook(orch)
 
-        questions_in = [
-            {
-                "question": "Favourite color?",
-                "header": "Color",
-                "options": [
-                    {"label": "Red", "description": "rosy"},
-                    {"label": "Blue", "description": "calm"},
-                ],
-            }
-        ]
         input_data = {
             "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": questions_in},
+            "tool_input": {"questions": [{"question": "Color?", "header": "Color", "options": []}]},
         }
+        asyncio.run(hook(input_data, tool_use_id="toolu_abc", context=None))
 
-        asyncio.run(hook(input_data, tool_use_id=None, context=None))
+        event_names = [name for name, _ in orch.events]
+        assert "tool_called" not in event_names
+        assert "tool_result" not in event_names
+        # A redirect telemetry event IS expected so observability still sees the call.
+        assert event_names.count("ask_user_question.redirected") == 1
 
-        assert orch._gateway_called
-        assert len(orch._gateway_calls) == 1
-        caller_id, questions_received, context_received = orch._gateway_calls[0]
-        assert caller_id == "test_agent"
-        # The hook must NOT flatten — it passes the questions list through unchanged.
-        assert questions_received == questions_in
-        # No context argument in the input_data, so None is passed.
-        assert context_received is None
-
-    def test_two_synthetic_events_emitted(self) -> None:
-        """emit_event is called exactly twice: tool_called then tool_result."""
-        orch = FakeOrchForHooks(gateway_answer="yes please")
+    def test_redirect_event_payload(self) -> None:
+        """The ask_user_question.redirected event records caller and question count."""
+        orch = FakeOrchForHooks()
         hook = _get_pretooluse_hook(orch)
 
         input_data = {
             "tool_name": "AskUserQuestion",
             "tool_input": {
-                "questions": [{"question": "Color?", "header": "Color", "options": []}]
+                "questions": [
+                    {"question": "Q1?", "header": "h1", "options": []},
+                    {"question": "Q2?", "header": "h2", "options": []},
+                ],
             },
-        }
-        asyncio.run(hook(input_data, tool_use_id="toolu_abc", context=None))
-
-        event_names = [name for name, _ in orch.events]
-        assert event_names.count("tool_called") == 1
-        assert event_names.count("tool_result") == 1
-
-        # tool_called before tool_result.
-        called_idx = event_names.index("tool_called")
-        result_idx = event_names.index("tool_result")
-        assert called_idx < result_idx
-
-    def test_tool_result_event_is_not_error_on_success(self) -> None:
-        """tool_result has is_error=False when gateway succeeds."""
-        orch = FakeOrchForHooks(gateway_answer="fine")
-        hook = _get_pretooluse_hook(orch)
-
-        input_data = {
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [{"question": "OK?", "header": "", "options": []}]},
         }
         asyncio.run(hook(input_data, tool_use_id=None, context=None))
 
-        tool_result_payload = next(p for name, p in orch.events if name == "tool_result")
-        assert tool_result_payload["is_error"] is False
-
-    def test_synthetic_id_used_not_original(self) -> None:
-        """The emitted events use a generated id, not the original tool_use_id."""
-        orch = FakeOrchForHooks(gateway_answer="fine")
-        hook = _get_pretooluse_hook(orch)
-
-        original_id = "toolu_original_xyz"
-        input_data = {
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [{"question": "OK?", "header": "", "options": []}]},
-        }
-        asyncio.run(hook(input_data, tool_use_id=original_id, context=None))
-
-        emitted_ids = {p["tool_use_id"] for _, p in orch.events}
-        # Must have exactly one synthetic id, which is NOT the original.
-        assert len(emitted_ids) == 1
-        synthetic_id = next(iter(emitted_ids))
-        assert synthetic_id != original_id
-        assert synthetic_id.startswith("hook_askuserquestion_")
+        payload = next(p for name, p in orch.events if name == "ask_user_question.redirected")
+        assert payload["caller_id"] == "test_agent"
+        assert payload["questions_count"] == 2
 
     def test_negative_empty_questions_list(self) -> None:
         """Empty questions list: gateway NOT called; deny with guidance message."""
@@ -274,46 +233,25 @@ class TestAskUserQuestionHook:
         assert result == {}
         assert not orch._gateway_called
 
-    def test_gateway_exception_sets_is_error_true(self) -> None:
-        """When gateway raises, tool_result has is_error=True and answer is error string."""
-
-        class ErrorOrch(FakeOrchForHooks):
-            async def gateway_ask_user_structured(self, caller_id, questions, context):
-                raise RuntimeError("simulated gateway failure")
-
-        orch = ErrorOrch()
+    def test_gateway_never_invoked_even_when_present(self) -> None:
+        """Sanity: even if the orchestrator exposes gateway_ask_user_structured,
+        the hook must not call it. The agent's redirect to mcp__beidou__ask_user
+        is the only path that should reach the gateway (via leader chain).
+        """
+        orch = FakeOrchForHooks(gateway_answer="leak")
         hook = _get_pretooluse_hook(orch)
 
-        input_data = {
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [{"question": "OK?", "header": "", "options": []}]},
-        }
-        result = asyncio.run(hook(input_data, tool_use_id=None, context=None))
+        for q in (
+            {"question": "Q1?", "header": "h", "options": []},
+            {"question": "Q2?", "header": "h2", "options": [{"label": "A", "description": "a"}, {"label": "B", "description": "b"}]},
+        ):
+            asyncio.run(
+                hook(
+                    {"tool_name": "AskUserQuestion", "tool_input": {"questions": [q]}},
+                    tool_use_id=None,
+                    context=None,
+                )
+            )
 
-        # tool_result must have is_error=True.
-        tool_result_payload = next(p for name, p in orch.events if name == "tool_result")
-        assert tool_result_payload["is_error"] is True
-
-        # The deny reason should contain the error description.
-        hs_out = result.get("hookSpecificOutput", {})
-        assert "RuntimeError" in hs_out.get("permissionDecisionReason", "")
-
-    def test_multi_question_passthrough(self) -> None:
-        """Multiple questions are passed to gateway unchanged — no composite flattening."""
-        orch = FakeOrchForHooks(gateway_answer="both answered")
-        hook = _get_pretooluse_hook(orch)
-
-        questions_in = [
-            {"question": "First question?", "header": "First", "options": []},
-            {"question": "Second question?", "header": "Second", "options": []},
-        ]
-        input_data = {
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": questions_in},
-        }
-        asyncio.run(hook(input_data, tool_use_id=None, context=None))
-
-        assert orch._gateway_called
-        _, questions_received, _ = orch._gateway_calls[0]
-        # Both sub-questions must arrive as-is.
-        assert questions_received == questions_in
+        assert not orch._gateway_called
+        assert len(orch._gateway_calls) == 0

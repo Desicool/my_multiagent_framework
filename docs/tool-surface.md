@@ -151,6 +151,16 @@ chain. There is no timeout. Internal escalation paths (watchdog,
 contract-violation review) wrap their plain-text prompts as a single
 free-text question (`options: []`).
 
+**Raw `AskUserQuestion` is rejected.** The SDK-builtin `AskUserQuestion`
+tool is intercepted by the `on_ask_user_question` PreToolUse hook
+(`beidou/agent/hooks.py`). The hook returns
+`permissionDecision="deny"` with a `permissionDecisionReason` that points
+the agent at `mcp__beidou__ask_user`. The hook does NOT call the gateway
+and does NOT synthesize tool result events — every user-question must
+traverse `mcp__beidou__ask_user` so the leader chain can answer or
+escalate locally before the question reaches the user. The hook emits a
+single `ask_user_question.redirected` observability event.
+
 ---
 
 ## answer_question

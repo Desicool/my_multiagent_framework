@@ -145,10 +145,16 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
     """
 
     async def on_ask_user_question(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
-        """Intercept raw AskUserQuestion tool calls and route them to the human gateway.
+        """Reject raw AskUserQuestion calls; redirect the agent to mcp__beidou__ask_user.
 
-        The SDK emits ``permissionDecision="deny"`` with the user's answer as
-        ``permissionDecisionReason`` so the model receives the answer and proceeds.
+        Per docs/orchestration.md, user-question routing in Beidou must traverse
+        the leader chain (orchestrator.gateway_ask_via_chain) so each leader can
+        answer locally before the question surfaces to the user. The
+        mcp__beidou__ask_user primitive handles that routing. Earlier versions
+        of this hook synthesized fake tool_called/tool_result events and called
+        gateway_ask_user_structured directly, which both (a) bypassed the
+        leader chain and (b) followed the same hook-synth bug class fixed in
+        commit 82d5290 (envelope_missing). Now this hook is deny-only.
         """
         # Defensive guard -- HookMatcher should filter, but be safe.
         if input_data.get("tool_name") != "AskUserQuestion":
@@ -156,61 +162,39 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
 
         raw_input = input_data.get("tool_input") or {}
         questions = raw_input.get("questions") or []
-        if not isinstance(questions, list) or not questions:
-            # Nothing to ask -- deny with a clear reason so the model knows to use ask_user.
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        "AskUserQuestion received no questions. "
-                        "Use mcp__beidou__ask_user(question, context_hint) instead."
-                    ),
-                }
-            }
 
-        # Use a fresh synthetic id so the hook-emitted pair is distinguishable
-        # from any drain-loop pair on the original tool_use_id.
-        synthetic_tool_use_id = f"hook_askuserquestion_{uuid.uuid4().hex[:8]}"
-        started = time.time()
         orch.emit_event(
-            "tool_called",
-            {
-                "ts": started,
-                "caller_id": caller_id,
-                "tool_use_id": synthetic_tool_use_id,
-                "name": "AskUserQuestion",
-                "input": raw_input,
-            },
-        )
-
-        # TODO(post-m4g): gateway_ask_user (string-only) is now unused; remove from orchestrator.py in a cleanup pass.
-        is_error = False
-        answer_text: str
-        try:
-            result = await orch.gateway_ask_user_structured(caller_id, questions, None)
-            answer_text = result.get("answer_text", "")
-        except Exception as exc:  # noqa: BLE001 -- gateway can be diverse
-            is_error = True
-            answer_text = f"ask_user failed: {type(exc).__name__}: {exc}"
-
-        duration_ms = int(round((time.time() - started) * 1000))
-        orch.emit_event(
-            "tool_result",
+            "ask_user_question.redirected",
             {
                 "ts": time.time(),
                 "caller_id": caller_id,
-                "tool_use_id": synthetic_tool_use_id,
-                "duration_ms": duration_ms,
-                "is_error": is_error,
+                "questions_count": len(questions) if isinstance(questions, list) else 0,
             },
         )
+
+        if not isinstance(questions, list) or not questions:
+            reason = (
+                "AskUserQuestion received no questions. "
+                "Beidou routes user questions through mcp__beidou__ask_user "
+                "so the leader chain can answer or escalate. "
+                "Spec: docs/tool-surface.md#ask_user."
+            )
+        else:
+            reason = (
+                "AskUserQuestion is not the user-bridge in Beidou. "
+                "User-question routing must go through "
+                "mcp__beidou__ask_user(questions=[...], context=...) so the "
+                "leader chain can answer or escalate before the question "
+                "surfaces to the user. Resubmit your questions list via that "
+                "primitive. Spec: docs/tool-surface.md#ask_user, "
+                "docs/orchestration.md."
+            )
 
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": answer_text,
+                "permissionDecisionReason": reason,
             }
         }
 

@@ -212,6 +212,24 @@ ground truth) and investigate the dedup logic.
 
 ---
 
+### `ask_user_question.redirected`
+
+Emitted by `on_ask_user_question` PreToolUse hook
+(`beidou/agent/hooks.py`) when a model emits the SDK-builtin
+`AskUserQuestion` tool. The hook denies the call (with a redirect reason
+pointing the agent at `mcp__beidou__ask_user`) and emits this event for
+observability. No tool_called/tool_result pair is synthesized — earlier
+versions did, which made the redirect indistinguishable from a real
+gateway call in the event stream.
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at emission. |
+| `caller_id` | The agent that emitted the raw `AskUserQuestion`. |
+| `questions_count` | Length of the `questions` array (or `0` if missing/malformed). |
+
+---
+
 ### `question_asked`
 
 Emitted by `QuestionBroker` when an agent calls `ask_user`. The `prompt`
