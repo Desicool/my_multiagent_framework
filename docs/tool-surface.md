@@ -226,7 +226,16 @@ future. The escalator's tool call ends as soon as the forward is sent.
 
 ---
 
-## report_status
+## report_status (DEPRECATED)
+
+> **Deprecated.** Use `signal_review` for review checkpoints and
+> `request_termination` for lifecycle end. This primitive is preserved as a
+> compatibility shim: `state="done"` maps to `signal_review` + internal
+> `termination_requested` flag. Non-done states (`working`, `idle`, `blocked`)
+> remain as pure status recorders. Migration: replace
+> `report_status(state="done", detail=...)` with `signal_review(detail=...)`,
+> and optionally follow with `request_termination()` when the agent's entire
+> work is truly complete.
 
 **Kind:** Agent-Beidou. Pushes a state update into observability and may
 trigger liveness evaluation.
@@ -270,6 +279,97 @@ trigger liveness evaluation.
     the root's inbox so the next turn continues).
 - Triggers a liveness re-evaluation on the caller's reviewer (leader or,
   for the root, the user) — see `orchestration.md`.
+
+---
+
+## signal_review
+
+**Kind:** Agent-Beidou. Signals the agent's leader that deliverables are
+ready for review. Triggers the review gate and watchdog escalation on the
+leader. Can be called multiple times per lifecycle (reentrant).
+
+**Input schema**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `detail` | string | yes | Must contain `[REVIEW REQUIRED]` or `[ITERATION READY]` envelope (case-insensitive substring check). Free-form summary including deliverables, open questions, and leader action options. |
+
+**Output schema**
+```
+{ "recorded": true, "review_pending": true }
+```
+
+**Error cases**
+- `envelope_missing`: `detail` does not contain `[REVIEW REQUIRED]` or
+  `[ITERATION READY]` (case-insensitive). The call is rejected.
+  - `reason: "detail_empty"` — `detail` is null or whitespace-only.
+  - `reason: "envelope_missing"` — `detail` is non-empty but lacks the
+    required marker.
+
+**Side effects**
+- Sets `review_pending=True` and `review_pending_ts` on the agent record.
+  If already `review_pending=True`, updates `detail` and resets timestamp
+  (the previous pending review is superseded).
+- Emits a `status` event with `state="review_pending"`.
+- For non-root agents: the `detail` is delivered to the leader's inbox as
+  a `review_report` message. This triggers the leader's review gate (blocks
+  non-review tools until the leader responds).
+- For the root agent: the `detail` is routed through the human gateway.
+- Triggers watchdog Pass A: if the leader does not respond within the
+  escalation threshold, the watchdog pings and eventually escalates.
+- Leader clearing: when the leader sends a `send_message` to the reviewing
+  agent, `review_pending` is automatically cleared and a
+  `review.acknowledged` event is emitted. When the leader calls
+  `terminate_child`, the agent is terminated (review implicitly approved).
+
+**Lifecycle semantics**
+- Does NOT check plan completion (unlike the deprecated `report_status(done)`).
+  An agent may signal review mid-plan to report iteration progress.
+- Does NOT imply lifecycle end. The agent remains alive after signaling and
+  can continue working after the leader acknowledges.
+- Typical patterns:
+  - **One-shot worker**: `signal_review(...)` → leader terminates → agent dies.
+  - **Iterative leader**: `signal_review(...)` → leader ACKs → agent continues
+    next iteration → `signal_review(...)` again → ... → `request_termination()`.
+
+---
+
+## request_termination
+
+**Kind:** Agent-Beidou. Declares that the agent's entire lifecycle work is
+complete and requests the leader to terminate it. This is the "I'm truly
+done" signal.
+
+**Input schema**
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `detail` | string | no | Optional summary of completed work. |
+
+**Output schema**
+```
+{ "recorded": true, "termination_requested": true }
+```
+
+**Error cases**
+- `plan_incomplete`: The agent has an active plan with unfinished tasks.
+  All plan tasks must be `done` or `failed` before requesting termination.
+
+**Side effects**
+- Sets `termination_requested=True` on the agent record.
+- Emits a `status` event with `state="termination_requested"`.
+- Triggers watchdog: the leader is notified that a termination request is
+  pending (same escalation ladder as review_pending).
+- Does NOT set `review_pending` — if the agent wants both a review and
+  termination, call `signal_review(...)` first, then `request_termination()`.
+- Leader response: `terminate_child` (execute) or `send_message` (reject;
+  agent continues working, flag cleared).
+
+**Lifecycle semantics**
+- This is typically the last primitive an agent calls.
+- Unlike `signal_review`, this IS lifecycle-terminal in intent.
+- The leader may reject the request (via `send_message`), in which case
+  `termination_requested` is cleared and the agent should continue working.
+- An agent that has called `request_termination()` should end its turn and
+  wait for the leader's decision. It should NOT call further tools.
 
 ---
 

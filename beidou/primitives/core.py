@@ -13,7 +13,9 @@ Summary of primitives (full spec in ``docs/tool-surface.md``):
 * :func:`send_message`         -- A2A enqueue to recipient inbox.
 * :func:`list_peers`           -- Snapshot of peers in ``team``/``children``/``all`` scope.
 * :func:`ask_user`             -- Routes a question to the human gateway.
-* :func:`report_status`        -- Records agent state and emits a status event.
+* :func:`signal_review`        -- Signals work is ready for leader review.
+* :func:`request_termination`  -- Requests final lifecycle termination.
+* :func:`report_status`        -- DEPRECATED for done; records agent state and emits a status event.
 * :func:`declare_plan`         -- Validate DAG + persist plan; no team/agent created.
 * :func:`remove_plan`          -- Remove caller's active plan (hard-fork for replanning).
 * :func:`spawn_agent`          -- Gated spawn from plan; lazily creates team on first call.
@@ -40,7 +42,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 # ---------------------------------------------------------------------------
 
 INBOX_CAP = 1000              # limits.md #3
-MAX_DEPTH = 5                 # limits.md #2
+MAX_DEPTH = 8                 # limits.md #2
 CONTRACT_STRIKES = 3          # limits.md #5 (used by orchestrator, not primitives)
 CRASH_STRIKES = 3             # agent-runtime.md §5.1; NOT in limits.md.
 
@@ -629,6 +631,102 @@ async def escalate_question(
     return {"ok": True, "qid": qid, "new_holder": out.get("new_holder")}
 
 
+async def signal_review(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+    detail: str,
+    _legacy_done: bool = False,
+) -> dict:
+    """Signal that work is ready for leader review.
+
+    Replaces the ``state="done"`` path of ``report_status``.
+    The agent remains alive; completion is a state, not an exit.
+    See docs/tool-surface.md#signal_review.
+    """
+    detail_text = (detail or "").strip()
+    detail_lower = detail_text.lower()
+    if "[review required]" not in detail_lower and "[iteration ready]" not in detail_lower:
+        raise PrimitiveError(
+            "envelope_missing",
+            "signal_review requires [REVIEW REQUIRED] or [ITERATION READY] envelope "
+            "to appear in detail. Resubmit with the full envelope (role, agent, "
+            "Deliverables, Open questions / risks, Leader action required) inside "
+            "detail. Spec: docs/tool-surface.md#signal_review.",
+            reason="envelope_missing" if detail_text else "detail_empty",
+        )
+
+    # Set completion_pending on the agent record (field rename to
+    # review_pending will land in orchestrator.py separately).
+    rec = getattr(orch, "_agents", {}).get(caller_id)
+    if rec is not None:
+        rec.completion_pending = True
+        rec.completion_pending_ts = time.time()
+
+    # Record status so leader-side list_pending_reviews picks it up.
+    orch.record_status(caller_id, "done", detail)
+    orch.emit_event(
+        "status",
+        {
+            "agent_id": caller_id,
+            "state": "review_pending",
+            "detail": detail,
+            "legacy_done": _legacy_done,
+            "ts": time.time(),
+        },
+    )
+    return {"recorded": True, "review_pending": True}
+
+
+async def request_termination(
+    orch: Orchestrator,
+    *,
+    caller_id: str,
+    detail: Optional[str] = None,
+) -> dict:
+    """Request final lifecycle termination after review is approved.
+
+    The leader must have already approved the work; this primitive signals
+    that the agent is ready to be torn down. See docs/tool-surface.md#request_termination.
+    """
+    # Plan-incomplete guard (same as legacy report_status done-path).
+    plan_id = orch._active_plan_by_agent.get(caller_id)
+    if plan_id is not None:
+        plan = orch._plans.get(plan_id)
+        if plan is not None:
+            incomplete = [
+                t.id for t in plan.tasks.values()
+                if t.status not in ("done", "failed")
+            ]
+            if incomplete:
+                raise PrimitiveError(
+                    "plan_incomplete",
+                    f"cannot request termination: {len(incomplete)} plan task(s) "
+                    f"unfinished: {', '.join(incomplete)}. Mark each task "
+                    f"done via update_plan_task before requesting termination. "
+                    f"Spec: docs/tool-surface.md#declare_plan.",
+                    plan_id=plan_id,
+                    incomplete_task_ids=incomplete,
+                )
+
+    # Mark completion_pending (termination_requested field rename is pending).
+    rec = getattr(orch, "_agents", {}).get(caller_id)
+    if rec is not None:
+        rec.completion_pending = True
+        rec.completion_pending_ts = time.time()
+
+    orch.emit_event(
+        "status",
+        {
+            "agent_id": caller_id,
+            "state": "termination_requested",
+            "detail": detail,
+            "ts": time.time(),
+        },
+    )
+    return {"recorded": True, "termination_requested": True}
+
+
 async def report_status(
     orch: Orchestrator,
     *,
@@ -636,7 +734,11 @@ async def report_status(
     state: str,
     detail: Optional[str] = None,
 ) -> dict:
-    """Record state + emit event. See docs/tool-surface.md#report_status."""
+    """Record state + emit event. See docs/tool-surface.md#report_status.
+
+    DEPRECATED for state="done": use signal_review + request_termination instead.
+    Non-done states (working, idle, blocked) remain unchanged.
+    """
     if state not in ("working", "idle", "blocked", "done"):
         raise PrimitiveError(
             "invalid_state",
@@ -646,18 +748,8 @@ async def report_status(
         )
 
     if state == "done":
-        detail_text = (detail or "").strip()
-        if "[review required]" not in detail_text.lower():
-            raise PrimitiveError(
-                "envelope_missing",
-                "report_status(state='done') requires the [REVIEW REQUIRED] envelope "
-                "to appear in detail. Resubmit with the full envelope (role, agent, "
-                "Deliverables, Open questions / risks, Leader action required) inside "
-                "detail. Spec: docs/tool-surface.md#report_status.",
-                reason="envelope_missing" if detail_text else "detail_empty",
-            )
-
-    if state == "done":
+        # Deprecated path -- delegate to signal_review with legacy flag.
+        # Preserve the old plan-incomplete guard for backward compat.
         plan_id = orch._active_plan_by_agent.get(caller_id)
         if plan_id is not None:
             plan = orch._plans.get(plan_id)
@@ -677,8 +769,20 @@ async def report_status(
                         incomplete_task_ids=incomplete,
                     )
 
-    # tool-surface.md calls detail "required in practice" when state==done
-    # but does NOT enforce -- we record whatever we're given.
+        orch.emit_event(
+            "primitive.deprecated",
+            {
+                "name": "report_status",
+                "state": "done",
+                "agent_id": caller_id,
+                "ts": time.time(),
+            },
+        )
+        return await signal_review(
+            orch, caller_id=caller_id, detail=detail or "", _legacy_done=True
+        )
+
+    # Non-done states: keep existing behaviour.
     orch.record_status(caller_id, state, detail)
     orch.emit_event(
         "status",
@@ -725,6 +829,19 @@ async def create_team(
             f"(max {MAX_DEPTH}, limits.md #2)",
             caller_depth=caller_depth,
             max_depth=MAX_DEPTH,
+        )
+
+    if caller_depth + 1 > 6:
+        orch.emit_event(
+            "depth_warning",
+            {
+                "caller_id": caller_id,
+                "caller_depth": caller_depth,
+                "new_depth": caller_depth + 1,
+                "max_depth": MAX_DEPTH,
+                "task_id": task_id,
+                "ts": time.time(),
+            },
         )
 
     rules_list = list(rules) if rules else []
@@ -1067,6 +1184,8 @@ __all__ = [
     "ask_user",
     "answer_question",
     "escalate_question",
+    "signal_review",
+    "request_termination",
     "report_status",
     "create_team",
     "terminate_child",

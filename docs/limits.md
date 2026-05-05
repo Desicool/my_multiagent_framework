@@ -18,9 +18,9 @@ approval. See `README.md` for the approval rule.
 
 | | |
 |---|---|
-| **Value** | **5 (team nesting depth; depth 0 = teamless agent)** |
-| Rationale | Bounds the depth of the cascade termination and the liveness walk. 5 is plenty for orchestrator -> phase -> task -> spike -> probe; deeper usually indicates a missing aggregation step. |
-| Enforced in | `spawn_agent` primitive (and legacy `create_team` primitive). A teamless agent (depth 0) spawning its first team creates a depth-1 team. Beidou reads the caller's current team depth from the registry, rejects with `depth_exceeded` when `caller_team_depth + 1 > 5`. For `spawn_agent`, the depth check is deferred to spawn time (not `declare_plan` time) because `declare_plan` is a pure-data primitive that does not know about the runtime team graph. |
+| **Value** | **8 (team nesting depth; depth 0 = teamless agent)** |
+| Rationale | Raised from 5 to accommodate the coding_v2 coordinator topology (orchestrator → coordinator → team_leader → workers → sub-delegates). A soft warning is emitted at depth > 6 for monitoring. The cap still bounds cascade termination and liveness walk; deeper usually indicates a missing aggregation step. |
+| Enforced in | `spawn_agent` primitive (and legacy `create_team` primitive). A teamless agent (depth 0) spawning its first team creates a depth-1 team. Beidou reads the caller's current team depth from the registry, rejects with `depth_exceeded` when `caller_team_depth + 1 > 8`. For `spawn_agent`, the depth check is deferred to spawn time (not `declare_plan` time) because `declare_plan` is a pure-data primitive that does not know about the runtime team graph. Depth > 6 emits a `depth_warning` event to observability sinks. |
 | Change policy | Requires user approval to change. |
 
 ## 3. Per-agent inbox size cap

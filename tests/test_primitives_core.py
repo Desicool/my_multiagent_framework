@@ -622,9 +622,12 @@ def test_report_status_records_and_emits():
 
     async def body():
         out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        assert out == {"recorded": True}
+        # report_status(state="done") now delegates to signal_review (deprecated shim).
+        assert out == {"recorded": True, "review_pending": True}
         assert o.statuses == [("A", "done", _ENVELOPE)]
         assert any(ev[0] == "status" for ev in o.events)
+        # Deprecation event should be emitted.
+        assert any(ev[0] == "primitive.deprecated" for ev in o.events)
 
     run(body())
 
@@ -649,7 +652,7 @@ class TestReportStatusEnvelope:
     """Envelope validation: state='done' requires [REVIEW REQUIRED] in detail."""
 
     def test_done_with_envelope_in_detail_succeeds(self) -> None:
-        """state='done', detail with [REVIEW REQUIRED] → success."""
+        """state='done', detail with [REVIEW REQUIRED] → success (deprecated shim)."""
         o = _build()
 
         async def body():
@@ -659,7 +662,7 @@ class TestReportStatusEnvelope:
                 state="done",
                 detail="[REVIEW REQUIRED]\nrole=foo agent=A\nDeliverables: done.\n",
             )
-            assert out == {"recorded": True}
+            assert out == {"recorded": True, "review_pending": True}
 
         run(body())
 
@@ -710,7 +713,7 @@ class TestReportStatusEnvelope:
                 state="done",
                 detail="[review required]\nrole=foo agent=A\nDeliverables: done.",
             )
-            assert out == {"recorded": True}
+            assert out == {"recorded": True, "review_pending": True}
 
         run(body())
 
@@ -725,7 +728,7 @@ class TestReportStatusEnvelope:
                 state="done",
                 detail="   [REVIEW REQUIRED]\nrole=foo agent=A\nDeliverables: done.",
             )
-            assert out == {"recorded": True}
+            assert out == {"recorded": True, "review_pending": True}
 
         run(body())
 
@@ -807,7 +810,7 @@ def test_report_status_done_with_incomplete_plan_raises():
 
 
 def test_report_status_done_with_all_tasks_finished_succeeds():
-    """report_status(state='done') when all tasks are done/failed must return {recorded: True}."""
+    """report_status(state='done') when all tasks are done/failed must succeed (deprecated shim)."""
     o = _build()
     plan = _make_plan(
         plan_id="plan_2",
@@ -819,7 +822,7 @@ def test_report_status_done_with_all_tasks_finished_succeeds():
 
     async def body():
         out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        assert out == {"recorded": True}
+        assert out == {"recorded": True, "review_pending": True}
 
     run(body())
 
@@ -832,7 +835,7 @@ def test_report_status_done_with_no_active_plan_succeeds():
 
     async def body():
         out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        assert out == {"recorded": True}
+        assert out == {"recorded": True, "review_pending": True}
 
     run(body())
 

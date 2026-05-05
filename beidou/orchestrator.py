@@ -2121,6 +2121,18 @@ class Orchestrator:
                         max_depth=MAX_DEPTH,
                     )
 
+                if new_depth > 6:
+                    self.emit_event(
+                        "depth_warning",
+                        {
+                            "caller_id": caller_id,
+                            "new_depth": new_depth,
+                            "max_depth": MAX_DEPTH,
+                            "task_id": task_id,
+                            "ts": time.time(),
+                        },
+                    )
+
                 new_team_id = f"tm_{uuid.uuid4().hex[:8]}"
                 workspace_path = self._provision_team_workspace(new_team_id)
 

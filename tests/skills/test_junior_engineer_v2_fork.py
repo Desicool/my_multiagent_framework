@@ -74,23 +74,22 @@ def test_v2_body_forbids_writing_code_directly():
     assert "NEVER write code yourself" in body
 
 
-def test_orchestrator_v2_spawns_junior_engineer_v2_for_impl_task():
-    """The 'impl' role in orchestrator_v2's plan declares skill=junior_engineer_v2."""
-    body = _ORCH_V2.read_text()
-    # The impl task line should reference the v2 leader, not v1.
-    assert 'skill: "junior_engineer_v2"' in body
-    # Defensive check: no remaining bare 'skill: "junior_engineer"' in the
-    # plan-declaration blocks (v1 leaf workers are spawned by the leader,
-    # not by the orchestrator directly, so the orchestrator body should
-    # not name v1 junior_engineer as a skill: value).
-    assert 'skill: "junior_engineer"' not in body, (
-        "orchestrator_v2 should spawn junior_engineer_v2 (leader); "
-        "v1 junior_engineer is spawned by the leader, not by the orchestrator"
+def test_dev_team_leader_spawns_junior_engineer_v2_for_impl_task():
+    """dev_team_leader's plan declares skill=junior_engineer_v2 for impl tasks."""
+    dev_lead = _SKILLS_ROOT / "coding_v2" / "dev_team_leader" / "SKILL.md"
+    body = dev_lead.read_text()
+    assert 'skill: "junior_engineer_v2"' in body, (
+        "dev_team_leader should spawn junior_engineer_v2 (leader) per iteration"
     )
 
 
-def test_orchestrator_v2_allowed_skills_includes_v2_leader():
-    """orchestrator's frontmatter skills: list permits spawning junior_engineer_v2."""
+def test_orchestrator_v2_allowed_skills_includes_coordinators():
+    """orchestrator_v2's frontmatter skills: list includes phase coordinators."""
     body = _ORCH_V2.read_text()
-    # Frontmatter list entries appear as "  - junior_engineer_v2".
-    assert "  - junior_engineer_v2\n" in body
+    assert "  - phase1_coordinator\n" in body
+    assert "  - phase2_coordinator\n" in body
+    # orchestrator no longer references v1 or v2 leaf skills directly.
+    assert "  - junior_engineer_v2\n" not in body, (
+        "orchestrator_v2 delegates to coordinators; it no longer lists "
+        "junior_engineer_v2 directly"
+    )

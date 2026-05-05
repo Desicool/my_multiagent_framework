@@ -270,7 +270,7 @@ def test_report_status_happy_path():
             cfg, "report_status", {"state": "done", "detail": _MCP_ENVELOPE}
         )
         payload = _text_payload(result)
-        assert payload == {"recorded": True}
+        assert payload == {"recorded": True, "review_pending": True}
         assert ("A", "done", _MCP_ENVELOPE) in o.statuses
 
     run(body())
