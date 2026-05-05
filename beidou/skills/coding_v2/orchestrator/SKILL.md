@@ -19,9 +19,12 @@ allowed-tools:
   - signal_review
   - report_status
   - terminate_child
-  - ask_user
   - escalate_question
   - list_pending_reviews
+  # ask_user intentionally NOT allowed — the thin orchestrator escalates
+  # all [INBOX QUESTION] items via escalate_question. Calling ask_user
+  # creates a duplicate question with a new qid, leaving the original
+  # asker (e.g. PM) parked and blocked indefinitely.
 skills:
   - phase1_coordinator
   - phase2_coordinator
