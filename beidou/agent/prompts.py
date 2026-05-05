@@ -53,7 +53,18 @@ Use send_message only for mid-task progress updates; it is NOT the completion
 mechanism.
 
 Inter-agent communication uses Beidou primitives only — never shell, files,
-or environment variables to talk to other agents."""
+or environment variables to talk to other agents.
+
+[REPLY OBLIGATION]
+When you receive an inquiry-type message (the sender called send_message
+with expects_reply=True, you'll see it framed as an inquiry in your inbox),
+the harness blocks every other tool call until you reply. Reply via
+mcp__beidou__send_message(to=<sender>, content=...). Read tools, status
+reporting, ask_user / answer_question / escalate_question, terminate_child,
+and list_pending_reviews are exempt; everything else is denied with
+"Cannot call <tool> — you have unreplied inquiries from: ...". Reply first
+(an "acknowledged" or "deferred until X" counts), then continue.
+Spec: docs/agent-runtime.md#reply-obligation, docs/tool-surface.md#send_message."""
 
 _COMPLETION_HANDOFF_BLOCK = """\
 [COMPLETION HANDOFF CONTRACT]

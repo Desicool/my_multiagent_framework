@@ -367,6 +367,31 @@ Any other tool call is denied with a directive message naming the pending
 child and the two valid resolution actions. Each denial emits
 `review_gate.denied`.
 
+### Reply obligation (PreToolUse interceptor)
+
+When an agent receives a `kind="inquiry"` message (sent via
+`send_message(..., expects_reply=True)`), the orchestrator records a pending
+reply obligation on the recipient's `AgentRecord.pending_replies` and sets
+`reply_gate_active=True` at turn-end if any obligations remain unreplied.
+
+While `reply_gate_active=True`, every tool call is screened by the
+`on_reply_gate` PreToolUse hook (`beidou/agent/hooks.py`). Only tools in
+`REPLY_GATE_ALLOWLIST` may proceed (read tools, status reporting,
+ask_user / answer_question / escalate_question, send_message itself,
+terminate_child, list_pending_reviews). Every other tool is denied with a
+`permissionDecisionReason` naming the pending sender(s) and directing the
+agent to reply via `mcp__beidou__send_message(to=<sender>, content=...)`
+first. Each denial emits `reply_gate.denied`.
+
+The gate clears when the agent calls `send_message` to each unreplied
+sender; the `on_send_message_reply` PostToolUse hook decrements obligations
+and flips `reply_gate_active` back to False once the dict is empty.
+
+This obligation is enforced even when the agent has chosen to defer or
+ignore the inquiry. The agent must explicitly reply ("acknowledged",
+"deferred until X", or any substantive response) before continuing other
+work.
+
 ### New events summary
 
 | Event | Emitted by | Meaning |
@@ -378,6 +403,7 @@ child and the two valid resolution actions. Each denial emits
 | `liveness.nudge` | `orchestrator.py::_watchdog_tick` | Idle agent nudged (Pass B). |
 | `liveness.escalated_to_user` | `orchestrator.py::_watchdog_tick` | Idle agent nudged 3× without progress; escalated to user gateway. |
 | `review_gate.denied` | `agent/hooks.py::on_review_gate` | Leader tried to call a non-allowlisted tool while a child review is pending. |
+| `reply_gate.denied` | `agent/hooks.py::on_reply_gate` | Agent tried to call a non-allowlisted tool while a reply obligation was pending. |
 | `watchdog.exception` | `orchestrator.py::_watchdog_loop` | Exception inside `_watchdog_tick`; watchdog continues. |
 
 ## 4. Prompt-side contract rules
