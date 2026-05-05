@@ -147,7 +147,7 @@ def create_app(orch=None, task_id=None) -> "FastAPI":
         # Sort ascending by ts, then apply limit.
         filtered.sort(key=lambda e: e.get("ts") or 0.0)
         if len(filtered) > limit:
-            filtered = filtered[-limit:]
+            filtered = filtered[:limit]
         cursor = max((e.get("ts") or 0.0 for e in filtered), default=since)
         return {"events": filtered, "cursor": cursor}
 
