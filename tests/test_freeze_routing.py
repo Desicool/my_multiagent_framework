@@ -1,14 +1,14 @@
-"""Tests for FREEZE probe delivery synthesis gate (bd issue xylz).
+"""Tests for orphaned-FREEZE detection (bd issues xylz, 13sp).
 
-The runtime gate in loop.py (detect_orphaned_freeze + ResultMessage branch)
-catches v2 design-committee agents that wrote [FREEZE OK] / [FREEZE NACK] in
-their assistant text but failed to deliver it via send_message.
+The detection helper ``detect_orphaned_freeze`` reports v2 design-committee
+agents that wrote [FREEZE OK] / [FREEZE NACK] in assistant text but did not
+deliver via send_message. Detection is unchanged across the 13sp refactor;
+the loop integration site formerly synthesised delivery to the leader and
+now nudges the agent itself to use send_message (see loop.py "ORPHANED
+FREEZE NUDGE GATE").
 
-Tests:
-1. test_freeze_ok_synthesized_when_idle_report_status_on_v2_committee
-2. test_freeze_ok_passthrough_when_send_message_already_called
-3. test_freeze_nack_synthesized_with_reason_capture
-4. test_no_synthesis_for_v1_or_non_committee_skills
+These tests cover the detection function directly. Loop integration is
+exercised by end-to-end smoke runs of coding_v2.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def _turn_tool_info_with_send_message_to_wrong_target() -> dict:
 
 
 def test_freeze_ok_synthesized_when_idle_report_status_on_v2_committee():
-    """[FREEZE OK] in text + report_status(idle) but no send_message → synthesize."""
+    """[FREEZE OK] in text + report_status(idle) but no send_message → orphan detected."""
     assistant_text = (
         "I have reviewed requirements.md and it is stable.\n"
         "[FREEZE OK]\n"
@@ -75,7 +75,7 @@ def test_freeze_ok_synthesized_when_idle_report_status_on_v2_committee():
 
 
 def test_freeze_ok_passthrough_when_send_message_already_called():
-    """[FREEZE OK] in text AND send_message already delivered it → no synthesis."""
+    """[FREEZE OK] in text AND send_message already delivered it → no orphan."""
     assistant_text = (
         "Requirements are stable. [FREEZE OK]\n"
     )
@@ -104,7 +104,7 @@ def test_freeze_nack_synthesized_with_reason_capture():
 
 
 def test_no_synthesis_for_v1_or_non_committee_skills():
-    """Synthesis gate only fires for V2 design-committee skill names.
+    """Nudge gate only fires for V2 design-committee skill names.
 
     The detect_orphaned_freeze helper itself is skill-agnostic (the skill check
     lives in the loop integration site). This test verifies that the set
@@ -130,7 +130,7 @@ def test_no_synthesis_for_v1_or_non_committee_skills():
 
 
 def test_freeze_ok_with_send_message_to_wrong_target_still_synthesizes():
-    """send_message went to a peer, not the leader — still orphaned."""
+    """send_message went to a peer, not the leader — still detected as orphan."""
     assistant_text = "[FREEZE OK]\n"
     turn_tool_info = _turn_tool_info_with_send_message_to_wrong_target()
 
@@ -163,7 +163,7 @@ def test_no_synthesis_when_assistant_text_is_none():
 
 
 def test_no_synthesis_when_no_freeze_in_text():
-    """No FREEZE pattern in text → no synthesis."""
+    """No FREEZE pattern in text → no orphan."""
     assistant_text = "All done, no freeze response needed."
     result = detect_orphaned_freeze(assistant_text, {}, LEADER_ID)
     assert result is None

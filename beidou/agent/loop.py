@@ -478,6 +478,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
     _turn_result_info: dict[str, bool] = {}
     # Agents already nudged by the harness (persists across turns to prevent duplicates).
     _nudged_agents: set[str] = set()
+    # Agents already nudged about orphaned FREEZE replies (one-shot per agent).
+    _freeze_nudged_agents: set[str] = set()
 
     # Build the streaming-input generator that parks the agent between turns
     # on its per-agent queue. The generator owns terminate detection and sets
@@ -841,31 +843,54 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
                         # All obligations cleared this turn.
                         _drain_rec.reply_gate_active = False
 
-                # --- FREEZE SYNTHESIS GATE ---
-                # Catches the failure mode where a v2 design-committee agent wrote
-                # "[FREEZE OK]" or "[FREEZE NACK]" in its assistant text but used
-                # report_status (dropped by hook) or no tool at all instead of
-                # send_message, so the leader never received the reply.
+                # --- ORPHANED FREEZE NUDGE GATE ---
+                # Catches the failure mode where a v2 design-committee agent
+                # wrote "[FREEZE OK]" or "[FREEZE NACK]" in assistant text but
+                # did not deliver via send_message (used report_status, plain
+                # text, or send_message to the wrong target).
+                #
+                # Earlier behaviour synthesised the delivery to the leader
+                # (loop impersonating the agent). That is exactly the bug
+                # class fixed by 82d5290: when the regex misfires, the leader
+                # acts on a degraded text copy. Now we nudge the agent itself
+                # to use send_message; the loop never delivers anything to
+                # the leader on the agent's behalf. See docs/coding-v2.md §5.
                 rec = orch._agents.get(spec.caller_id)  # type: ignore[attr-defined]
-                if rec is not None and getattr(rec, "skill_name", None) in V2_DESIGN_COMMITTEE_SKILLS:
+                if (
+                    rec is not None
+                    and getattr(rec, "skill_name", None) in V2_DESIGN_COMMITTEE_SKILLS
+                    and spec.caller_id not in _freeze_nudged_agents
+                ):
                     _most_recent = getattr(orch, "_most_recent_assistant_text", {})
                     _asst_text = _most_recent.get(spec.caller_id)
                     _freeze_result = detect_orphaned_freeze(_asst_text, _turn_tool_info, leader_id)
                     if _freeze_result is not None:
                         _freeze_kind, _freeze_content = _freeze_result
-                        orch.deliver_message(
-                            from_id=spec.caller_id,
-                            to_id=leader_id,
-                            body=_freeze_content,
-                            kind="user",
+                        nudge = (
+                            f"You wrote {_freeze_content!r} in your assistant "
+                            f"text but did not deliver it via send_message — "
+                            f"the leader received nothing. Your VERY NEXT "
+                            f"turn must call:\n"
+                            f"  mcp__beidou__send_message("
+                            f"to=\"{leader_id}\", "
+                            f"content=\"[FREEZE OK]\")\n"
+                            f"  # or content=\"[FREEZE NACK]: <reason>\"\n"
+                            f"Spec: docs/coding-v2.md §5 (Convergence and "
+                            f"freeze probe)."
                         )
+                        orch.deliver_message(
+                            from_id="beidou",
+                            to_id=spec.caller_id,
+                            body=nudge,
+                            kind="nudge",
+                        )
+                        _freeze_nudged_agents.add(spec.caller_id)
                         orch.emit_event(
-                            "freeze.synthesized_delivery",
+                            "freeze.nudge_injected",
                             {
                                 "caller_id": spec.caller_id,
                                 "leader_id": leader_id,
                                 "freeze_kind": _freeze_kind,
-                                "via": "loop_postdrain",
                                 "ts": time.time(),
                             },
                         )

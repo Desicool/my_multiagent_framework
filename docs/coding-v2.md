@@ -227,6 +227,14 @@ If a member is idle and fails to reply to the freeze probe within the window,
 the orchestrator's liveness watchdog (Pass B, `docs/agent-runtime.md` §3.1)
 will nudge it.
 
+If a member writes `[FREEZE OK]` / `[FREEZE NACK]` in its assistant text but
+fails to deliver it via `send_message` (e.g. the agent called `report_status`
+or no tool at all, or sent to the wrong target), the loop emits a one-shot
+nudge to **the agent itself** instructing it to use `send_message` on the
+next turn. The orchestrator does **not** synthesise the freeze response from
+text on the agent's behalf — leader-bound payloads always come from
+`send_message` calls made by the agent. Event: `freeze.nudge_injected`.
+
 ---
 
 ## 6. User approval gate
