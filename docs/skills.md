@@ -194,12 +194,30 @@ far:
    - `TodoWrite` — primary suppression (no env layer applies).
    Expand if new SDK shadow-tools surface in events.
 
-A third defense applies at the prompt layer:
+A third runtime defense backs up the SDK layer:
 
-3. **Skill prompt-level NEVER DOs.** The coding_v2 skill bodies
-   instruct models to use Beidou primitives and forbid the SDK
-   aliases (`SendMessage`, `TodoWrite`). This is the layer the model
-   internalizes; it is correctness commentary, not a runtime barrier.
+3. **PreToolUse `on_disallowed_alias` hook**
+   (`beidou/agent/hooks.py`). Registers a per-tool matcher for each
+   forbidden alias (currently `SendMessage` and `TodoWrite`). In
+   normal operation the SDK's `disallowed_tools` filters these tools
+   out before any hook fires, so this hook is a backstop. If a future
+   SDK regression or env config drift surfaces the tool to the model,
+   this hook converts the would-be silent SDK drop into a model-visible
+   `permissionDecision="deny"` with a `permissionDecisionReason` that
+   names the canonical primitive
+   (`mcp__beidou__send_message` / `declare_plan` + `report_status`)
+   and the spec section. Each deny emits `disallowed_alias.denied`
+   for observability. See
+   [`docs/tool-surface.md#forbidden-tools`](tool-surface.md#forbidden-tools).
+
+A fourth defense applies at the prompt layer:
+
+4. **Skill prompt-level NEVER DOs.** The base `[FORBIDDEN TOOLS]`
+   block in `_CONTRACT_BLOCK` (`beidou/agent/prompts.py`) plus the
+   coding_v2 skill bodies instruct models to use Beidou primitives
+   and forbid the SDK aliases (`SendMessage`, `TodoWrite`). This is
+   the layer the model internalizes; it is correctness commentary,
+   not a runtime barrier.
 
 All inter-agent messaging in Beidou MUST go through
 `mcp__beidou__send_message`. All in-conversation completion signals

@@ -573,12 +573,68 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             }
         }
 
+    _DISALLOWED_ALIAS_REASONS = {
+        "SendMessage": (
+            "Beidou uses mcp__beidou__send_message for inter-agent messaging; "
+            "the SDK SendMessage alias is not wired here. Call "
+            "mcp__beidou__send_message(to=<agent_id>, content=..., expects_reply=...) "
+            "instead. Spec: docs/tool-surface.md#send_message."
+        ),
+        "TodoWrite": (
+            "Beidou uses mcp__beidou__declare_plan + "
+            "mcp__beidou__update_plan_task for task tracking, and "
+            "mcp__beidou__report_status(state='done') for completion. TodoWrite "
+            "is blocked here because it competes with both. Spec: "
+            "docs/tool-surface.md#declare_plan, docs/tool-surface.md#report_status."
+        ),
+    }
+
+    async def on_disallowed_alias(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """Visible deny for SDK shadow tools (SendMessage, TodoWrite).
+
+        Defense-in-depth companion to ``options.disallowed_tools`` in
+        ``beidou/agent/loop.py``. The SDK layer normally drops these tools
+        before any PreToolUse hook fires, so in normal operation this hook
+        is a backstop. If a future SDK regression or env leak resurfaces
+        them, this hook turns the silent SDK drop into a model-visible
+        deny+reason that points at the canonical primitive.
+        """
+        tool_name = input_data.get("tool_name", "")
+        reason = _DISALLOWED_ALIAS_REASONS.get(tool_name)
+        if reason is None:
+            return {}
+
+        orch.emit_event(
+            "disallowed_alias.denied",
+            {
+                "ts": time.time(),
+                "caller_id": caller_id,
+                "tool_name": tool_name,
+            },
+        )
+
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+
     return {
         "PreToolUse": [
             HookMatcher(
                 matcher="AskUserQuestion",
                 hooks=[on_ask_user_question],
                 timeout=HOOK_REVIEW_TIMEOUT_S,
+            ),
+            HookMatcher(
+                matcher="SendMessage",
+                hooks=[on_disallowed_alias],
+            ),
+            HookMatcher(
+                matcher="TodoWrite",
+                hooks=[on_disallowed_alias],
             ),
             # Reply gate MUST run before review gate to avoid deadlock when
             # an agent is both a leader (has pending reviews) and a member

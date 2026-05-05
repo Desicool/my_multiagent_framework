@@ -584,3 +584,36 @@ timestamp is absent. Results are sorted ascending by `completion_pending_ts`
   Grandchildren and deeper descendants are not included.
 - The caller itself is excluded from results even if it somehow appears as a
   member of one of its own teams.
+
+---
+
+## Forbidden tools
+
+Two SDK shadow tools are blocked at the harness layer because they
+compete with Beidou primitives:
+
+| Forbidden tool | Use this primitive instead | Why blocked |
+|---|---|---|
+| `SendMessage` | `mcp__beidou__send_message` | SDK team-mode messaging shadow that bypasses Beidou's inbox / reply-gate. |
+| `TodoWrite` | `mcp__beidou__declare_plan` + `mcp__beidou__update_plan_task` for tracking; `mcp__beidou__report_status(state='done')` for completion handoff | TodoWrite competes with both task tracking and the completion signal. Using it has caused agents to claim "done" via TodoWrite while skipping the report_status review (tsk_658f44b6). |
+
+Raw `AskUserQuestion` is also blocked — see [`ask_user`](#ask_user) for
+the leader-chain routing rationale.
+
+**Two layers of enforcement** (defense in depth):
+
+1. **SDK `disallowed_tools`** (`beidou/agent/loop.py` —
+   `disallowed_tools=["SendMessage", "TodoWrite"]`). The SDK normally
+   filters these tools out of the model's tool list, so the model never
+   sees them and they never reach a hook. This is the primary barrier.
+2. **PreToolUse `on_disallowed_alias` hook** (`beidou/agent/hooks.py`).
+   If layer 1 ever leaks (SDK regression, env config drift, future
+   SDK shadow tool that escapes the disallowed list), this hook
+   converts the would-be silent drop into a model-visible
+   `permissionDecision="deny"` whose `permissionDecisionReason` names
+   the canonical primitive and the spec section. Each deny emits a
+   `disallowed_alias.denied` event for observability.
+
+Forbidding more shadow tools: append the alias to both
+`disallowed_tools` in `loop.py` AND `_DISALLOWED_ALIAS_REASONS` in
+`hooks.py` (with a redirect reason), and add a row to the table above.

@@ -91,16 +91,20 @@ class TestAskUserQuestionHook:
     """Tests for the PreToolUse AskUserQuestion interceptor hook."""
 
     def test_hook_present_in_build_hooks(self) -> None:
-        """build_hooks includes PreToolUse entries: AskUserQuestion + reply_gate + review_gate (match-all)."""
+        """build_hooks includes PreToolUse entries: AskUserQuestion + SendMessage +
+        TodoWrite redirects + reply_gate + review_gate (both match-all)."""
         orch = FakeOrchForHooks()
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PreToolUse" in hooks, "No PreToolUse key in hooks dict"
         matchers = hooks["PreToolUse"]
-        # 3 PreToolUse matchers: AskUserQuestion hook + reply_gate (match-all) + review_gate (match-all).
-        assert len(matchers) == 3
+        # 5 PreToolUse matchers after Phase 2: AskUserQuestion + SendMessage +
+        # TodoWrite (each named) + reply_gate + review_gate (both match-all).
+        assert len(matchers) == 5
         matcher_names = [m.matcher for m in matchers]
         assert "AskUserQuestion" in matcher_names, f"Expected AskUserQuestion in {matcher_names}"
-        assert None in matcher_names, f"Expected match-all (None) in {matcher_names}"
+        assert "SendMessage" in matcher_names, f"Expected SendMessage in {matcher_names}"
+        assert "TodoWrite" in matcher_names, f"Expected TodoWrite in {matcher_names}"
+        assert matcher_names.count(None) == 2, f"Expected 2 match-all entries in {matcher_names}"
 
     def test_posttooluse_still_present(self) -> None:
         """build_hooks still includes the PostToolUse report_status and send_message hooks."""

@@ -64,7 +64,22 @@ reporting, ask_user / answer_question / escalate_question, terminate_child,
 and list_pending_reviews are exempt; everything else is denied with
 "Cannot call <tool> — you have unreplied inquiries from: ...". Reply first
 (an "acknowledged" or "deferred until X" counts), then continue.
-Spec: docs/agent-runtime.md#reply-obligation, docs/tool-surface.md#send_message."""
+Spec: docs/agent-runtime.md#reply-obligation, docs/tool-surface.md#send_message.
+
+[FORBIDDEN TOOLS]
+The following SDK shadow tools are blocked at two layers (SDK
+disallowed_tools and a PreToolUse hook). Do not call them; use the
+Beidou primitive instead.
+
+- SendMessage  →  mcp__beidou__send_message(to=..., content=..., expects_reply=...)
+- TodoWrite    →  mcp__beidou__declare_plan + mcp__beidou__update_plan_task
+                  for task tracking; mcp__beidou__report_status(state='done')
+                  for completion handoff. TodoWrite shadows both and is
+                  rejected.
+
+Raw AskUserQuestion is also blocked — use mcp__beidou__ask_user so the
+leader chain can answer or escalate before the question reaches the user.
+Spec: docs/tool-surface.md#send_message, #declare_plan, #report_status, #ask_user."""
 
 _COMPLETION_HANDOFF_BLOCK = """\
 [COMPLETION HANDOFF CONTRACT]

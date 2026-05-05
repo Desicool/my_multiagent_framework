@@ -230,6 +230,24 @@ gateway call in the event stream.
 
 ---
 
+### `disallowed_alias.denied`
+
+Emitted by `on_disallowed_alias` PreToolUse hook
+(`beidou/agent/hooks.py`) when a forbidden SDK shadow tool reaches the
+hook. In normal operation the SDK's `disallowed_tools` filter drops these
+tools before any hook runs, so this event is a backstop signal: if it
+fires, the SDK layer leaked. Useful as a regression alarm. Currently
+covers `SendMessage` and `TodoWrite` (see
+[`docs/tool-surface.md#forbidden-tools`](tool-surface.md#forbidden-tools)).
+
+| Field | Source |
+|---|---|
+| `ts` | Wall clock at emission. |
+| `caller_id` | The agent that attempted the forbidden tool. |
+| `tool_name` | `"SendMessage"` or `"TodoWrite"`. |
+
+---
+
 ### `question_asked`
 
 Emitted by `QuestionBroker` when an agent calls `ask_user`. The `prompt`
