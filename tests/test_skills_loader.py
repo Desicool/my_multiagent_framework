@@ -158,15 +158,23 @@ def test_junior_engineer_loads_with_unknown_model_field() -> None:
 
 
 def test_provision_skills_writes_canonical_copies(tmp_path: Path) -> None:
-    """provision_skills copies each bundled SKILL.md byte-for-byte (no substitution)."""
+    """provision_skills copies each bundled SKILL.md byte-for-byte (no substitution).
+
+    Skill-module sidecar files (module.toml/gate.py/eval.py) are also copied
+    in the same call — they're verified separately below; the marker assertion
+    only applies to SKILL.md.
+    """
     written = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
 
     # At least some files should have been written (we have bundled skills).
     assert len(written) > 0
 
-    # Each written file should exist and start with the beidou-bundled marker,
-    # followed by the original source bytes.
-    for dst in written:
+    skill_md_written = [d for d in written if d.name == "SKILL.md"]
+    sidecar_written = [d for d in written if d.name in ("module.toml", "gate.py", "eval.py")]
+
+    # Each provisioned SKILL.md should exist and start with the
+    # beidou-bundled marker, followed by the original source bytes.
+    for dst in skill_md_written:
         assert dst.exists(), f"Expected {dst} to exist"
         # Determine which source SKILL.md corresponds to this destination.
         # dst is <workspace>/.claude/skills/<name>/SKILL.md
@@ -202,6 +210,28 @@ def test_provision_skills_writes_canonical_copies(tmp_path: Path) -> None:
             assert b"{workspace_path}" in dst_bytes, (
                 f"Substitution was applied on disk — it should NOT be"
             )
+
+    # Sidecar files are copied verbatim (no marker). Verify each landed in
+    # the same directory as a SKILL.md and is byte-identical to its source.
+    for dst in sidecar_written:
+        assert dst.exists(), f"Expected sidecar {dst} to exist"
+        skill_dir_name = dst.parent.name
+        skill_md_dst = dst.parent / "SKILL.md"
+        assert skill_md_dst.exists(), (
+            f"Sidecar {dst.name} provisioned without sibling SKILL.md"
+        )
+        # Find the matching source skill dir under SKILLS_ROOT.
+        src_md_for_sidecar = None
+        for src_md in SKILLS_ROOT.rglob("SKILL.md"):
+            if load_skill_file(src_md).name == skill_dir_name:
+                src_md_for_sidecar = src_md
+                break
+        assert src_md_for_sidecar is not None
+        src_sidecar = src_md_for_sidecar.parent / dst.name
+        assert src_sidecar.is_file(), f"Source sidecar missing: {src_sidecar}"
+        assert dst.read_bytes() == src_sidecar.read_bytes(), (
+            f"Sidecar {dst} not byte-identical to source {src_sidecar}"
+        )
 
 
 def test_provision_skills_idempotent(tmp_path: Path) -> None:
@@ -249,10 +279,18 @@ def test_provision_skills_nonexistent_skill_root(tmp_path: Path) -> None:
 
 
 def test_provision_skills_prepends_marker(tmp_path: Path) -> None:
-    """Each provisioned file starts with the beidou-bundled marker line."""
+    """Each provisioned SKILL.md starts with the beidou-bundled marker line.
+
+    Skill-module sidecars (module.toml/gate.py/eval.py) are copied verbatim
+    without a marker — they're not Markdown and have no YAML frontmatter to
+    sit below a comment line. This test scopes the marker assertion to
+    SKILL.md only.
+    """
     written = provision_skills(tmp_path, skill_root=SKILLS_ROOT)
     assert len(written) > 0
-    for dst in written:
+    skill_md_written = [d for d in written if d.name == "SKILL.md"]
+    assert skill_md_written, "Expected at least one SKILL.md in provisioned files"
+    for dst in skill_md_written:
         content = dst.read_bytes()
         assert content.startswith(b"<!-- beidou-bundled:"), (
             f"Missing marker in {dst}"
@@ -529,13 +567,19 @@ def test_identity_block_contains_both_workspace_and_project_workspace() -> None:
 
 
 def test_provision_skills_writes_to_caller_supplied_dir(tmp_path: Path) -> None:
-    """provision_skills writes SKILL.md files into <dir>/.claude/skills/<name>/SKILL.md."""
+    """provision_skills writes SKILL.md (and skill-module sidecars) into
+    <dir>/.claude/skills/<name>/."""
     target = tmp_path / "agent_workspace"
     written = provision_skills(target, skill_root=SKILLS_ROOT)
 
     assert len(written) > 0
+    skill_md_written = [d for d in written if d.name == "SKILL.md"]
+    assert skill_md_written, "Expected at least one SKILL.md to be provisioned"
+    sidecar_names = {"module.toml", "gate.py", "eval.py"}
     for dst in written:
-        assert dst.name == "SKILL.md"
+        assert dst.name == "SKILL.md" or dst.name in sidecar_names, (
+            f"Unexpected provisioned filename: {dst.name}"
+        )
         assert dst.parent.parent.name == "skills"
         assert dst.parent.parent.parent.name == ".claude"
         assert dst.parent.parent.parent.parent == target

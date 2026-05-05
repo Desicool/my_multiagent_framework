@@ -1,0 +1,14 @@
+[module]
+name = "product_manager_v2"
+version = "1.0.0"
+description = """
+Skill-module gate that enforces product_manager_v2's "at least 2 ask_user
+rounds before report_status(done)" contract from the skill body
+(SKILL.md §1 Core DOs). Without this gate the contract is prompt-only;
+with it the harness rejects the report_status call until the agent has
+run at least the open-discovery + binding-narrowing rounds.
+"""
+
+[hooks.validate_tool_call]
+handlers = ["gate.require_two_ask_user_rounds"]
+mode = "all_must_pass"
