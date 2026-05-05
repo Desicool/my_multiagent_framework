@@ -321,6 +321,17 @@ describe('question_asked is no-op in reducer', () => {
   });
 });
 
+describe('question_escalated is no-op in reducer', () => {
+  it('does not modify state (banner refresh handled by streamService trigger)', () => {
+    applyEvent(s, {
+      type: 'question_escalated', ts: 1, qid: 'q1', agent_id: 'A',
+      by: 'A', new_holder: null, reason: 'user must decide',
+    });
+    expect(Object.keys(s.agentsById)).toHaveLength(0);
+    expect(s.globalActivity.length).toBe(0);
+  });
+});
+
 describe('question_answered pushes answer bubble onto asker stream', () => {
   it('creates a message_in item with from_is_user true and answer_text as content', () => {
     // Pre-create the asker agent

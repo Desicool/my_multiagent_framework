@@ -166,6 +166,16 @@ export type QuestionAnsweredEvent = {
   answer_text: string;
 };
 
+export type QuestionEscalatedEvent = {
+  type: 'question_escalated';
+  ts: number;
+  agent_id: string;
+  qid: string;
+  by: string;
+  new_holder: string | null;   // null when escalated to user gateway
+  reason: string;
+};
+
 export type ContractViolationEvent = {
   type: 'contract_violation';
   ts: number;
@@ -205,6 +215,7 @@ export type BeidouEvent =
   | TeamCreatedEvent
   | QuestionAskedEvent
   | QuestionAnsweredEvent
+  | QuestionEscalatedEvent
   | ContractViolationEvent
   | ConfigWarningEvent
   | AgentInputEvent

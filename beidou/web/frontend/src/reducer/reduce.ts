@@ -262,9 +262,13 @@ export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
       break;
     }
 
-    // question_asked is consumed by stores/questions.svelte.ts (re-poll trigger).
-    // The reducer does NOT push it onto any stream (intentional — see plan §5).
+    // question_asked / question_escalated are consumed by stores/questions.svelte.ts
+    // (re-poll trigger via streamService.ts). The reducer does NOT push them onto
+    // any stream (intentional — see plan §5). question_escalated fires when a
+    // holder forwards a question one hop up the chain — including to the user
+    // gateway, which is what flips chain[-1] to "USER" and lets the banner appear.
     case 'question_asked':
+    case 'question_escalated':
       break;
 
     case 'question_answered': {

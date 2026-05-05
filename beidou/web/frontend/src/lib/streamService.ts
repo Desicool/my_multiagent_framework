@@ -101,7 +101,7 @@ export async function openTask(taskId: string): Promise<void> {
     onEvent(ev) {
       applyEvent(ev);
       const t = (ev as { type?: string }).type;
-      if (t === 'question_asked' || t === 'question_answered') {
+      if (t === 'question_asked' || t === 'question_answered' || t === 'question_escalated') {
         triggerRepoll();
       }
     },

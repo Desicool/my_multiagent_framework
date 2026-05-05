@@ -53,6 +53,7 @@ import { getTaskSnapshot, fetchEvents } from './api';
 import { openTaskStream } from './ws';
 import { applyEvent } from '../stores/events.svelte';
 import { setCursor, setStatus } from '../stores/connection.svelte';
+import { triggerRepoll } from '../stores/questions.svelte';
 
 // openTask is imported AFTER vi.mock so it gets the mocked dependencies.
 import { openTask } from './streamService';
@@ -181,5 +182,45 @@ describe('streamService backfill', () => {
     // WS opened for the right task.
     const wsCallArgs = (openTaskStream as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(wsCallArgs[0]).toBe('task-6');
+  });
+});
+
+describe('streamService onEvent question triggers', () => {
+  // Each WS event for a question lifecycle must re-poll /api/questions/pending,
+  // because the pending list is filtered server-side by chain[-1] === "USER".
+  // Without re-polling on `question_escalated`, a question that flips to USER
+  // via root escalation never reaches the banner.
+  type Cb = (ev: unknown) => void;
+
+  async function openAndGetOnEvent(taskId: string): Promise<Cb> {
+    await openTask(taskId);
+    const wsCallArgs = (openTaskStream as ReturnType<typeof vi.fn>).mock.calls[0];
+    const callbacks = wsCallArgs[2] as { onEvent: Cb };
+    return callbacks.onEvent;
+  }
+
+  it('triggers repoll on question_asked', async () => {
+    const onEvent = await openAndGetOnEvent('task-q1');
+    onEvent({ type: 'question_asked', ts: 1, qid: 'q', asker: 'A', prompt: 'why' });
+    expect(triggerRepoll).toHaveBeenCalledTimes(1);
+  });
+
+  it('triggers repoll on question_answered', async () => {
+    const onEvent = await openAndGetOnEvent('task-q2');
+    onEvent({ type: 'question_answered', ts: 1, qid: 'q', asker: 'A', chain_len: 1, answers: [], answer_text: 'ok' });
+    expect(triggerRepoll).toHaveBeenCalledTimes(1);
+  });
+
+  it('triggers repoll on question_escalated (so banner appears when chain[-1] flips to USER)', async () => {
+    const onEvent = await openAndGetOnEvent('task-q3');
+    onEvent({ type: 'question_escalated', ts: 1, qid: 'q', by: 'root', new_holder: null, reason: 'user must decide' });
+    expect(triggerRepoll).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not trigger repoll on unrelated events', async () => {
+    const onEvent = await openAndGetOnEvent('task-q4');
+    onEvent({ type: 'assistant_text', ts: 1, caller_id: 'ag1', text: 'hi' });
+    onEvent({ type: 'turn.usage', ts: 2, caller_id: 'ag1' });
+    expect(triggerRepoll).not.toHaveBeenCalled();
   });
 });
