@@ -1,10 +1,10 @@
 """Tests for the spawn_agent orchestrator method.
 
 Coverage: task_not_ready (unmet_deps), task_not_pending after spawn,
-team_cap_exceeded at 9th in-flight, terminate_child unblocks dependents,
-force-terminate marks failed and propagates blocking, full DAG runthrough
-(5 tasks, 3 levels). Also: team_created:true only on the first spawn.
-Also: [TASK ASSIGNMENT] header in _register_member_and_launch.
+no concurrent-member cap (all ready tasks spawn freely), terminate_child
+unblocks dependents, force-terminate marks failed and propagates blocking,
+full DAG runthrough (5 tasks, 3 levels). Also: team_created:true only on
+the first spawn. Also: [TASK ASSIGNMENT] header in _register_member_and_launch.
 
 The SDK launch is stubbed out via monkeypatching _run_agent_with_policy
 so tests don't connect to the Anthropic API. load_skill and provision_skills
@@ -197,12 +197,12 @@ def test_spawn_agent_reuses_same_team_on_second_call(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Team cap: 8 in-flight members; 9th spawn raises team_cap_exceeded.
+# No concurrent-member cap: all 12 tasks spawn without raising.
 # ---------------------------------------------------------------------------
 
 
-def test_spawn_agent_team_cap_exceeded(tmp_path: Path) -> None:
-    n = 9
+def test_spawn_agent_no_concurrent_cap(tmp_path: Path) -> None:
+    n = 12
     specs = [
         {"id": f"t{i}", "role": f"role{i}", "skill": "worker", "task": f"task {i}"}
         for i in range(1, n + 1)
@@ -213,13 +213,17 @@ def test_spawn_agent_team_cap_exceeded(tmp_path: Path) -> None:
     with _patch_home(tmp_path), _spawn_stubs(o):
         async def body():
             await o.register_plan(caller_id="ag_leader", specs=specs)
-            for i in range(1, 9):
-                await o.spawn_for_task(caller_id="ag_leader", task_id=f"t{i}")
-
-            with pytest.raises(PrimitiveError) as ei:
-                await o.spawn_for_task(caller_id="ag_leader", task_id="t9")
-            assert ei.value.code == "team_cap_exceeded"
-            assert ei.value.details.get("live_count") == 8
+            results = []
+            for i in range(1, n + 1):
+                r = await o.spawn_for_task(caller_id="ag_leader", task_id=f"t{i}")
+                results.append(r)
+            # All 12 spawns succeeded with no PrimitiveError.
+            assert len(results) == n
+            # They all joined the same team.
+            team_ids = {r["team_id"] for r in results}
+            assert len(team_ids) == 1
+            team_id = team_ids.pop()
+            assert len(o._teams[team_id].member_ids) == n
 
         run(body())
 

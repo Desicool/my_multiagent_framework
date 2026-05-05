@@ -9,9 +9,9 @@ approval. See `README.md` for the approval rule.
 
 | | |
 |---|---|
-| **Value** | **8 concurrently in-flight (spawned) members per team** |
-| Rationale | Keeps per-team cognitive load manageable for the leader; bounds the inbox + spawn burst Beidou has to absorb at once. Plan size is unbounded — the readiness queue handles backpressure. |
-| Enforced in | `spawn_agent` primitive and (legacy) `create_team` primitive (`beidou/primitives/core.py`). Returns structured error `team_cap_exceeded` (or `fanout_exceeded` for `create_team`) when exceeded. |
+| **Value** | **REMOVED (no concurrent-member cap as of 2026-05-05).** |
+| Rationale | Removed as a v1 simplification — leaders can now spawn the full ready set in a single turn. May be reintroduced as a soft queue if spawn-burst load shows up in observability. |
+| Enforced in | Not enforced. Recursion depth (#2) and per-agent spawn lock (#5) still bound the spawn graph. |
 | Change policy | Requires user approval to change. |
 
 ## 2. Team recursion depth
@@ -67,8 +67,8 @@ deliberate non-boundary; it is documented here to make the absence explicit.)
 
 **Plan size is intentionally not bounded.** `declare_plan` accepts any number
 of tasks in a single call; there is no upper limit on task count per plan.
-Backpressure is enforced by the concurrent in-flight cap (#1) and the recursion
-depth cap (#2). Operators concerned about huge plans should monitor disk usage
+The recursion depth cap (#2) bounds the spawn graph depth; plan breadth is
+unbounded. Operators concerned about huge plans should monitor disk usage
 of `~/.beidou/runs/`. (This is a deliberate non-boundary; it is documented here
 to make the absence explicit.)
 
@@ -85,7 +85,7 @@ to make the absence explicit.)
 
 | # | Boundary | Value | Enforced in |
 |---|---|---|---|
-| 1 | Concurrent in-flight members per team | 8 | `spawn_agent` / `create_team` (deprecated) primitive |
+| 1 | Concurrent in-flight members per team | removed | — |
 | 2 | Team nesting depth (depth 0 = teamless agent) | 5 | `spawn_agent` / `create_team` (deprecated) primitive |
 | 3 | Per-agent inbox cap | 1000 | `send_message` primitive |
 | 4 | Contract-violation strikes | 3 | Orchestrator recovery |
@@ -115,7 +115,7 @@ to make the absence explicit.)
 
 | # | Boundary | Value | Enforced in |
 |---|---|---|---|
-| 1 | Concurrent in-flight members per team | 8 | `spawn_agent` / `create_team` (deprecated) primitive |
+| 1 | Concurrent in-flight members per team | removed | — |
 | 2 | Team nesting depth (depth 0 = teamless agent) | 5 | `spawn_agent` / `create_team` (deprecated) primitive |
 | 3 | Per-agent inbox cap | 1000 | `send_message` primitive |
 | 4 | Contract-violation strikes | 3 | Orchestrator recovery |

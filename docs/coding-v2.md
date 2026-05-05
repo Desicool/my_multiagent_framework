@@ -77,10 +77,12 @@ ledger contributions, round-scoped `done`) that is absent from the v1 SKILL.md
 bodies. Phase 2 still uses the verbatim v1 sub-skills (`test_engineer`,
 `qa_engineer`, `junior_engineer`, `deployment_engineer`) — see §7.
 
-All deliverables are written to `{project_workspace_path}/`. Six committee
-members fit within the FAN_OUT_CAP of 8 (`docs/limits.md` §1). The design
+All deliverables are written to `{project_workspace_path}/`. The design
 committee operates at team depth 1; no sub-teams are created in Phase 1, so
-depth never exceeds 1 during this phase (`docs/limits.md` §2).
+depth never exceeds 1 during this phase (`docs/limits.md` §2). The
+concurrent-member cap (formerly `docs/limits.md` §1) was removed, so the
+committee size is bounded only by recursion depth (§2) and the per-agent
+spawn lock (§5).
 
 **Phase 2** reuses the `coding/` flow verbatim from the `arch writes tasks.md`
 step onward. See §7 for the bridge step and reuse details.
@@ -570,7 +572,7 @@ durable source of truth and are not modified by the integrator.
 | `coding/ui_ux_designer/SKILL.md` | Verbatim; remains available as `ux_advisor` under v1's `coding/orchestrator` flow |
 | `beidou/primitives/core.py` | Unchanged; no new primitives required |
 | `beidou/skills/loader.py` | Unchanged; discovers new skill paths automatically |
-| `docs/limits.md` | No boundary changes; 6 committee members < FAN_OUT_CAP=8, depth=1 |
+| `docs/limits.md` | No boundary changes; depth=1, well under §2's depth cap |
 
 ### What is forked
 

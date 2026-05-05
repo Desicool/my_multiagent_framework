@@ -3,7 +3,6 @@
 from beidou.primitives.core import (
     CONTRACT_STRIKES,
     CRASH_STRIKES,
-    FAN_OUT_CAP,
     INBOX_CAP,
     MAX_DEPTH,
     GatewayDeclined,
@@ -22,7 +21,6 @@ from beidou.primitives.mcp import build_mcp_server_for
 
 __all__ = [
     "INBOX_CAP",
-    "FAN_OUT_CAP",
     "MAX_DEPTH",
     "CONTRACT_STRIKES",
     "CRASH_STRIKES",

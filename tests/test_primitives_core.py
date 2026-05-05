@@ -18,7 +18,6 @@ import pytest
 
 from beidou import plans as _beidou_plans
 from beidou.primitives.core import (
-    FAN_OUT_CAP,
     INBOX_CAP,
     MAX_DEPTH,
     GatewayDeclined,
@@ -742,18 +741,6 @@ def test_create_team_happy_path():
         assert len(out["members"]) == 2
         # Self-lead invariant: R is leader of the new team.
         assert o.leader_of(out["team_id"]) == "R"
-
-    run(body())
-
-
-def test_create_team_fanout_exceeded():
-    o = _build()
-
-    async def body():
-        roles = [{"role": f"r{i}", "skill": "t"} for i in range(FAN_OUT_CAP + 1)]
-        with pytest.raises(PrimitiveError) as ei:
-            await create_team(o, caller_id="R", name="big", task="x", roles=roles)
-        assert ei.value.code == "fanout_exceeded"
 
     run(body())
 

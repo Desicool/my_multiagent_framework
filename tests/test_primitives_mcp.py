@@ -26,7 +26,7 @@ import pytest
 from mcp import types as mcp_types
 
 from beidou.primitives import build_mcp_server_for
-from beidou.primitives.core import FAN_OUT_CAP, Message
+from beidou.primitives.core import Message
 
 # Reuse the FakeOrchestrator + _build helper from the core test module.
 from test_primitives_core import FakeOrchestrator, _build
@@ -310,22 +310,6 @@ def test_create_team_happy_path():
         assert len(payload["members"]) == 2
         # Self-lead invariant: R leads the new team.
         assert o.leader_of(payload["team_id"]) == "R"
-
-    run(body())
-
-
-def test_create_team_fanout_exceeded_is_structured_error():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="R")
-
-    async def body():
-        roles = [{"role": f"r{i}", "skill": "t"} for i in range(FAN_OUT_CAP + 1)]
-        result = await _call(
-            cfg, "create_team", {"name": "big", "task": "x", "roles": roles}
-        )
-        assert result.isError is True
-        payload = _text_payload(result)
-        assert payload["error"] == "fanout_exceeded"
 
     run(body())
 

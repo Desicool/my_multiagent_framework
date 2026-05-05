@@ -40,7 +40,6 @@ from typing import Any, Optional, Protocol, runtime_checkable
 # ---------------------------------------------------------------------------
 
 INBOX_CAP = 1000              # limits.md #3
-FAN_OUT_CAP = 8               # limits.md #1
 MAX_DEPTH = 5                 # limits.md #2
 CONTRACT_STRIKES = 3          # limits.md #5 (used by orchestrator, not primitives)
 CRASH_STRIKES = 3             # agent-runtime.md §5.1; NOT in limits.md.
@@ -652,15 +651,6 @@ async def create_team(
     Without it, N>1 roles that all share the same (skill, description) tuple
     are rejected as a footgun guard (see ``duplicate_member_descriptions``).
     """
-    # Fan-out cap -- limits.md #1.
-    if len(roles) > FAN_OUT_CAP:
-        raise PrimitiveError(
-            "fanout_exceeded",
-            f"{len(roles)} roles exceeds fan-out cap {FAN_OUT_CAP} (limits.md #1)",
-            got=len(roles),
-            cap=FAN_OUT_CAP,
-        )
-
     # Depth cap -- limits.md #2.
     caller_team = orch.agent_team(caller_id)
     caller_depth = orch.team_depth(caller_team)
@@ -977,7 +967,6 @@ def list_pending_reviews(
 __all__ = [
     # constants
     "INBOX_CAP",
-    "FAN_OUT_CAP",
     "MAX_DEPTH",
     "CONTRACT_STRIKES",
     "CRASH_STRIKES",

@@ -2147,19 +2147,6 @@ class Orchestrator:
                 new_team_id = existing_teams[0]
                 team_rec = self._teams[new_team_id]
 
-                # Cap: at most 8 in-flight (live) members per team (limits.md #1).
-                live_members = [
-                    mid for mid in team_rec.member_ids
-                    if mid in self._agents and not self._agents[mid].terminate_consumed
-                ]
-                if len(live_members) >= 8:
-                    raise PrimitiveError(
-                        "team_cap_exceeded",
-                        f"team {new_team_id} already has {len(live_members)} live members (cap: 8)",
-                        live_count=len(live_members),
-                        live_agent_ids=live_members,
-                    )
-
                 try:
                     from beidou.skills.loader import load_skill, SkillError
                     load_skill(self.skill_root, task.skill)

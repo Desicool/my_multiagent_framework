@@ -275,7 +275,6 @@ construction.
 ```
 
 **Error cases**
-- `fanout_exceeded`: `len(roles)` exceeds cap in `limits.md`.
 - `depth_exceeded`: caller's team depth is already at the max recursion depth.
 - `leader_override_attempted`: the call included a `leader_id` field in the
   input. (Beidou's validator rejects before spawn.)
@@ -294,7 +293,7 @@ construction.
 - **Self-lead invariant**: Beidou sets `leader_id = caller_id` for the new
   team. Any `leader_id` in the tool input is rejected with
   `leader_override_attempted`.
-- Fan-out cap, recursion depth cap: see `limits.md`.
+- Recursion depth cap: see `limits.md` (#2). No concurrent-member fan-out cap (limits.md #1 removed).
 - One in-flight `create_team` per caller at a time (`limits.md`).
 
 ---
@@ -431,9 +430,6 @@ currently ready to spawn (excluding the just-spawned task).
 - `task_not_ready` — task is `blocked`; returns `unmet_deps: [...]`.
 - `task_not_pending` — task is `in_flight`, `done`, or `failed`. Returns
   current status.
-- `team_cap_exceeded` — 8 in-flight members already exist on this team.
-  Returns `live_count` and the live `agent_id`s the leader could approve to
-  free a slot.
 - `depth_exceeded` — checked here (not at `declare_plan` time; declare is a
   pure-data primitive that does not know about the runtime team graph). If the
   caller's team-depth-to-be exceeds the cap, the first `spawn_agent` errors
@@ -447,9 +443,9 @@ currently ready to spawn (excluding the just-spawned task).
 **Validation rules**
 - **Self-lead invariant**: `leader_id = caller_id` is injected by Beidou; it
   cannot be supplied or overridden in the tool input.
-- Cap applies to the team, not the plan — in-flight members from a previous
-  (removed) plan still count toward the cap until they transition out via
-  `terminate_child`.
+- There is no concurrent-member cap on a team (limits.md #1 removed). Leaders
+  may spawn any number of members in sequence; recursion depth (#2) and the
+  per-agent spawn lock (#5) still bound the spawn graph.
 - `team_created` and `agent_spawned` events are emitted in order: `team_created`
   fires synchronously before the first `agent_spawned` for that team.
 
