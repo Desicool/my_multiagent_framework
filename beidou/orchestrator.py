@@ -459,7 +459,8 @@ class Orchestrator:
         member_ids: list[str],
         rules: list[str],
     ) -> "TeamRecord":
-        """Build and register a TeamRecord. Returns it for convenience."""
+        """Build and register a TeamRecord. Persists to DB so page refresh
+        (which re-hydrates from the snapshot API) sees the full team tree."""
         rec = TeamRecord(
             team_id=team_id,
             name=name,
@@ -470,6 +471,17 @@ class Orchestrator:
             parent_team_id=parent_team_id,
         )
         self._teams[team_id] = rec
+        # Persist to SQLite so the web UI snapshot endpoint returns teams.
+        workspace_path = team_workspace(self.project_workspace, self.task_id, team_id)
+        _db.upsert_team(
+            team_id=team_id,
+            task_id=self.task_id,
+            parent_team_id=parent_team_id,
+            name=name,
+            leader_agent_id=leader_id,
+            workspace_path=str(workspace_path),
+            created_at=time.time(),
+        )
         return rec
 
     def _register_member_and_launch(
@@ -616,6 +628,7 @@ class Orchestrator:
                 "parent_team_id": parent_team_id,
                 "depth": new_depth,
                 "members": members_out,
+                "workspace_path": str(workspace_path),
                 "ts": time.time(),
             },
         )
@@ -2178,6 +2191,7 @@ class Orchestrator:
                         "parent_team_id": parent_team_id,
                         "depth": new_depth,
                         "members": [{"agent_id": agent_id, "role": task.role, "name": rec.name}],
+                        "workspace_path": str(workspace_path),
                         "ts": time.time(),
                     },
                 )

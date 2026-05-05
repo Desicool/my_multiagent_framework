@@ -190,8 +190,10 @@
     <!-- max-h + overflow-y-auto on the body keeps the banner from pushing its
          submit row off-screen when the question is tall (many options or
          long free-text). Submit row uses sticky-bottom inside this container
-         so the Answer button is always visible. -->
-    <div id="question-banner-body" class:hidden={collapsed} class="max-h-[calc(100vh-7rem)] overflow-y-auto">
+         so the Answer button is always visible.
+         max-h accounts for the banner's own sticky offset (var(--agent-header-h))
+         plus its header row, margins, and the submit row. -->
+    <div id="question-banner-body" class:hidden={collapsed} class="max-h-[calc(100vh-var(--agent-header-h,6rem)-12rem)] overflow-y-auto">
     <div class="px-4 py-3">
       {#if primary.context_hint}
         <p class="text-xs text-pending/70 italic mb-3">{primary.context_hint}</p>
