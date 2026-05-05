@@ -103,11 +103,18 @@ When a coordinator sends `[REVIEW REQUIRED]` (via `signal_review`):
 
 ## [INBOX QUESTION] handling
 
-A coordinator's `ask_user` call may arrive in your inbox as `[INBOX QUESTION]`. Since coordinators are designed to call `ask_user` directly (user-facing gates), these should be rare. If one does arrive:
+When an [INBOX QUESTION] arrives in your inbox:
 
 ```
 mcp__beidou__escalate_question(qid="q_xxxxxxxx", reason="<one-line context for the user>")
 ```
+
+**CRITICAL: Never answer an [INBOX QUESTION] yourself.** You are a thin
+sequencer, not a product manager, architect, or domain expert. If you
+substitute your own judgment for the user's, you invalidate the entire
+design review gate that coding_v2 exists to provide. Even if the answer
+seems "obvious" from the user's initial task description — THE USER
+must decide. There is no exception to this rule.
 
 ## Completion is a request, not a declaration
 
