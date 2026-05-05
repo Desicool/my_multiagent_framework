@@ -74,8 +74,11 @@ share a `name`); v1 and v2 must coexist under `beidou/skills/`.
 members are forks rather than verbatim reuses because Phase 1 requires
 committee protocol (`[FREEZE PROBE]` ack, `design_issues/issue-{n}.md`
 ledger contributions, round-scoped `done`) that is absent from the v1 SKILL.md
-bodies. Phase 2 still uses the verbatim v1 sub-skills (`test_engineer`,
-`qa_engineer`, `junior_engineer`, `deployment_engineer`) — see §7.
+bodies. Phase 2 still uses the verbatim v1 leaf workers (`test_engineer`,
+`qa_engineer`, `junior_engineer`, `deployment_engineer`) — see §7. The
+Phase-2 impl-leader is a thin v2 fork (`junior_engineer_v2`) that spawns
+one v1 `junior_engineer` per task and owns the post-completion envelope;
+see §9 for why it is forked rather than reused verbatim.
 
 All deliverables are written to `{project_workspace_path}/`. The design
 committee operates at team depth 1; no sub-teams are created in Phase 1, so
@@ -427,8 +430,8 @@ job is path-level orchestration plus manifest validation.
 ```
 arch_post_approval (writes tasks.md per §7.2 schema)
    ↓
-impl (parallel spawn from tasks.md, one junior_engineer per task,
-       each writing to artifacts/task-{n}/<logical-path>)
+impl (junior_engineer_v2 leader spawns one junior_engineer per task in
+       parallel, each writing to artifacts/task-{n}/<logical-path>)
    ↓
 integrator (validates manifest, assembles integration/)
    ↓
@@ -573,7 +576,7 @@ durable source of truth and are not modified by the integrator.
 
 | Artifact | Reuse type |
 |---|---|
-| `coding/junior_engineer/SKILL.md` | Verbatim; Phase 2 only |
+| `coding/junior_engineer/SKILL.md` | Verbatim; Phase 2 leaf worker (one per task in `tasks.md`) |
 | `coding/test_engineer/SKILL.md` | Verbatim; Phase 2 test runner |
 | `coding/qa_engineer/SKILL.md` | Verbatim; Phase 2 sign-off; v2 orchestrator expands task description to include all six design doc paths |
 | `coding/deployment_engineer/SKILL.md` | Verbatim; Phase 2 only |
@@ -594,6 +597,7 @@ durable source of truth and are not modified by the integrator.
 | `coding_v2/ui_ux_designer/SKILL.md` | Phase-1 deliverable is `ui_ux.md` (not `UX_CONCERNS.md`); committee-protocol participation absent from v1 body; `huashu-design` mockup capability preserved |
 | `coding_v2/engineer_advisor/SKILL.md` | New role; not present in v1 |
 | `coding_v2/integrator/SKILL.md` | New role; not present in v1; Phase-2 manifest assembler (§7.4) |
+| `coding_v2/junior_engineer/SKILL.md` | Phase-2 impl-leader. Persona reshaped from "default solo" (v1) to "always delegate, never code"; explicit completion checklist after final `terminate_child` (closes the bug pattern from `tsk_658f44b6` where the impl-leader stalled without emitting `[REVIEW REQUIRED]`); NEVER-DO `TodoWrite` as defense-in-depth on top of the SDK `disallowed_tools` block |
 
 ### Why no shared base
 

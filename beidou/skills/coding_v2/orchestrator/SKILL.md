@@ -35,7 +35,7 @@ skills:
   - integrator
   - test_engineer
   - qa_engineer
-  - junior_engineer
+  - junior_engineer_v2
   - deployment_engineer
 triggers:
   - build with design review
@@ -248,7 +248,7 @@ declare_plan(tasks=[
      post-approval bridge artifact — do NOT modify any other design package file.",
    depends_on: []},
 
-  {id: "impl", role: "implementation-lead", skill: "junior_engineer",
+  {id: "impl", role: "implementation-lead", skill: "junior_engineer_v2",
    task: "Read {project_workspace_path}/spec.md and {project_workspace_path}/tasks.md.
      Implement all tasks defined in tasks.md. Each spawned worker automatically receives
      a [TASK ASSIGNMENT] header with its plan_task_id and artifacts_path. Each worker MUST
