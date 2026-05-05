@@ -40,6 +40,8 @@ class AgentRecord:
     last_status_detail: str = ""
     contract_strikes: int = 0
     run_task: asyncio.Task | None = None
+    # True when the agent's lifecycle has ended — terminate sentinel consumed
+    # OR crash/contract escalation occurred.
     terminate_consumed: bool = False
     terminate_grace_deadline: float | None = None
     total_tokens: int = 0
@@ -64,6 +66,8 @@ class AgentRecord:
     # {message_id: {"from_id": str, "ts": float, "priority": str}}
     pending_replies: dict = field(default_factory=dict)
     reply_gate_active: bool = False
+    # Cached by _refresh_leaf_status(): count of non-terminated agents in subtree.
+    active_descendant_count: int = 0
 
     @property
     def spawn_lock(self) -> asyncio.Lock:
