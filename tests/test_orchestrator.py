@@ -767,8 +767,10 @@ def test_hook_is_error_is_skipped(tmp_path):
     assert not any(c[0].startswith("completion") for c in emitter.calls)
 
 
-def test_hook_empty_summary_emits_completion_empty(tmp_path):
-    """Hook emits completion.empty when no summary text is available."""
+def test_hook_is_error_true_is_noop(tmp_path):
+    """Hook is a no-op when is_error=True (primitive rejected the call).
+    Previously tested as 'completion.empty on no summary'; that path was
+    replaced by primitive-level envelope_missing rejection."""
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
@@ -776,21 +778,24 @@ def test_hook_empty_summary_emits_completion_empty(tmp_path):
     _seed_agent(o, "leader4", _TM_TOP)
     _seed_agent(o, "child4", _TM_TOP)
 
-    # No assistant text recorded — assistant_text_for_turn returns None.
     hooks_dict = build_hooks(o, "child4", "leader4")
     callback = hooks_dict["PostToolUse"][0].hooks[0]
 
+    # Simulate a primitive rejection (is_error=True) — the hook must be a no-op.
     input_data = {
         "tool_name": "mcp__beidou__report_status",
         "tool_input": {"state": "done"},
-        "tool_response": {},
+        "tool_response": {"is_error": True},
     }
 
     async def body():
         await callback(input_data, "toolu_empty", None)
         await asyncio.sleep(0.05)
         event_names = [c[0] for c in emitter.calls]
-        assert "completion.empty" in event_names
+        # No completion events should be emitted — hook is strict no-op.
+        assert "completion.empty" not in event_names
+        assert "completion.reported" not in event_names
+        assert "completion.envelope_synthesized" not in event_names
 
     run(body())
 

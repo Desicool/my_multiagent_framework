@@ -367,28 +367,6 @@ observe member status via `list_peers`.
 
 ---
 
-### `completion.envelope_synthesized`
-
-Emitted by the `on_report_status` PostToolUse hook when a child agent calls
-`report_status(state="done")` but the resolved summary body does NOT contain
-`[REVIEW REQUIRED]` (case-insensitive substring match). The hook synthesizes
-a standard envelope prepended to the original body so the leader receives the
-unmissable handoff signal even when the agent failed to embed it.
-
-JSONL-only — no SQLite rollup. Use to measure how often the prompt-side
-envelope rule fails.
-
-| Field | Source |
-|---|---|
-| `agent_id` | The child agent that reported done. |
-| `leader_id` | The leader the completion report was delivered to. |
-| `body_chars` | The first 200 characters of the synthesized body (truncated). |
-
-This event is NOT emitted when the body already contains `[REVIEW REQUIRED]`
-(passthrough path).
-
----
-
 ### `completion.reported`
 
 Emitted by the `on_report_status` PostToolUse hook after the completion
@@ -410,17 +388,19 @@ gateway decision recorded above.
 
 ### `completion.empty`
 
-Emitted when the hook can't produce a usable review body. JSONL-only.
+Emitted when the root-agent hook's gateway round-trip fails. JSONL-only.
 
 | Field | Source |
 |---|---|
 | `agent_id` | The agent that reported done. |
-| `leader_id` | The reviewer (leader id or `USER_SENTINEL`). |
-| `reason` | `"no summary in report_status turn"` when both the same-turn assistant text and the `detail` argument are empty; or `"gateway_failure: <ExcType>"` when the root's gateway round-trip raised. |
+| `leader_id` | The reviewer (`USER_SENTINEL` for root). |
+| `reason` | `"gateway_failure: <ExcType>"` when the root's gateway round-trip raised an exception. |
 
-The legacy `reason="root_no_leader"` value is retired — root completion is
-now routed through the gateway and either reports a decision or downgrades
-to `gateway_failure`.
+This event is only emitted for root agents (where the gateway is the reviewer).
+For non-root agents, envelope validation is enforced at the primitive level —
+calls without a valid envelope are rejected before the hook runs.
+
+The legacy `reason="root_no_leader"` and `reason="no summary in report_status turn"` values are retired.
 
 ---
 

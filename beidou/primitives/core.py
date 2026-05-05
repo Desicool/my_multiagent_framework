@@ -597,6 +597,18 @@ async def report_status(
         raise PrimitiveError("invalid_state", f"unknown state: {state}", state=state)
 
     if state == "done":
+        detail_text = (detail or "").strip()
+        if "[review required]" not in detail_text.lower():
+            raise PrimitiveError(
+                "envelope_missing",
+                "report_status(state='done') requires the [REVIEW REQUIRED] envelope "
+                "to appear in detail. Resubmit with the full envelope (role, agent, "
+                "Deliverables, Open questions / risks, Leader action required) inside "
+                "detail. Spec: docs/tool-surface.md#report_status.",
+                reason="envelope_missing" if detail_text else "detail_empty",
+            )
+
+    if state == "done":
         plan_id = orch._active_plan_by_agent.get(caller_id)
         if plan_id is not None:
             plan = orch._plans.get(plan_id)

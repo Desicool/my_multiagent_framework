@@ -254,17 +254,66 @@ def test_ask_user_tool_schema_shape():
 # ---------------------------------------------------------------------------
 
 
+_MCP_ENVELOPE = (
+    "[REVIEW REQUIRED]\nrole=worker     agent=A\n"
+    "Deliverables: done\nOpen questions / risks: none\n"
+    "Leader action required: approve (terminate_child) OR rework (send_message)"
+)
+
+
 def test_report_status_happy_path():
     o = _build()
     cfg = build_mcp_server_for(o, caller_id="A")
 
     async def body():
         result = await _call(
-            cfg, "report_status", {"state": "done", "detail": "shipped"}
+            cfg, "report_status", {"state": "done", "detail": _MCP_ENVELOPE}
         )
         payload = _text_payload(result)
         assert payload == {"recorded": True}
-        assert ("A", "done", "shipped") in o.statuses
+        assert ("A", "done", _MCP_ENVELOPE) in o.statuses
+
+    run(body())
+
+
+def test_report_status_envelope_missing_is_structured_error():
+    """envelope_missing PrimitiveError serialises to the standard structured-error shape.
+
+    The MCP layer wraps PrimitiveError as:
+        {"error": e.code, "message": e.message, "details": e.details}
+    This test verifies envelope_missing round-trips correctly with that shape.
+    """
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        result = await _call(
+            cfg, "report_status", {"state": "done", "detail": "all good"}
+        )
+        assert result.isError is True
+        payload = _text_payload(result)
+        # Standard PrimitiveError serialisation contract.
+        assert payload["error"] == "envelope_missing"
+        assert "message" in payload
+        assert isinstance(payload["details"], dict)
+        assert payload["details"].get("reason") == "envelope_missing"
+
+    run(body())
+
+
+def test_report_status_detail_empty_reason():
+    """When detail is empty, reason field inside details is 'detail_empty'."""
+    o = _build()
+    cfg = build_mcp_server_for(o, caller_id="A")
+
+    async def body():
+        result = await _call(
+            cfg, "report_status", {"state": "done", "detail": ""}
+        )
+        assert result.isError is True
+        payload = _text_payload(result)
+        assert payload["error"] == "envelope_missing"
+        assert payload["details"].get("reason") == "detail_empty"
 
     run(body())
 

@@ -614,13 +614,16 @@ def test_ask_user_malformed_option_dict():
 # ---------------------------------------------------------------------------
 
 
+_ENVELOPE = "[REVIEW REQUIRED]\nrole=worker     agent=A\nDeliverables: done\nOpen questions / risks: none\nLeader action required: approve (terminate_child) OR rework (send_message)"
+
+
 def test_report_status_records_and_emits():
     o = _build()
 
     async def body():
-        out = await report_status(o, caller_id="A", state="done", detail="shipped")
+        out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
         assert out == {"recorded": True}
-        assert o.statuses == [("A", "done", "shipped")]
+        assert o.statuses == [("A", "done", _ENVELOPE)]
         assert any(ev[0] == "status" for ev in o.events)
 
     run(body())
@@ -635,6 +638,116 @@ def test_report_status_invalid_state():
         assert ei.value.code == "invalid_state"
 
     run(body())
+
+
+# ---------------------------------------------------------------------------
+# report_status — envelope validation (state="done")
+# ---------------------------------------------------------------------------
+
+
+class TestReportStatusEnvelope:
+    """Envelope validation: state='done' requires [REVIEW REQUIRED] in detail."""
+
+    def test_done_with_envelope_in_detail_succeeds(self) -> None:
+        """state='done', detail with [REVIEW REQUIRED] → success."""
+        o = _build()
+
+        async def body():
+            out = await report_status(
+                o,
+                caller_id="A",
+                state="done",
+                detail="[REVIEW REQUIRED]\nrole=foo agent=A\nDeliverables: done.\n",
+            )
+            assert out == {"recorded": True}
+
+        run(body())
+
+    def test_done_empty_detail_raises_envelope_missing(self) -> None:
+        """state='done', detail='' → PrimitiveError(code='envelope_missing', reason='detail_empty')."""
+        o = _build()
+
+        async def body():
+            with pytest.raises(PrimitiveError) as ei:
+                await report_status(o, caller_id="A", state="done", detail="")
+            assert ei.value.code == "envelope_missing"
+            assert ei.value.details.get("reason") == "detail_empty"
+
+        run(body())
+
+    def test_done_none_detail_raises_envelope_missing(self) -> None:
+        """state='done', detail=None → PrimitiveError(code='envelope_missing', reason='detail_empty')."""
+        o = _build()
+
+        async def body():
+            with pytest.raises(PrimitiveError) as ei:
+                await report_status(o, caller_id="A", state="done", detail=None)
+            assert ei.value.code == "envelope_missing"
+            assert ei.value.details.get("reason") == "detail_empty"
+
+        run(body())
+
+    def test_done_non_empty_detail_without_marker_raises(self) -> None:
+        """state='done', detail='all good' → PrimitiveError(code='envelope_missing', reason='envelope_missing')."""
+        o = _build()
+
+        async def body():
+            with pytest.raises(PrimitiveError) as ei:
+                await report_status(o, caller_id="A", state="done", detail="all good")
+            assert ei.value.code == "envelope_missing"
+            assert ei.value.details.get("reason") == "envelope_missing"
+
+        run(body())
+
+    def test_done_lowercase_marker_succeeds(self) -> None:
+        """state='done', detail='[review required]\\n...' → success (case-insensitive)."""
+        o = _build()
+
+        async def body():
+            out = await report_status(
+                o,
+                caller_id="A",
+                state="done",
+                detail="[review required]\nrole=foo agent=A\nDeliverables: done.",
+            )
+            assert out == {"recorded": True}
+
+        run(body())
+
+    def test_done_leading_whitespace_marker_succeeds(self) -> None:
+        """state='done', detail='   [REVIEW REQUIRED]\\n...' → success (leading whitespace OK)."""
+        o = _build()
+
+        async def body():
+            out = await report_status(
+                o,
+                caller_id="A",
+                state="done",
+                detail="   [REVIEW REQUIRED]\nrole=foo agent=A\nDeliverables: done.",
+            )
+            assert out == {"recorded": True}
+
+        run(body())
+
+    def test_idle_state_skips_envelope_validation(self) -> None:
+        """state='idle', detail='anything' → success (validation only on 'done')."""
+        o = _build()
+
+        async def body():
+            out = await report_status(o, caller_id="A", state="idle", detail="anything")
+            assert out == {"recorded": True}
+
+        run(body())
+
+    def test_working_state_skips_envelope_validation(self) -> None:
+        """state='working', no detail → success (validation only on 'done')."""
+        o = _build()
+
+        async def body():
+            out = await report_status(o, caller_id="A", state="working")
+            assert out == {"recorded": True}
+
+        run(body())
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +784,8 @@ def _make_plan(plan_id: str, agent_id: str, statuses: dict[str, str]) -> "_beido
 
 
 def test_report_status_done_with_incomplete_plan_raises():
-    """report_status(state='done') when plan has unfinished tasks raises plan_incomplete."""
+    """report_status(state='done') when plan has unfinished tasks raises plan_incomplete.
+    The envelope guard passes (detail contains [REVIEW REQUIRED]), then plan_incomplete fires."""
     o = _build()
     plan = _make_plan(
         plan_id="plan_1",
@@ -683,7 +797,7 @@ def test_report_status_done_with_incomplete_plan_raises():
 
     async def body():
         with pytest.raises(PrimitiveError) as ei:
-            await report_status(o, caller_id="A", state="done")
+            await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
         assert ei.value.code == "plan_incomplete"
         # Both unfinished tasks should be reported in the error details.
         incomplete = ei.value.details.get("incomplete_task_ids", [])
@@ -704,7 +818,7 @@ def test_report_status_done_with_all_tasks_finished_succeeds():
     o._active_plan_by_agent["A"] = "plan_2"
 
     async def body():
-        out = await report_status(o, caller_id="A", state="done", detail="all finished")
+        out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
         assert out == {"recorded": True}
 
     run(body())
@@ -717,7 +831,7 @@ def test_report_status_done_with_no_active_plan_succeeds():
     # already has _active_plan_by_agent = {} so no further setup is needed.
 
     async def body():
-        out = await report_status(o, caller_id="A", state="done", detail="no plan, still done")
+        out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
         assert out == {"recorded": True}
 
     run(body())

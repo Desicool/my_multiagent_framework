@@ -102,8 +102,8 @@ REPLY_GATE_ALLOWLIST = {
 
 # bd issue q5mk: design-committee skills have a stricter termination contract
 # (coding_v2/orchestrator/SKILL.md line 78 — never terminate until the User
-# Approve branch). The synth envelope must reflect that so leaders don't
-# take the v1 "approve = terminate_child" reflex on synthesized envelopes.
+# Approve branch). The review-gate deny message uses this to remind leaders
+# not to take the v1 "approve = terminate_child" reflex on these agents.
 V2_DESIGN_COMMITTEE_SKILLS = {
     "product_manager_v2",
     "software_architect_v2",
@@ -222,89 +222,17 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         if input_data.get("tool_input", {}).get("state") != "done":
             return {}
         # Guard: PostToolUse also fires for failed calls (is_error=True tool result).
+        # The primitive raised an envelope_missing or other error; the model already
+        # sees the error in the next tool result. Hook is a strict no-op here.
         tool_response = input_data.get("tool_response") or {}
         if isinstance(tool_response, dict) and tool_response.get("is_error"):
             return {}
 
-        # Mark completion as pending on the AgentRecord BEFORE branching on
-        # leader/root, so root reuses the same approved/rework state transitions
-        # as children. last_progress_ts also bumps: this IS the last meaningful
-        # agent action.
+        # Primitive guarantees envelope presence when is_error=False.
+        # Read detail directly — no assistant_text_for_turn fallback needed.
+        summary = (input_data.get("tool_input") or {}).get("detail") or ""
+
         rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
-        if rec is not None:
-            rec.completion_pending = True
-            rec.completion_pending_ts = time.time()
-            rec.last_progress_ts = time.time()
-            rec.idle_nudge_count = 0
-            # Clear any pending reply obligations -- agent reported done,
-            # reply obligations are moot.
-            if rec.pending_replies:
-                for msg_id, obl in rec.pending_replies.items():
-                    orch.emit_event("reply.abandoned", {
-                        "agent_id": caller_id,
-                        "message_id": msg_id,
-                        "from_id": obl["from_id"],
-                        "reason": "completion_reported",
-                        "ts": time.time(),
-                    })
-                rec.pending_replies.clear()
-                rec.reply_gate_active = False
-
-        # Retrieve the assistant text from the same turn as the report_status call.
-        # Exact binding: tool_use_id -> text recorded by the drain loop in the same message.
-        # Fallback: most recent assistant text for this agent (from any prior turn).
-        summary = orch.assistant_text_for_turn(caller_id, tool_use_id or "")
-        if not summary or not summary.strip():
-            # Fall back to the detail argument from the report_status call.
-            tool_input = input_data.get("tool_input") or {}
-            summary = tool_input.get("detail")
-        if not summary or not summary.strip():
-            orch.emit_event(
-                "completion.empty",
-                {
-                    "agent_id": caller_id,
-                    "leader_id": leader_id,
-                    "reason": "no summary in report_status turn",
-                },
-            )
-            return {}
-
-        # Defensive envelope guard: ensure the body contains [REVIEW REQUIRED].
-        # If the child embedded the prompt-side envelope, pass through unchanged.
-        # If not, synthesize the envelope so the reviewer gets the unmissable signal.
-        if "[review required]" not in summary.lower():
-            # Read skill name from the AgentRecord for the synthetic header.
-            skill_name_for_envelope = (
-                rec.skill_name if rec is not None else caller_id
-            )
-            if skill_name_for_envelope in V2_DESIGN_COMMITTEE_SKILLS:
-                leader_action_line = (
-                    "Leader action required: hold for convergence "
-                    "(no terminate_child; remain alive across peer critique and "
-                    "the freeze probe — termination only at the User Approve branch) "
-                    "OR rework (send_message)"
-                )
-            else:
-                leader_action_line = "Leader action required: approve (terminate_child) OR rework (send_message)"
-            synthesized_body = (
-                f"[REVIEW REQUIRED]\n"
-                f"role={skill_name_for_envelope}     agent={caller_id}\n"
-                f"Deliverables: (none provided -- child failed to embed envelope)\n"
-                f"Open questions / risks: (none provided)\n"
-                f"{leader_action_line}\n"
-                f"\n\n"
-                f"Original child body:\n"
-                f"{summary}"
-            )
-            orch.emit_event(
-                "completion.envelope_synthesized",
-                {
-                    "agent_id": caller_id,
-                    "leader_id": leader_id,
-                    "body_chars": synthesized_body[:200],
-                },
-            )
-            summary = synthesized_body
 
         # Root agent: route the review through the human gateway instead of an
         # agent leader. Approve -> terminate_root; Rework -> deliver a rework
@@ -368,6 +296,25 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                         "decision": "approve",
                     },
                 )
+                # Mark completion pending at end of success path, after all
+                # delivery work is done, so an unexpected raise doesn't leave
+                # the agent stuck pending.
+                if rec is not None:
+                    rec.completion_pending = True
+                    rec.completion_pending_ts = time.time()
+                    rec.last_progress_ts = time.time()
+                    rec.idle_nudge_count = 0
+                    if rec.pending_replies:
+                        for msg_id, obl in rec.pending_replies.items():
+                            orch.emit_event("reply.abandoned", {
+                                "agent_id": caller_id,
+                                "message_id": msg_id,
+                                "from_id": obl["from_id"],
+                                "reason": "completion_reported",
+                                "ts": time.time(),
+                            })
+                        rec.pending_replies.clear()
+                        rec.reply_gate_active = False
                 await orch.terminate_root()
             else:
                 # Treat anything that isn't "approve" as rework so the user can
@@ -387,8 +334,26 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                         "decision": "rework",
                     },
                 )
+                # Mark completion pending at end of success path.
+                if rec is not None:
+                    rec.completion_pending = True
+                    rec.completion_pending_ts = time.time()
+                    rec.last_progress_ts = time.time()
+                    rec.idle_nudge_count = 0
+                    if rec.pending_replies:
+                        for msg_id, obl in rec.pending_replies.items():
+                            orch.emit_event("reply.abandoned", {
+                                "agent_id": caller_id,
+                                "message_id": msg_id,
+                                "from_id": obl["from_id"],
+                                "reason": "completion_reported",
+                                "ts": time.time(),
+                            })
+                        rec.pending_replies.clear()
+                        rec.reply_gate_active = False
             return {}
 
+        # Non-root path: deliver to leader's inbox.
         orch.deliver_message(
             from_id=caller_id,
             to_id=leader_id,
@@ -403,6 +368,25 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                 "via": "hook",
             },
         )
+        # Mark completion pending at end of success path, after delivery is done.
+        if rec is not None:
+            rec.completion_pending = True
+            rec.completion_pending_ts = time.time()
+            rec.last_progress_ts = time.time()
+            rec.idle_nudge_count = 0
+            # Clear any pending reply obligations -- agent reported done,
+            # reply obligations are moot.
+            if rec.pending_replies:
+                for msg_id, obl in rec.pending_replies.items():
+                    orch.emit_event("reply.abandoned", {
+                        "agent_id": caller_id,
+                        "message_id": msg_id,
+                        "from_id": obl["from_id"],
+                        "reason": "completion_reported",
+                        "ts": time.time(),
+                    })
+                rec.pending_replies.clear()
+                rec.reply_gate_active = False
         return {}
 
     async def on_send_message_reply(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:

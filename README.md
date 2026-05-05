@@ -77,9 +77,11 @@ yet** — see [Philosophy: MVP first](#philosophy-mvp-first).
 - **Leader-only termination.** Only a leader can terminate a direct child.
   Beidou itself can only terminate the root. Cascade is handled by the
   runtime, depth-first, with a watchdog backstop.
-- **`[REVIEW REQUIRED]` envelope contract.** When a child reports done, a
-  PostToolUse hook reads the reporting turn's last assistant text and
-  delivers it to the leader's inbox; the leader must `terminate_child`
+- **`[REVIEW REQUIRED]` envelope contract.** When a child reports done, the
+  `report_status` primitive enforces that `detail` contains the `[REVIEW
+  REQUIRED]` envelope; calls without it are rejected at the primitive with
+  an `envelope_missing` error. On success, a PostToolUse hook delivers the
+  `detail` verbatim to the leader's inbox; the leader must `terminate_child`
   (approve) or `send_message` (rework) before doing anything else.
 - **Liveness watchdog.** Review-pending pings, idle nudges, and a
   three-strike escalation to the user gateway, all running on a separate
@@ -247,12 +249,11 @@ Six integration points, all in two files (`beidou/sdk_agent.py`,
     non-allowlisted tool while one of its direct children has
     `completion_pending=True`.
   - `on_report_status` (PostToolUse) — owns the completion handoff:
-    reads the agent's last assistant text from the same turn,
-    synthesizes a `[REVIEW REQUIRED]` envelope if missing, and either
-    delivers the body to the leader's inbox or routes the root agent's
-    review through the user gateway. Hook timeout overridden to 1800 s
-    so a real human review is not silently truncated by claude-code's
-    60 s default.
+    reads `detail` from the tool input (the primitive has already validated
+    that it contains the `[REVIEW REQUIRED]` envelope) and either delivers
+    it to the leader's inbox or routes the root agent's review through the
+    user gateway. Hook timeout overridden to 1800 s so a real human review
+    is not silently truncated by claude-code's 60 s default.
 - **Drain loop** consumes the SDK's async message iterator
   (streaming-input mode), translates SDK messages to Beidou events, and
   parks each agent on a per-agent `asyncio.Queue` between turns.
@@ -397,11 +398,10 @@ delivers messages, agents do not poll).
 teamless-root model + create_team consensus guardrail*). The three-tier
 project / team workspace went in along with the `--workspace` flag.
 Leader-mediated completion review landed: a `[REVIEW REQUIRED]` envelope
-contract, a PostToolUse hook that reads the reporting turn's last
-assistant text and routes it to the leader's inbox (or to the user
-gateway if the reporter is the root), a liveness watchdog with
-review-pending pings and idle nudges, `terminate_child` gated on
-completion-pending, and structured `AskUserQuestion` with
+contract, a PostToolUse hook that routes the validated `detail` to the
+leader's inbox (or to the user gateway if the reporter is the root), a
+liveness watchdog with review-pending pings and idle nudges, `terminate_child`
+gated on completion-pending, and structured `AskUserQuestion` with
 answer-as-bubble. Human-readable agent names came in. The synthetic
 `tm_root` team-of-one was removed: the root agent is genuinely teamless
 at depth 0; if a task is too big for one agent, the root calls

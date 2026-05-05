@@ -98,7 +98,7 @@ surface to the gateway directly via `gateway_ask_user_structured`.
 ## 3. System prompt structure
 
 The `system_prompt` delivered to each agent is assembled once at spawn time by
-`build_system_prompt(skill, spawn_ctx)` in `beidou/skills/loader.py`. It is
+`build_system_prompt(skill, spawn_ctx)` in `beidou/agent/prompts.py`. It is
 the same string on every turn (Anthropic prompt caching applies — full hit
 on turn 2+).
 
@@ -165,10 +165,11 @@ self-declaration. The agent never marks itself done; only the leader's
 `terminate_child` (approve) or `send_message` (rework) closes the loop. The
 agent remains alive and parked on its inbox until the leader acts.
 
-**Review envelope.** Agents are required (by the prompt-side rule in
-`beidou/skills/coding/orchestrator/SKILL.md`, §"Reviewing a child's
-completion request") to embed a structured envelope in the final assistant
-message of the reporting turn:
+**Review envelope.** The `detail` argument to `report_status(state="done")`
+MUST contain a structured envelope. The primitive rejects calls where `detail`
+is missing or does not contain `[REVIEW REQUIRED]` (case-insensitive) with an
+`envelope_missing` tool error; the agent sees the error in its next tool result
+and retries with the corrected call. The required envelope format is:
 
 ```
 [REVIEW REQUIRED]
@@ -178,45 +179,32 @@ Open questions / risks: <one line, or "none">
 Leader action required: approve (terminate_child) OR rework (send_message)
 ```
 
+`detail` is the canonical envelope source — there is no fallback to assistant
+text. The prompt-side rule in `[COMPLETION HANDOFF CONTRACT]` (assembled by
+`build_system_prompt` in `beidou/agent/prompts.py`) instructs agents to include
+the full envelope in `detail` on every `done` call.
+
 A `PostToolUse` SDK hook fires when an agent calls
-`mcp__beidou__report_status(state="done")` (`beidou/sdk_agent.py::on_report_status`).
-The hook reads the agent's most recent assistant text from that same turn
-(bound by `tool_use_id`) and delivers it to the leader's inbox as a
+`mcp__beidou__report_status(state="done")` (`beidou/agent/hooks.py::on_report_status`).
+When `is_error=False` (primitive accepted the call), the hook reads `detail`
+from the tool input and delivers it verbatim to the leader's inbox as a
 `completion_report` message. This emits a `completion.reported` event.
+
+When `is_error=True` (primitive rejected the call — `envelope_missing`,
+`plan_incomplete`, etc.), the hook is a strict no-op: no delivery, no state
+mutation. The agent already sees the error in its next tool result.
 
 On the `AgentRecord`, the hook sets `completion_pending=True` and stamps
 `completion_pending_ts` with the current time (`beidou/orchestrator.py`,
-`AgentRecord` fields). The pending flag is cleared when:
+`AgentRecord` fields). This mutation happens **at the end of the success path**,
+after the leader-vs-root delivery is set up, so an unexpected raise during
+delivery does not leave the agent stuck pending. The pending flag is cleared when:
 
 - The agent's direct leader (or the human user gateway) delivers any
   non-system message to the agent → `completion.rework` event emitted
   (`beidou/orchestrator.py::inbox_put`).
 - `terminate_child` fires for that agent → `completion.approved` event
   emitted (`beidou/orchestrator.py::inbox_put`).
-
-**Defensive envelope synthesis.** If the child's body does not contain
-`[REVIEW REQUIRED]` (case-insensitive check), the hook synthesizes the
-envelope header and prepends it to the body before delivery, so the leader
-always receives the unmissable signal even when the model drifts from the
-prompt rule. Each synthesis emits a `completion.envelope_synthesized` event
-(count these in observability to measure prompt-side rule drift).
-
-**Detail fallback:** if the assistant text is empty, the hook reads the
-`detail` parameter from the `report_status` tool call input. If `detail` is
-present and non-empty, it is used as the completion report body. This covers
-model providers that cannot emit a preceding text message after a tool call.
-
-**Harness nudge checkpoint:** after all tool results in a given drain cycle
-are processed, a checkpoint runs. If the agent has called
-`report_status(state="done")` but both the assistant text AND `detail` are
-empty or missing, the runtime injects a nudge message into the agent's inbox:
-
-> "You called report_status(state=\"done\") without a summary. Please emit a
-> final assistant message summarizing your work, then call
-> report_status(state=\"done\", detail=\"...\") again."
-
-The nudge is injected **at most once per agent session** to prevent loops.
-When a nudge is injected, a `completion.nudged` event is emitted.
 
 The plain `terminate_child(agent_id)` call is the leader's APPROVE verdict
 on the child's `report_status(state="done")` request. If the child has not
@@ -233,9 +221,9 @@ orchestrator skill's "Reviewing a child's completion request" section —
 that is the prompt-side half of the contract.
 
 - For the root agent (leader is `USER_SENTINEL`), the same hook fires and
-  performs the same envelope synthesis, then routes the review through the
-  human gateway via `Orchestrator.gateway_ask_user_structured`. The user is
-  presented with **Approve** and **Rework** options:
+  routes the review through the human gateway via
+  `Orchestrator.gateway_ask_user_structured`. The user is presented with
+  **Approve** and **Rework** options:
   - **Approve** → `Orchestrator.terminate_root()` is awaited; the run unwinds
     via the existing terminate-sentinel path. A `completion.reported` event
     with `via=user_gateway, decision=approve` is emitted.
@@ -247,7 +235,7 @@ that is the prompt-side half of the contract.
   tool call does not deadlock. The hook execution timeout for both
   `AskUserQuestion` (PreToolUse) and `mcp__beidou__report_status` (PostToolUse)
   is `HOOK_REVIEW_TIMEOUT_S = 1800.0` (30 minutes), set in
-  `beidou/sdk_agent.py`; this overrides claude-code's 60s default so a real
+  `beidou/agent/hooks.py`; this overrides claude-code's 60s default so a real
   human review is not silently truncated.
 - Hook is skipped if the `report_status` call itself errored (`is_error=True`).
 
@@ -383,14 +371,13 @@ child and the two valid resolution actions. Each denial emits
 
 | Event | Emitted by | Meaning |
 |---|---|---|
-| `completion.envelope_synthesized` | `sdk_agent.py::on_report_status` | Hook synthesized the `[REVIEW REQUIRED]` envelope because the child failed to embed one. |
 | `completion.approved` | `orchestrator.py::inbox_put` | `terminate_child` fired for a `completion_pending` agent; review accepted. |
 | `completion.rework` | `orchestrator.py::inbox_put` | Leader or user delivered a message to a `completion_pending` agent; review returned for rework. |
 | `completion.reping` | `orchestrator.py::_watchdog_tick` | Watchdog pinged the leader again (Pass A). |
 | `review.escalated_to_user` | `orchestrator.py::_watchdog_tick` | Leader failed to act after 3 pings; escalated to user gateway. |
 | `liveness.nudge` | `orchestrator.py::_watchdog_tick` | Idle agent nudged (Pass B). |
 | `liveness.escalated_to_user` | `orchestrator.py::_watchdog_tick` | Idle agent nudged 3× without progress; escalated to user gateway. |
-| `review_gate.denied` | `sdk_agent.py::on_review_gate` | Leader tried to call a non-allowlisted tool while a child review is pending. |
+| `review_gate.denied` | `agent/hooks.py::on_review_gate` | Leader tried to call a non-allowlisted tool while a child review is pending. |
 | `watchdog.exception` | `orchestrator.py::_watchdog_loop` | Exception inside `_watchdog_tick`; watchdog continues. |
 
 ## 4. Prompt-side contract rules

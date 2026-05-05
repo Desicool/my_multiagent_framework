@@ -225,7 +225,7 @@ trigger liveness evaluation.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `state` | string enum | yes | One of: `working`, `idle`, `blocked`, `done`. |
-| `detail` | string | no | Free-text summary. Required when `state="done"` (in practice). |
+| `detail` | string | no | Free-text summary. **Required and must contain the `[REVIEW REQUIRED]` envelope when `state="done"`.** For other states, free-form text. |
 
 **Output schema**
 ```
@@ -234,16 +234,28 @@ trigger liveness evaluation.
 
 **Error cases**
 - `invalid_state`: `state` not in the enum above.
+- `envelope_missing`: `state="done"` was called but `detail` does not
+  contain `[REVIEW REQUIRED]` (case-insensitive substring check). The
+  call is rejected; the model sees this error in its next tool result
+  and must resubmit with the full envelope in `detail`.
+  - `reason: "detail_empty"` — `detail` is null, absent, or
+    whitespace-only.
+  - `reason: "envelope_missing"` — `detail` is non-empty but lacks the
+    `[REVIEW REQUIRED]` marker.
+- `plan_incomplete`: `state="done"` was called while the agent's active
+  plan has unfinished tasks.
 
 **Side effects**
 - Emits a `status` event to the observability sinks.
 - If `state="done"`, the orchestrator's `on_report_status` PostToolUse
   hook fires (see `architecture.md`):
-  - For non-root agents, the synthesized `[REVIEW REQUIRED]` body is
-    delivered to the leader's inbox as a `completion_report` message.
-  - For the root agent, the same body is routed through the human
-    gateway (`Orchestrator.gateway_ask_user_structured`). The user
-    chooses **Approve** (→ `terminate_root`) or **Rework** (→ a
+  - For non-root agents, the `detail` field (which the primitive has
+    already validated to contain the `[REVIEW REQUIRED]` envelope) is
+    delivered verbatim to the leader's inbox as a `completion_report`
+    message.
+  - For the root agent, the same `detail` body is routed through the
+    human gateway (`Orchestrator.gateway_ask_user_structured`). The
+    user chooses **Approve** (→ `terminate_root`) or **Rework** (→ a
     `from_id="user"`, `body="rework: …"` message delivered back to
     the root's inbox so the next turn continues).
 - Triggers a liveness re-evaluation on the caller's reviewer (leader or,

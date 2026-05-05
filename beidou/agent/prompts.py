@@ -64,11 +64,20 @@ When your task is complete:
 1. Emit a final assistant message summarizing what you accomplished.
    List files created, decisions made, and next-step pointers your
    leader needs.
-2. Then call report_status(state="done", detail="brief summary").
+2. Then call report_status(state="done", detail="<full envelope>").
 
-If you call report_status(state="done") without providing a summary,
-Beidou will ask you to provide one before your completion is forwarded
-to your leader."""
+On report_status(state='done'), your detail argument MUST contain the
+complete [REVIEW REQUIRED] envelope (role, agent, Deliverables, Open
+questions / risks, Leader action required). The runtime rejects calls
+without it via envelope_missing — you will see the error in the next
+tool result and must resubmit with detail filled in.
+
+Example minimum envelope in detail:
+  [REVIEW REQUIRED]
+  role=<your skill>     agent=<your agent id>
+  Deliverables: <what you produced>
+  Open questions / risks: <any blockers, or "none">
+  Leader action required: approve (terminate_child) OR rework (send_message)"""
 
 _OTHER_SKILLS_BLOCK = """\
 [OTHER SKILLS]

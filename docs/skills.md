@@ -98,10 +98,11 @@ correctly: the agent's `Skill` tool can then list all bundled Beidou skills.
 ### 3. Per-agent-spawn system prompt assembly (`build_system_prompt`)
 
 ```python
+# Lives in beidou/agent/prompts.py (moved from beidou/skills/loader.py)
 build_system_prompt(skill: LoadedSkill, spawn_ctx: dict) -> str
 ```
 
-Assembles the four-section system prompt. Substitution of `{role}`,
+Assembles the five-section system prompt. Substitution of `{role}`,
 `{role_description}`, `{team_name}`, `{workspace_path}`, `{project_workspace_path}`
 happens here, in memory only, never on disk.
 
