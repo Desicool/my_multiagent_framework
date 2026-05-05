@@ -67,9 +67,9 @@ For substantial design work (e.g. the initial SDK migration):
 
 1. Sketch the design in a scratch doc.
 2. Write or update the affected `docs/*.md` FIRST.
-3. Build a throw-away prototype where the SDK behaviour is uncertain. See
-   `proto_01_long_tool.py` and `proto_02_token_granularity.py` for the
-   template. Record findings in `limits.md` / `observability.md`.
+3. Build a throw-away prototype where the SDK behaviour is uncertain.
+   Record findings in `limits.md` / `observability.md`, then delete the
+   prototype — the docs hold the ground truth, not the scratch script.
 4. Only then start on production code.
 
 ## Session-end protocol

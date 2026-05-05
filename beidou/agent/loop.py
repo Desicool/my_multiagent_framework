@@ -589,7 +589,8 @@ async def run_agent(orch: Orchestrator, spec: SpawnSpec) -> RunResult:
 
                 # Dedup turn.usage by message_id. Multiple AssistantMessage
                 # fragments share the same message_id + usage payload
-                # (confirmed in proto_02_token_granularity.py).
+                # (verified during the SDK-behaviour probe; see
+                # docs/observability.md#turn.usage).
                 if mid and mid not in seen_message_ids and usage:
                     seen_message_ids.add(mid)
                     usage_payload = dict(usage) if isinstance(usage, dict) else {}

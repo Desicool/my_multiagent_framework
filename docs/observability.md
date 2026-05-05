@@ -118,8 +118,9 @@ almost always signals a mis-built spec.
 Per-turn token accounting. Emitted **once per unique
 `AssistantMessage.message_id`** seen in the stream.
 
-**Deduplication rule** (confirmed in `proto_02_token_granularity.py`): the
-SDK may yield multiple `AssistantMessage` fragments that share a
+**Deduplication rule** (verified during the original SDK-behaviour probe;
+the throwaway prototype that produced the finding has since been removed):
+the SDK may yield multiple `AssistantMessage` fragments that share a
 `message_id` (one per block). Count usage once per id. A simple
 `seen: set[str]` in the drain loop suffices.
 
@@ -136,9 +137,9 @@ SDK may yield multiple `AssistantMessage` fragments that share a
 | `cache_read_input_tokens` | `AssistantMessage.usage.cache_read_input_tokens` (if present). |
 
 **Per-turn USD is NOT available.** The SDK does not expose a per-assistant
-cost. Confirmed in `proto_02_token_granularity.py`. USD lands on `run.cost`
-only. Do not synthesize per-turn dollars; it would misrepresent the cost
-accounting the SDK actually performs.
+cost (verified during the original SDK-behaviour probe). USD lands on
+`run.cost` only. Do not synthesize per-turn dollars; it would misrepresent
+the cost accounting the SDK actually performs.
 
 ---
 

@@ -532,8 +532,8 @@ Terminate sentinels short-circuit: the outer loop ends the SDK session and
 emits `agent_completed` with `terminate_consumed=True`. Agents never see
 terminate sentinels.
 
-- The SDK imposes **no per-tool timeout**. Verified in
-  `proto_01_long_tool.py`: blocking tool calls at 60s and 180s completed
+- The SDK imposes **no per-tool timeout**. Verified by an SDK-behaviour
+  probe (since removed): blocking tool calls at 60s and 180s completed
   cleanly with no SDK-level timeout.
 - `ask_user` has no timeout. The runtime parks the agent on the gateway
   response future and resumes it when an answer arrives.
