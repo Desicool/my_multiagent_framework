@@ -14,6 +14,7 @@ allowed-tools:
   - send_message
   - report_status
   - signal_review
+  - request_termination
   - declare_plan
   - remove_plan
   - spawn_agent
@@ -146,6 +147,9 @@ The moment your final child's review is approved and you call
    mcp__beidou__signal_review(
      detail="<paste the same envelope above into detail verbatim>"
    )
+   mcp__beidou__request_termination(
+     detail="all work complete, ready for teardown"
+   )
    ```
 
 3. End the turn. Do nothing else. Do NOT spawn anything new. Do NOT
@@ -155,7 +159,8 @@ The moment your final child's review is approved and you call
 orchestrator unable to tell whether Phase 2 is done or you are stalled —
 the bug pattern from `tsk_658f44b6`. If you have already terminated all
 children but did not emit the envelope, your next turn must do it; do
-not start new work.
+not start new work. `request_termination` signals your lifecycle is
+complete and you are ready to be torn down.
 
 A rework reply from the orchestrator arrives as a normal user-role inbox
 message whose body starts with `rework: …`. Treat it as a directive on

@@ -188,13 +188,18 @@ _BEIDOU_PRIMITIVE_TOOLS: list[str] = [
     "mcp__beidou__send_message",
     "mcp__beidou__list_peers",
     "mcp__beidou__ask_user",
+    "mcp__beidou__answer_question",
+    "mcp__beidou__escalate_question",
     "mcp__beidou__report_status",
+    "mcp__beidou__signal_review",
+    "mcp__beidou__request_termination",
     "mcp__beidou__declare_plan",
     "mcp__beidou__remove_plan",
     "mcp__beidou__spawn_agent",
     "mcp__beidou__list_ready",
     "mcp__beidou__create_team",
     "mcp__beidou__terminate_child",
+    "mcp__beidou__list_pending_reviews",
 ]
 
 

@@ -19,6 +19,8 @@ allowed-tools:
   - send_message
   - list_peers
   - report_status
+  - signal_review
+  - request_termination
   - terminate_child
   - ask_user
   - answer_question
@@ -124,7 +126,7 @@ Each turn, after receiving `[REVIEW REQUIRED]` from a child:
 Gates per phase:
 - **pm gate**: `{project_workspace_path}/requirements.md` must exist and be non-empty.
 - **arch gate**: `{project_workspace_path}/SPEC.md` and `{project_workspace_path}/tasks.md` must both exist.
-- **impl gate**: the implementation-lead has reported done. The runtime enforces all plan tasks are complete before allowing report_status(state="done"), so if the lead's [REVIEW REQUIRED] arrives, its plan DAG is fully resolved. Verify the envelope lists all deliverables from tasks.md.
+- **impl gate**: the implementation-lead has reported done. The runtime enforces all plan tasks are complete before allowing signal_review / request_termination, so if the lead's [REVIEW REQUIRED] arrives, its plan DAG is fully resolved. Verify the envelope lists all deliverables from tasks.md.
 - **test gate**: `{project_workspace_path}/test_report.md` must exist.
 - **deploy gate**: `{project_workspace_path}/deploy.md` must exist.
 - **qa gate**: `{project_workspace_path}/qa_report.md` must exist before checking verdict.
@@ -187,8 +189,9 @@ receive an `ambiguity:` peer message:
 
 DELIVERY GATE
   If `{project_workspace_path}/qa_report.md` contains "APPROVED":
-    Follow the Completion handoff sequence (emit final summary message, then call
-    report_status(state="done", detail=<summary of all deliverables>)).
+    Emit a final summary message, then call
+    signal_review(detail=<summary of all deliverables>) followed by
+    request_termination(detail="delivery complete, ready for teardown").
     Then end your turn — the runtime keeps you alive for re-assignment.
   If qa_report.md contains "REJECTED":
     - Read the rejection reasons.
@@ -220,10 +223,9 @@ When the next user-role turn begins with a message containing
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
-REQUEST FOR REVIEW sent to your leader. You remain alive until your
-leader terminates you. If your leader judges your work incomplete, you
-will receive a rework message — keep working from there.
+You can never mark yourself done. `signal_review(detail=...)` is a
+REQUEST FOR REVIEW sent to your leader (the user gateway, for root).
+You remain alive until your leader terminates you.
 
 When you believe your work is ready for review:
 
@@ -241,9 +243,11 @@ When you believe your work is ready for review:
    ```
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
+     )
+     mcp__beidou__request_termination(
+       detail="all work complete, ready for teardown"
      )
 
    The detail field is your safety net — if the assistant text is lost,

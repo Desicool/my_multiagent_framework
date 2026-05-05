@@ -17,6 +17,7 @@ allowed-tools:
   - send_message
   - list_peers
   - signal_review
+  - request_termination
   - report_status
   - terminate_child
   - ask_user
@@ -42,7 +43,7 @@ Phase 2 coordinator: boots `arch_post_approval` to write `tasks.md`, then manage
 - Maintain `{project_workspace_path}/phase2_state.json` as the single source of truth for the loop state.
 - Route `[DEV READY]` → `[QA START]`; route `[QA VERDICT REJECTED]` → `[REWORK]`.
 - On QA APPROVED: call `ask_user` for final confirmation.
-- On user Accept: terminate both leaders, call `signal_review`, finish.
+- On user Accept: terminate both leaders, call `signal_review` and `request_termination`, finish.
 - Validate `cycle_id` on all inbound messages; ignore stale messages (cycle_id mismatch).
 - Enforce the 5-iteration cap. When iteration exceeds 5, call `ask_user` with options before continuing.
 
@@ -226,7 +227,8 @@ When `qa_lead` sends `[QA VERDICT APPROVED]` via `mcp__beidou__send_message`:
 2. Call `mcp__beidou__terminate_child(agent_id=<dev_lead agent_id>)`.
 3. Call `mcp__beidou__terminate_child(agent_id=<qa_lead agent_id>)`.
 4. Call `mcp__beidou__signal_review(detail="[REVIEW REQUIRED] role=phase2_coordinator agent=<your_agent_id>\nPhase 2 approved by user after <N> iterations.\nDeliverables:\n  - {project_workspace_path}/tasks.md\n  - {project_workspace_path}/integration/\n  - {project_workspace_path}/qa_report.md (APPROVED)\nOpen questions / risks: none\nLeader action required: approve (terminate_child)")`.
-5. End your turn. The root orchestrator reviews and terminates you.
+5. Call `mcp__beidou__request_termination(detail="Phase 2 complete, user accepted, both leaders terminated")`.
+6. End your turn. The root orchestrator reviews and terminates you.
 
 **Reject with feedback:**
 1. Parse user feedback text.

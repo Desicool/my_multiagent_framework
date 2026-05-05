@@ -14,6 +14,7 @@ allowed-tools:
   - send_message
   - report_status
   - signal_review
+  - request_termination
   - answer_question
   - escalate_question
   - list_peers
@@ -349,7 +350,9 @@ Conversely, you MUST:
 
 You can never mark yourself done. `signal_review(detail=...)` is a
 REQUEST FOR REVIEW sent to your leader (the orchestrator). You remain alive
-until your leader terminates you. If the orchestrator judges your report
+until your leader terminates you. `request_termination` signals your
+lifecycle is complete and you are ready to be torn down. If the orchestrator
+judges your report
 incomplete, you will receive a rework message — keep working from there.
 
 A rework reply arrives as a normal user-role inbox message whose body starts
@@ -374,6 +377,9 @@ When you believe your work is ready for review:
 2. In the SAME turn, call:
      mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
+     )
+     mcp__beidou__request_termination(
+       detail="all work complete, ready for teardown"
      )
 
 3. End the turn. Do nothing else. Do NOT call any other tool, do NOT

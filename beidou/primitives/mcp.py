@@ -45,7 +45,9 @@ from .core import (
     list_ready,
     remove_plan,
     report_status,
+    request_termination,
     send_message,
+    signal_review,
     spawn_agent,
     terminate_child,
 )
@@ -397,6 +399,46 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         if "detail" in args and args["detail"] is not None:
             kwargs["detail"] = args["detail"]
         return await _wrap("report_status", report_status, args, **kwargs)
+
+    @tool(
+        "signal_review",
+        "Signal your leader that work is ready for review. Reentrant — call "
+        "each time work completes. Detail must contain [REVIEW REQUIRED] or "
+        "[ITERATION READY] envelope.",
+        {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string",
+                    "description": "Review envelope with deliverables, open questions, leader action.",
+                },
+            },
+            "required": ["detail"],
+        },
+    )
+    async def _signal_review(args: dict[str, Any]) -> dict[str, Any]:
+        return await _wrap("signal_review", signal_review, args, orch=orch, caller_id=caller_id, detail=args["detail"])
+
+    @tool(
+        "request_termination",
+        "Request lifecycle termination. Call only when your entire work is "
+        "complete and leader has approved. plan_incomplete error if active "
+        "plan has unfinished tasks.",
+        {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string",
+                    "description": "Optional summary of completed work.",
+                },
+            },
+        },
+    )
+    async def _request_termination(args: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"orch": orch, "caller_id": caller_id}
+        if "detail" in args and args["detail"] is not None:
+            kwargs["detail"] = args["detail"]
+        return await _wrap("request_termination", request_termination, args, **kwargs)
 
     @tool(
         "create_team",

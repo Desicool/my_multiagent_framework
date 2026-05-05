@@ -112,10 +112,11 @@ class TestAskUserQuestionHook:
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PostToolUse" in hooks
         matchers = hooks["PostToolUse"]
-        assert len(matchers) == 3
+        assert len(matchers) == 4
         matcher_vals = [m.matcher for m in matchers]
         assert "mcp__beidou__report_status" in matcher_vals
         assert "mcp__beidou__signal_review" in matcher_vals
+        assert "mcp__beidou__request_termination" in matcher_vals
         assert "mcp__beidou__send_message" in matcher_vals
 
     def test_redirects_with_questions(self) -> None:

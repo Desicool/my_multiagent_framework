@@ -82,6 +82,7 @@ ALLOWED_DURING_PENDING_REVIEW = {
     "mcp__beidou__list_pending_reviews",
     "mcp__beidou__report_status",
     "mcp__beidou__signal_review",
+    "mcp__beidou__request_termination",
     "mcp__beidou__ask_user",
     "mcp__beidou__answer_question",
     "mcp__beidou__escalate_question",
@@ -99,6 +100,7 @@ REPLY_GATE_ALLOWLIST = {
     "mcp__beidou__send_message",
     "mcp__beidou__report_status",
     "mcp__beidou__signal_review",
+    "mcp__beidou__request_termination",
     "mcp__beidou__ask_user",
 }
 
@@ -444,6 +446,79 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         })
         return {}
 
+    async def on_request_termination(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
+        """PostToolUse hook for ``mcp__beidou__request_termination``.
+
+        Delivers termination request to leader inbox (non-root) or user gateway
+        (root). The primitive already sets ``completion_pending``; this hook
+        handles message routing.
+        """
+        if input_data.get("tool_name") != "mcp__beidou__request_termination":
+            return {}
+        tool_response = input_data.get("tool_response") or {}
+        if isinstance(tool_response, dict) and tool_response.get("is_error"):
+            return {}
+
+        detail = (input_data.get("tool_input") or {}).get("detail") or ""
+        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
+
+        # Root agent: route through human gateway.
+        if leader_id == USER_SENTINEL:
+            try:
+                answer = await orch.gateway_ask_user_structured(
+                    caller_id,
+                    [{
+                        "question": "Agent requests termination.\n\n" + detail,
+                        "header": "Terminate",
+                        "multiSelect": False,
+                        "options": [
+                            {"label": "Approve", "description": "Terminate the agent.", "value": "approve"},
+                            {"label": "Reject", "description": "Agent should continue working.", "value": "rework", "requires_text": True},
+                        ],
+                    }],
+                    "Termination request",
+                )
+            except Exception as e:
+                orch.emit_event("completion.empty", {
+                    "agent_id": caller_id, "leader_id": leader_id,
+                    "reason": f"gateway_failure: {type(e).__name__}",
+                })
+                return {}
+
+            sub = (answer.get("answers") or [{}])[0]
+            selected = sub.get("selected_values") or sub.get("selected_labels") or []
+            decision = (selected[0] if selected else "").lower()
+            if not decision:
+                typed = (sub.get("text") or "").strip().lower()
+                if typed in {"approve", "approved", "yes", "y", "ok", "lgtm"}:
+                    decision = "approve"
+
+            if decision in ("approve", "approved"):
+                orch.emit_event("completion.reported", {
+                    "agent_id": caller_id, "leader_id": leader_id,
+                    "via": "user_gateway", "decision": "approve",
+                })
+                await orch.terminate_root()
+            else:
+                rework_text = sub.get("text") or "(no rework details)"
+                orch.deliver_message(from_id="user", to_id=caller_id, body=f"rework: {rework_text}")
+                orch.emit_event("completion.reported", {
+                    "agent_id": caller_id, "leader_id": leader_id,
+                    "via": "user_gateway", "decision": "rework",
+                })
+            return {}
+
+        # Non-root path: deliver to leader's inbox.
+        orch.deliver_message(
+            from_id=caller_id, to_id=leader_id,
+            body=f"[TERMINATION REQUESTED]\n{detail}",
+            kind="completion_report",
+        )
+        orch.emit_event("completion.reported", {
+            "agent_id": caller_id, "leader_id": leader_id, "via": "hook",
+        })
+        return {}
+
     async def on_send_message_reply(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
         """Clear the oldest pending reply obligation when send_message succeeds.
 
@@ -729,6 +804,11 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             HookMatcher(
                 matcher="mcp__beidou__signal_review",
                 hooks=[on_signal_review],
+                timeout=HOOK_REVIEW_TIMEOUT_S,
+            ),
+            HookMatcher(
+                matcher="mcp__beidou__request_termination",
+                hooks=[on_request_termination],
                 timeout=HOOK_REVIEW_TIMEOUT_S,
             ),
             HookMatcher(

@@ -20,6 +20,8 @@ allowed-tools:
   - send_message
   - list_peers
   - report_status
+  - signal_review
+  - request_termination
   - terminate_child
   - ask_user
   - answer_question
@@ -165,10 +167,11 @@ When SPEC.md and tasks.md are written, follow the Completion handoff sequence be
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a
-REQUEST FOR REVIEW sent to your leader. You remain alive until your
-leader terminates you. If your leader judges your work incomplete, you
-will receive a rework message — keep working from there.
+You can never mark yourself done. `signal_review(detail=...)` is a
+REQUEST FOR REVIEW sent to your leader. `request_termination()` signals
+lifecycle end. You remain alive until your leader terminates you. If
+your leader judges your work incomplete, you will receive a rework
+message — keep working from there.
 
 When you believe your work is ready for review:
 
@@ -186,9 +189,11 @@ When you believe your work is ready for review:
    ```
 
 2. In the SAME turn, call:
-     mcp__beidou__report_status(
-       state="done",
+     mcp__beidou__signal_review(
        detail="<paste the same envelope above into detail verbatim>"
+     )
+     mcp__beidou__request_termination(
+       detail="all work complete, ready for teardown"
      )
 
    The detail field is your safety net — if the assistant text is lost,
