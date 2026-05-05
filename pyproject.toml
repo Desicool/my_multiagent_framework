@@ -31,3 +31,11 @@ beidou = "beidou.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["beidou*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: live-API tests requiring ANTHROPIC_API_KEY and claude CLI; slow",
+]
+# Default run excludes integration tests; opt in with `pytest -m integration`
+# or `pytest -m ""` to run everything.
+addopts = "-m 'not integration'"
