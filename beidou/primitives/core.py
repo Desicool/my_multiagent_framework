@@ -226,14 +226,21 @@ async def send_message(
     reply-expected inquiry and register a reply obligation.
     """
     if not orch.agent_exists(to):
-        raise PrimitiveError("unknown_recipient", f"no such agent: {to}", to=to)
+        raise PrimitiveError(
+            "unknown_recipient",
+            f"no such agent: {to}. Use mcp__beidou__list_peers to discover "
+            f"reachable agents. Spec: docs/tool-surface.md#send_message.",
+            to=to,
+        )
 
     # Same-task check. send_message is unrestricted on topology (cross-team
     # ok) but strictly scoped to the same task.
     if orch.agent_task(caller_id) != orch.agent_task(to):
         raise PrimitiveError(
             "task_mismatch",
-            f"{to} belongs to a different task",
+            f"{to} belongs to a different task. send_message is scoped to "
+            f"the same task; check list_peers(scope='all') for in-task peers. "
+            f"Spec: docs/tool-surface.md#send_message.",
             to=to,
         )
 
@@ -242,7 +249,8 @@ async def send_message(
     if orch.inbox_size(to) >= INBOX_CAP:
         raise PrimitiveError(
             "inbox_full",
-            f"{to}'s inbox is at cap ({INBOX_CAP})",
+            f"{to}'s inbox is at cap ({INBOX_CAP}); recipient is over-loaded. "
+            f"Retry after the recipient drains. Spec: docs/limits.md #3.",
             to=to,
             cap=INBOX_CAP,
         )
@@ -289,7 +297,12 @@ async def list_peers(
         # tool-surface.md documents no "invalid_scope" code today but the
         # spec's enum is explicit; returning a structured error is cheaper
         # than silently widening the scope.
-        raise PrimitiveError("invalid_scope", f"unknown scope: {scope}", scope=scope)
+        raise PrimitiveError(
+            "invalid_scope",
+            f"unknown scope: {scope}. Valid: 'team', 'children', 'all'. "
+            f"Spec: docs/tool-surface.md#list_peers.",
+            scope=scope,
+        )
 
     peers = orch.peer_snapshot(caller_id, scope)
     return {
@@ -419,7 +432,8 @@ async def ask_user(
     if not orch.is_gateway_available():
         raise PrimitiveError(
             "gateway_unavailable",
-            "no human gateway registered",
+            "no human gateway registered for this task; ask_user cannot be "
+            "satisfied. Spec: docs/tool-surface.md#ask_user.",
         )
 
     # Agent-originated ask_user goes through the leader chain so the
@@ -429,7 +443,10 @@ async def ask_user(
     try:
         result = await orch.gateway_ask_via_chain(caller_id, questions, context)
     except GatewayDeclined as e:
-        raise PrimitiveError("user_declined", str(e) or "user declined")
+        raise PrimitiveError(
+            "user_declined",
+            (str(e) or "user declined") + " Spec: docs/tool-surface.md#ask_user.",
+        )
     return result
 
 
@@ -475,16 +492,26 @@ async def answer_question(
 
     registry = getattr(orch, "_questions", None)
     if registry is None:
-        raise PrimitiveError("gateway_unavailable", "orchestrator has no question registry")
+        raise PrimitiveError(
+            "gateway_unavailable",
+            "orchestrator has no question registry. "
+            "Spec: docs/tool-surface.md#answer_question.",
+        )
     pq = registry.get(qid)
     if pq is None:
-        raise PrimitiveError("unknown_qid", f"no pending question {qid!r}")
+        raise PrimitiveError(
+            "unknown_qid",
+            f"no pending question {qid!r}; it may have already been resolved "
+            f"or escalated. Spec: docs/tool-surface.md#answer_question.",
+        )
     # Only the current holder (chain[-1]) may answer.
     current_holder = pq.chain[-1] if pq.chain else None
     if current_holder != caller_id:
         raise PrimitiveError(
             "not_holder",
-            "only the current question holder may answer",
+            f"only the current question holder may answer (holder={current_holder}). "
+            f"You may escalate_question instead. "
+            f"Spec: docs/tool-surface.md#answer_question.",
             qid=qid,
             holder=current_holder,
             caller=caller_id,
@@ -493,7 +520,9 @@ async def answer_question(
     if len(answers) != expected:
         raise PrimitiveError(
             "answer_count_mismatch",
-            f"question has {expected} sub-question(s) but you provided {len(answers)} answer(s)",
+            f"question has {expected} sub-question(s) but you provided "
+            f"{len(answers)} answer(s); answers list must match question count. "
+            f"Spec: docs/tool-surface.md#answer_question.",
             qid=qid,
             expected=expected,
             provided=len(answers),
@@ -501,7 +530,12 @@ async def answer_question(
     result = orch.resolve_question(qid, answers, answerer=caller_id, reason=reason)
     if not result.get("ok"):
         err_reason = result.get("reason", "unknown")
-        raise PrimitiveError(err_reason, f"resolve_question rejected: {err_reason}", qid=qid)
+        raise PrimitiveError(
+            err_reason,
+            f"resolve_question rejected: {err_reason}. "
+            f"Spec: docs/tool-surface.md#answer_question.",
+            qid=qid,
+        )
     return {"ok": True, "qid": qid}
 
 
@@ -529,16 +563,25 @@ async def escalate_question(
 
     registry = getattr(orch, "_questions", None)
     if registry is None:
-        raise PrimitiveError("gateway_unavailable", "orchestrator has no question registry")
+        raise PrimitiveError(
+            "gateway_unavailable",
+            "orchestrator has no question registry. "
+            "Spec: docs/tool-surface.md#escalate_question.",
+        )
     pq = registry.get(qid)
     if pq is None:
-        raise PrimitiveError("unknown_qid", f"no pending question {qid!r}")
+        raise PrimitiveError(
+            "unknown_qid",
+            f"no pending question {qid!r}; it may have already been resolved. "
+            f"Spec: docs/tool-surface.md#escalate_question.",
+        )
     # Only the current holder (chain[-1]) may escalate.
     current_holder = pq.chain[-1] if pq.chain else None
     if current_holder != caller_id:
         raise PrimitiveError(
             "not_holder",
-            "only the current question holder may escalate",
+            f"only the current question holder may escalate (holder={current_holder}). "
+            f"Spec: docs/tool-surface.md#escalate_question.",
             qid=qid,
             holder=current_holder,
             caller=caller_id,
@@ -569,7 +612,8 @@ async def escalate_question(
     if not out.get("ok"):
         raise PrimitiveError(
             out.get("reason", "stale"),
-            f"forward_question rejected: {out.get('reason', 'stale')}",
+            f"forward_question rejected: {out.get('reason', 'stale')}. "
+            f"Spec: docs/tool-surface.md#escalate_question.",
             qid=qid,
         )
     orch.emit_event(
@@ -594,7 +638,12 @@ async def report_status(
 ) -> dict:
     """Record state + emit event. See docs/tool-surface.md#report_status."""
     if state not in ("working", "idle", "blocked", "done"):
-        raise PrimitiveError("invalid_state", f"unknown state: {state}", state=state)
+        raise PrimitiveError(
+            "invalid_state",
+            f"unknown state: {state}. Valid: 'working', 'idle', 'blocked', 'done'. "
+            f"Spec: docs/tool-surface.md#report_status.",
+            state=state,
+        )
 
     if state == "done":
         detail_text = (detail or "").strip()
@@ -620,7 +669,10 @@ async def report_status(
                 if incomplete:
                     raise PrimitiveError(
                         "plan_incomplete",
-                        f"cannot report done: {len(incomplete)} plan task(s) unfinished: {', '.join(incomplete)}",
+                        f"cannot report done: {len(incomplete)} plan task(s) "
+                        f"unfinished: {', '.join(incomplete)}. Mark each task "
+                        f"done via update_plan_task before report_status. "
+                        f"Spec: docs/tool-surface.md#declare_plan.",
                         plan_id=plan_id,
                         incomplete_task_ids=incomplete,
                     )
@@ -685,7 +737,8 @@ async def create_team(
         if isinstance(r, dict) and "leader_id" in r:
             raise PrimitiveError(
                 "leader_override_attempted",
-                "rules may not carry leader_id overrides",
+                "rules may not carry leader_id overrides; the self-lead "
+                "invariant is enforced. Spec: docs/orchestration.md.",
             )
 
     # Duplicate-description guard -- tool-surface.md#create_team.
@@ -702,7 +755,8 @@ async def create_team(
                 "All roles share the same (skill, description); every member "
                 "would redundantly implement the whole task. Either write "
                 "distinct descriptions for each role, or pass consensus=true "
-                "if parallel attempts are genuinely intentional (e.g. voting).",
+                "if parallel attempts are genuinely intentional (e.g. voting). "
+                "Spec: docs/tool-surface.md#create_team.",
             )
 
     # One in-flight create_team per caller -- limits.md #6. asyncio.Lock has
@@ -740,18 +794,25 @@ _TASK_SPEC_REQUIRED = ("id", "role", "skill", "task")
 def _validate_task_specs(tasks: Any) -> None:
     """Raise PrimitiveError if tasks is not a list of dicts with required keys."""
     if not isinstance(tasks, list):
-        raise PrimitiveError("invalid_task_spec", "tasks must be a list of task spec dicts")
+        raise PrimitiveError(
+            "invalid_task_spec",
+            "tasks must be a list of task spec dicts. "
+            "Spec: docs/tool-surface.md#declare_plan.",
+        )
     for i, spec in enumerate(tasks):
         if not isinstance(spec, dict):
             raise PrimitiveError(
                 "invalid_task_spec",
-                f"tasks[{i}] must be a dict, got {type(spec).__name__}",
+                f"tasks[{i}] must be a dict, got {type(spec).__name__}. "
+                f"Spec: docs/tool-surface.md#declare_plan.",
             )
         for key in _TASK_SPEC_REQUIRED:
             if key not in spec:
                 raise PrimitiveError(
                     "invalid_task_spec",
-                    f"tasks[{i}] missing required key {key!r}",
+                    f"tasks[{i}] missing required key {key!r}; required keys: "
+                    f"{', '.join(_TASK_SPEC_REQUIRED)}. "
+                    f"Spec: docs/tool-surface.md#declare_plan.",
                     index=i,
                     missing_key=key,
                 )
@@ -797,7 +858,11 @@ async def spawn_agent(
     caller_id is bound by the MCP closure — never trusted from model input.
     """
     if not isinstance(task_id, str) or not task_id:
-        raise PrimitiveError("invalid_task_id", "task_id must be a non-empty string")
+        raise PrimitiveError(
+            "invalid_task_id",
+            "task_id must be a non-empty string; use list_ready to discover "
+            "ready tasks. Spec: docs/tool-surface.md#spawn_agent.",
+        )
 
     # One concurrent spawn per caller — mirrors create_team's lock pattern.
     # The .locked() check is best-effort: in the rare case two spawn_agent
@@ -845,13 +910,20 @@ async def terminate_child(
     force=True to override; an audited terminate.forced event is emitted.
     """
     if not orch.agent_exists(agent_id):
-        raise PrimitiveError("unknown_agent", f"no such agent: {agent_id}", agent_id=agent_id)
+        raise PrimitiveError(
+            "unknown_agent",
+            f"no such agent: {agent_id}; use list_peers to discover children. "
+            f"Spec: docs/tool-surface.md#terminate_child.",
+            agent_id=agent_id,
+        )
 
     target_team = orch.agent_team(agent_id)
     if orch.leader_of(target_team) != caller_id:
         raise PrimitiveError(
             "not_leader",
-            f"{caller_id} does not lead team {target_team}",
+            f"{caller_id} does not lead team {target_team}; only direct "
+            f"team leaders may terminate. "
+            f"Spec: docs/orchestration.md, docs/tool-surface.md#terminate_child.",
             caller_id=caller_id,
             target_team=target_team,
         )
@@ -866,7 +938,8 @@ async def terminate_child(
         raise PrimitiveError(
             "child_not_pending_review",
             f"{agent_id} has not called report_status(state='done'). "
-            f"Wait for completion review, send a rework message, or pass force=true.",
+            f"Wait for completion review, send a rework message, or pass "
+            f"force=true. Spec: docs/tool-surface.md#terminate_child.",
             agent_id=agent_id,
             caller_id=caller_id,
         )
