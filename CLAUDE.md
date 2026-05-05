@@ -59,6 +59,13 @@ beidou/
   cli.py              # Click CLI
 ```
 
+## Debugging & browser testing
+
+- **Browser testing cleanup:** After using Playwright/browser MCP tools for debugging, delete the `.playwright-mcp/` directory and any `beidou-*.png` screenshots before committing. These are ephemeral debug artifacts, not project files.
+- **Build artifact cleanup:** After frontend rebuilds, delete old stale assets (`beidou/web/static/assets/index-*.js`, `index-*.css`) that are no longer referenced by `index.html`. Only keep the two latest assets referenced by the current `index.html`.
+- **Port cleanup:** Kill any `beidou run` or `beidou serve` processes started for testing before ending the session. Use `lsof -t -i:<port>` to find and kill stray processes.
+- **Test workspaces:** Clean up `/tmp/beidou-test-workspace` and similar test directories after testing.
+
 ## Key concepts
 
 **Persistent-agent contract:** agents never self-exit. Completion is a state (`report_status(state="done")`), not an exit. Termination authority is strictly leader→member; Beidou terminates only the root agent on user signal. See `docs/agent-runtime.md`.
