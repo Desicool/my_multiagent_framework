@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Beidou /timeline workspace — v0 mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --success: #10b981;
+    --error:   #f43f5e;
+    --pending: #f59e0b;
+    --info:    #0ea5e9;
+    --accent:  #8b5cf6;
+    --muted:   #64748b;
+    --review:  #06b6d4;
+
+    --surface:        #020617;
+    --surface-raised: #0f172a;
+    --surface-2:      #0b1322;
+    --border:         #1e293b;
+    --border-strong:  #334155;
+
+    --text:        #e2e8f0;
+    --text-strong: #f1f5f9;
+    --text-dim:    #94a3b8;
+
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  /* ── Shell ── */
+  .shell {
+    display: grid;
+    grid-template-rows: 44px 1fr;
+    grid-template-columns: 240px 1fr;
+    grid-template-areas: "topbar topbar" "spine workspace";
+    height: 100vh;
+  }
+
+  /* ── TopBar ── */
+  .topbar { grid-area: topbar; display:flex; align-items:center; gap:16px; padding:0 16px; background:var(--surface-raised); border-bottom:1px solid var(--border); }
+  .topbar .brand { font-weight:700; letter-spacing:.04em; color:var(--text-strong); font-size:13px; }
+  .topbar .brand .glyph { color:var(--review); margin-right:6px; }
+  .topbar .stat { display:inline-flex; align-items:baseline; gap:6px; color:var(--text-dim); font-size:12px; }
+  .topbar .stat .v { font-family:var(--font-mono); font-variant-numeric:tabular-nums; color:var(--text-strong); }
+  .topbar .sep { width:1px; height:18px; background:var(--border); }
+  .topbar .question-chip { margin-left:auto; display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; background:rgba(245,158,11,.10); color:var(--pending); border:1px solid rgba(245,158,11,.30); font-size:12px; font-weight:500; }
+  .topbar .question-chip .dot { width:6px; height:6px; border-radius:50%; background:var(--pending); box-shadow:0 0 0 3px rgba(245,158,11,.20); }
+
+  /* ── Spine ── */
+  .spine { grid-area:spine; background:var(--surface-2); border-right:1px solid var(--border); overflow-y:auto; padding:12px 0; }
+  .spine .group { padding:0 16px; margin-bottom:18px; }
+  .spine .group-label { font-size:10px; font-weight:600; letter-spacing:.10em; text-transform:uppercase; color:var(--muted); padding:6px 0; }
+  .spine .item { display:flex; align-items:center; gap:10px; padding:6px 8px; margin:0 -8px; border-radius:5px; color:var(--text-dim); cursor:pointer; font-size:12.5px; transition:background 80ms; }
+  .spine .item:hover { background:rgba(148,163,184,.06); color:var(--text); }
+  .spine .item.active { background:rgba(6,182,212,.08); color:var(--text-strong); }
+  .spine .item.active::before { content:''; width:3px; height:14px; background:var(--review); border-radius:2px; margin-right:-3px; }
+  .spine .item .glyph { width:14px; text-align:center; color:var(--muted); font-size:11px; }
+  .spine .item.active .glyph { color:var(--review); }
+  .spine .item .task-id { font-family:var(--font-mono); font-size:11.5px; }
+  .spine .item .task-meta { font-size:10.5px; color:var(--muted); margin-left:auto; font-family:var(--font-mono); }
+  .spine .item.disabled { opacity:.4; cursor:not-allowed; }
+
+  /* ── Workspace shell ── */
+  .workspace { grid-area:workspace; overflow-y:auto; padding:0; }
+  .ws-header { position:sticky; top:0; background:var(--surface); border-bottom:1px solid var(--border); padding:14px 24px 12px; z-index:5; }
+  .ws-title { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; }
+  .ws-title h1 { font-size:15px; font-weight:600; color:var(--text-strong); letter-spacing:-.005em; }
+  .ws-title .count { font-family:var(--font-mono); font-variant-numeric:tabular-nums; color:var(--muted); font-size:12px; }
+
+  /* ── Filters ── */
+  .filters { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .filter-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:5px; background:transparent; border:1px solid var(--border); color:var(--text-dim); font-size:11.5px; cursor:pointer; transition:all 80ms; font-weight:500; }
+  .filter-pill:hover { border-color:var(--border-strong); color:var(--text); }
+  .filter-pill.active { background:rgba(226,232,240,.04); border-color:var(--border-strong); color:var(--text-strong); }
+  .filter-pill .pill-count { font-family:var(--font-mono); color:var(--muted); font-size:10.5px; font-weight:400; }
+  .filter-pill .swatch { width:7px; height:7px; border-radius:50%; }
+  .filter-pill.cat-primitive .swatch { background:var(--review); }
+  .filter-pill.cat-lifecycle .swatch { background:var(--accent); }
+  .filter-pill.cat-plan      .swatch { background:var(--info); }
+  .filter-pill.cat-question  .swatch { background:#a78bfa; }
+  .filter-pill.cat-error     .swatch { background:var(--error); }
+  .filter-spacer { flex:1; }
+  .filter-select { background:var(--surface); border:1px solid var(--border); color:var(--text-dim); padding:4px 10px; border-radius:5px; font-size:11.5px; font-family:var(--font-sans); cursor:pointer; }
+
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    user-select: none;
+    cursor: pointer;
+  }
+  .toggle .switch {
+    width: 28px;
+    height: 16px;
+    background: var(--border);
+    border-radius: 8px;
+    position: relative;
+    transition: background 120ms;
+  }
+  .toggle .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: all 120ms;
+  }
+  .toggle.on .switch { background: rgba(6, 182, 212, 0.35); }
+  .toggle.on .switch::after { left: 14px; background: var(--review); }
+  .toggle .help {
+    font-size: 10.5px;
+    color: var(--muted);
+    margin-left: -2px;
+  }
+
+  /* ── Timeline body ── */
+  .ws-body { padding: 8px 0 32px; }
+
+  .tl {
+    position: relative;
+    padding: 0 24px;
+  }
+
+  /* The vertical rail line */
+  .tl::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    bottom: 12px;
+    left: calc(24px + 100px);  /* aligns with center of the timestamp column */
+    width: 1px;
+    background: var(--border);
+  }
+
+  .tl-row {
+    display: grid;
+    grid-template-columns: 90px 22px 1fr;
+    column-gap: 12px;
+    align-items: flex-start;
+    padding: 10px 0;
+    position: relative;
+  }
+  .tl-row:hover { background: rgba(148, 163, 184, 0.025); }
+  .tl-row + .tl-row { border-top: 1px dashed transparent; }
+
+  .tl-time {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: right;
+    padding-top: 3px;
+  }
+  .tl-time .delta { display: block; color: var(--muted); font-size: 10px; margin-top: 1px; }
+
+  .tl-glyph {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 2px solid var(--border-strong);
+    margin-top: 1px;
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  /* Glyph color = event group */
+  .tl-row.cat-primitive .tl-glyph { border-color: var(--review); color: var(--review); }
+  .tl-row.cat-lifecycle .tl-glyph { border-color: var(--accent); color: var(--accent); }
+  .tl-row.cat-plan      .tl-glyph { border-color: var(--info); color: var(--info); }
+  .tl-row.cat-question  .tl-glyph { border-color: #a78bfa; color: #a78bfa; }
+  .tl-row.cat-error     .tl-glyph { border-color: var(--error); color: var(--error); }
+  .tl-row.cat-deprecated .tl-glyph { border-color: var(--muted); color: var(--muted); }
+
+  .tl-content { min-width: 0; padding-bottom: 2px; }
+
+  .tl-line1 {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .tl-event-type {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-strong);
+    letter-spacing: -0.005em;
+  }
+  .tl-row.cat-primitive .tl-event-type { color: var(--review); }
+  .tl-row.cat-lifecycle .tl-event-type { color: var(--accent); }
+  .tl-row.cat-plan      .tl-event-type { color: var(--info); }
+  .tl-row.cat-question  .tl-event-type { color: #c4b5fd; }
+  .tl-row.cat-error     .tl-event-type { color: var(--error); }
+  .tl-row.cat-deprecated .tl-event-type { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+
+  .agent-mono { width:18px; height:18px; border-radius:4px; display:inline-flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:9.5px; font-weight:600; flex-shrink:0; }
+  .agent-mono.h1 { background:rgba(139,92,246,.20); color:#c4b5fd; }
+  .agent-mono.h2 { background:rgba(16,185,129,.18); color:#6ee7b7; }
+  .agent-mono.h3 { background:rgba(14,165,233,.20); color:#7dd3fc; }
+  .agent-mono.h4 { background:rgba(244,63,94,.16); color:#fda4af; }
+  .agent-mono.h5 { background:rgba(245,158,11,.18); color:#fcd34d; }
+  .agent-mono.h6 { background:rgba(6,182,212,.20); color:#67e8f9; }
+  .agent-mono.h7 { background:rgba(167,139,250,.20); color:#c4b5fd; }
+  .agent-mono.system { background:rgba(100,116,139,.18); color:var(--text-dim); font-size:10px; }
+
+  .tl-agent { display:inline-flex; align-items:center; gap:5px; font-family:var(--font-mono); font-size:11px; color:var(--text); }
+  .tl-agent .name { color: var(--text-dim); font-size: 11px; }
+
+  .tl-summary { font-size: 12px; color: var(--text); margin-top: 4px; line-height: 1.5; }
+  .tl-summary .dim { color: var(--text-dim); }
+  .tl-summary code { font-family: var(--font-mono); font-size: 11px; background: rgba(148,163,184,.08); padding: 1px 5px; border-radius: 3px; color: var(--text); }
+
+  .tl-tags {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-family: var(--font-sans);
+  }
+  .tag.review { color:var(--review); background:rgba(6,182,212,.10); border:1px solid rgba(6,182,212,.30); }
+  .tag.dep    { color:var(--muted); background:rgba(100,116,139,.10); border:1px solid rgba(100,116,139,.30); }
+  .tag.user   { color:var(--pending); background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.30); }
+  .tag.fail   { color:var(--error); background:rgba(244,63,94,.10); border:1px solid rgba(244,63,94,.30); }
+
+  .chain {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+  }
+  .chain .arrow { color: var(--muted); }
+  .chain .terminal { color: var(--pending); }
+
+  /* ── Plan-task section header ── */
+  .tl-section {
+    margin: 18px 24px 0;
+    padding: 12px 16px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border-strong);
+    border-radius: 5px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 16px;
+    row-gap: 4px;
+    align-items: baseline;
+  }
+  .tl-section.kind-setup    { border-left-color: var(--muted); }
+  .tl-section.kind-task     { border-left-color: var(--info); }
+  .tl-section.kind-pending  { border-left-color: var(--border-strong); opacity: 0.78; }
+  .tl-section.kind-teardown { border-left-color: var(--muted); }
+
+  .tl-section .sec-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .tl-section .sec-kind {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .tl-section.kind-task .sec-kind { color: var(--info); }
+  .tl-section.kind-pending .sec-kind { color: var(--text-dim); }
+
+  .tl-section .sec-id {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-strong);
+    letter-spacing: -0.005em;
+  }
+  .tl-section .sec-role {
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .tl-section .sec-deps {
+    font-size: 10.5px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    background: rgba(148, 163, 184, 0.08);
+    padding: 1px 7px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+  .tl-section .sec-time {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--text-dim);
+    grid-column: 2;
+    grid-row: 1;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .tl-section .sec-time .dur { color: var(--text); margin-left: 6px; }
+
+  .tl-section .sec-meta {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .tl-section .sec-meta .leader {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text);
+  }
+  .tl-section .sec-meta .agent-mono { width: 16px; height: 16px; font-size: 9px; border-radius: 3px; }
+  .tl-section .sec-meta .count {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+  }
+  .tl-section .sec-meta .count b { color: var(--text); font-weight: 500; }
+  .tl-section .sec-meta .sep-dot { color: var(--border-strong); }
+
+  /* ── L1 sub-plan nesting ── */
+  .tl-l1 {
+    margin: 8px 24px 0 60px;
+    border-left: 1px dashed var(--border);
+    padding-left: 18px;
+    position: relative;
+  }
+  .tl-l1::before {
+    content: '';
+    position: absolute;
+    top: 24px;
+    left: -1px;
+    width: 12px;
+    height: 1px;
+    background: var(--border);
+  }
+  .tl-l1 .tl-section {
+    margin: 0;
+    padding: 9px 13px;
+    background: rgba(15, 23, 42, 0.55);
+    border-left-width: 2px;
+    border-radius: 4px;
+  }
+  .tl-l1 .tl-section .sec-id { font-size: 12px; }
+  .tl-l1 .tl-section .sec-time { font-size: 10.5px; }
+  .tl-l1 .tl-section .sec-meta { font-size: 10.5px; row-gap: 0; }
+  .tl-l1 .tl-section.kind-subplan { border-left-color: rgba(14, 165, 233, 0.55); }
+  .tl-l1 .tl-section.kind-subplan .sec-kind { color: rgba(14, 165, 233, 0.95); }
+  .tl-l1 .tl-section.kind-subplan-failed { border-left-color: rgba(244, 63, 94, 0.5); }
+  .tl-l1 .tl-section.kind-subplan-failed .sec-kind { color: rgba(244, 63, 94, 0.95); }
+
+  .tl-l1 .tl { padding: 0 0 4px; }
+  .tl-l1 .tl::before {
+    left: 100px;  /* keep rail aligned with timestamp column */
+  }
+  .tl-l1 .tl-row { padding: 8px 0; }
+
+  /* Closing-event highlight (task_done / task_failed inside sub-plan section) */
+  .tl-l1 .tl-row.closes {
+    background: rgba(14, 165, 233, 0.04);
+    border-radius: 4px;
+    margin: 0 -8px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .tl-l1 .tl-row.closes-fail { background: rgba(244, 63, 94, 0.04); }
+
+  /* Collapsed sub-plan summary (▸ N more) */
+  .tl-collapsed {
+    margin: 6px 24px 0 60px;
+    padding: 9px 14px 9px 18px;
+    border: 1px dashed var(--border);
+    background: rgba(15, 23, 42, 0.35);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: all 80ms;
+  }
+  .tl-collapsed:hover { border-color: var(--border-strong); color: var(--text); background: rgba(15,23,42,.55); }
+  .tl-collapsed .chev { color: var(--review); font-size: 10px; }
+  .tl-collapsed b { color: var(--text); font-weight: 500; }
+  .tl-collapsed .grow { flex: 1; }
+  .tl-collapsed .lastact { color: var(--muted); font-size: 10.5px; }
+
+  /* Empty (pending) section body */
+  .tl-empty {
+    margin: 0 24px;
+    padding: 14px 16px 16px;
+    border: 1px dashed var(--border);
+    border-top: none;
+    border-radius: 0 0 5px 5px;
+    background: rgba(15, 23, 42, 0.3);
+    color: var(--muted);
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+  }
+
+  /* Section partition rule footnote */
+  .partition-note {
+    margin: 14px 24px 0;
+    padding: 8px 12px;
+    background: rgba(6, 182, 212, 0.04);
+    border: 1px solid rgba(6, 182, 212, 0.20);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.55;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .partition-note .label {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--review);
+    background: rgba(6, 182, 212, 0.10);
+    border: 1px solid rgba(6, 182, 212, 0.30);
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .partition-note code {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 0 5px;
+    border-radius: 3px;
+    color: var(--text);
+  }
+
+  /* Mockup banner */
+  .mockup-banner { position:fixed; bottom:12px; right:16px; padding:6px 12px; background:rgba(2,6,23,.85); backdrop-filter:blur(6px); border:1px solid var(--border); border-radius:5px; font-size:10.5px; font-family:var(--font-mono); color:var(--text-dim); letter-spacing:.04em; }
+  .mockup-banner b { color:var(--review); margin-right:8px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TopBar -->
+  <div class="topbar">
+    <div class="brand"><span class="glyph">◆</span>BEIDOU</div>
+    <div class="sep"></div>
+    <div class="stat"><span class="v mono">tsk_95394dcf</span></div>
+    <div class="sep"></div>
+    <div class="stat">elapsed <span class="v mono">00:43:02</span></div>
+    <div class="stat">agents <span class="v mono">17</span></div>
+    <div class="stat">cost <span class="v mono">$3.73</span></div>
+    <div class="question-chip"><span class="dot"></span>1 question</div>
+  </div>
+
+  <!-- Spine -->
+  <div class="spine">
+    <div class="group">
+      <div class="group-label">Tasks</div>
+      <div class="item"><span class="glyph">●</span><span class="task-id">tsk_95394dcf</span><span class="task-meta">17 ag</span></div>
+      <div class="item"><span class="glyph">○</span><span class="task-id">tsk_1dce3af9</span><span class="task-meta">3 ag</span></div>
+      <div class="item"><span class="glyph">○</span><span class="task-id">tsk_4b79e88e</span><span class="task-meta">2 ag</span></div>
+    </div>
+    <div class="group">
+      <div class="group-label">Workspace</div>
+      <div class="item"><span class="glyph">▤</span>Agents</div>
+      <div class="item active"><span class="glyph">≡</span>Timeline</div>
+      <div class="item"><span class="glyph">▦</span>Tools</div>
+      <div class="item disabled"><span class="glyph">○</span>Stats · P1</div>
+      <div class="item disabled"><span class="glyph">○</span>Overview · P1</div>
+      <div class="item disabled"><span class="glyph">○</span>Q&amp;A · P1</div>
+    </div>
+  </div>
+
+  <!-- Workspace -->
+  <div class="workspace">
+    <div class="ws-header">
+      <div class="ws-title">
+        <h1>Timeline</h1>
+        <span class="count">42 milestones · 2 plans (root + sub-plan) · 8 plan tasks · 1,512 events filtered</span>
+      </div>
+      <div class="filters">
+        <div class="filter-pill active">All <span class="pill-count">42</span></div>
+        <div class="filter-pill cat-primitive"><span class="swatch"></span>Primitive calls <span class="pill-count">11</span></div>
+        <div class="filter-pill cat-lifecycle"><span class="swatch"></span>Lifecycle <span class="pill-count">17</span></div>
+        <div class="filter-pill cat-plan"><span class="swatch"></span>Plan <span class="pill-count">5</span></div>
+        <div class="filter-pill cat-question"><span class="swatch"></span>Questions <span class="pill-count">7</span></div>
+        <div class="filter-pill cat-error"><span class="swatch"></span>Errors <span class="pill-count">2</span></div>
+        <div class="filter-spacer"></div>
+        <div class="toggle"><span class="switch"></span>Show all events <span class="help">(turn.usage, tool spans, status)</span></div>
+        <select class="filter-select"><option>All agents</option></select>
+      </div>
+    </div>
+
+    <div class="ws-body">
+
+      <div class="partition-note">
+        <span class="label">Partitioning</span>
+        <span>Sections mirror the <code>declare_plan</code> tree. Each plan task = one section, bounded by its <code>spawn_agent</code> and matching <code>task_done</code>/<code>task_failed</code>. <strong>Nested <code>declare_plan</code></strong> by a task's own agent creates indented L1 sub-sections (and L2+ recursively). Default expansion: 3 most-active sub-tasks per parent; rest collapse to <code>▸ N more</code>. <code>setup</code> = pre-first-spawn; <code>teardown</code> = operational cascade only — plan-resolution events (<code>task_done/failed</code>) live in their owning sub-plan task. Pending tasks (deps unresolved) appear as <code>pending</code> stubs.</span>
+      </div>
+
+      <div class="tl-section kind-setup">
+        <div class="sec-title">
+          <span class="sec-kind">Setup</span>
+          <span class="sec-id">root prep</span>
+          <span class="sec-role">orchestrator_v2 boot + plan declaration</span>
+        </div>
+        <div class="sec-time">14:21:09 → 14:21:23<span class="dur">14s</span></div>
+        <div class="sec-meta">
+          <span class="leader"><span class="agent-mono h1">14</span>ag_14378f95 · root</span>
+          <span class="sep-dot">·</span>
+          <span class="count"><b>3</b> milestones</span>
+          <span class="sep-dot">·</span>
+          <span>ends at first <code>spawn_agent</code> for plan task</span>
+        </div>
+      </div>
+
+      <div class="tl">
+        <!-- task_started -->
+        <div class="tl-row cat-lifecycle">
+          <div class="tl-time">14:21:09<span class="delta">+0s</span></div>
+          <div class="tl-glyph">▶</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">task_started</span>
+              <span class="tl-agent"><span class="agent-mono system">⌬</span><span class="name">system</span></span>
+            </div>
+            <div class="tl-summary">
+              skill <code>orchestrator_v2</code> · model <code>claude-sonnet-4-6</code><br/>
+              <span class="dim">"我想要一个网页的计算器，未来可以扩展成一个综合应用的一个组件"</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- agent_started root -->
+        <div class="tl-row cat-lifecycle">
+          <div class="tl-time">14:21:09<span class="delta">+0.3s</span></div>
+          <div class="tl-glyph">+</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">agent_started</span>
+              <span class="tl-agent"><span class="agent-mono h1">14</span>ag_14378f95<span class="name">· root-b207</span></span>
+            </div>
+            <div class="tl-summary">role <code>root</code> · skill <code>orchestrator_v2</code></div>
+          </div>
+        </div>
+
+        <!-- declare_plan -->
+        <div class="tl-row cat-primitive">
+          <div class="tl-time">14:21:21<span class="delta">+12s</span></div>
+          <div class="tl-glyph">◫</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">declare_plan</span>
+              <span class="tl-agent"><span class="agent-mono h1">14</span>ag_14378f95</span>
+            </div>
+            <div class="tl-summary">
+              2 tasks declared: <code>phase1</code> (design-coordinator) → <code>phase2</code> (implementation-coordinator)
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="tl-section kind-task">
+        <div class="sec-title">
+          <span class="sec-kind">Plan task</span>
+          <span class="sec-id">phase1</span>
+          <span class="sec-role">· design-coordinator</span>
+          <span class="sec-deps">no deps</span>
+        </div>
+        <div class="sec-time">14:21:23 → 14:57:20<span class="dur">35m 57s</span></div>
+        <div class="sec-meta">
+          <span class="leader"><span class="agent-mono h5">e2</span>ag_e21b59b0 · leader</span>
+          <span class="sep-dot">·</span>
+          <span class="count"><b>3</b> L0 milestones · <b>6</b> nested sub-plan tasks</span>
+          <span class="sep-dot">·</span>
+          <span>declared sub-plan <code>9d05d3b7</code> at +15s</span>
+        </div>
+      </div>
+
+      <div class="tl">
+        <!-- spawn_agent phase1 -->
+        <div class="tl-row cat-primitive">
+          <div class="tl-time">14:21:23<span class="delta">+14s</span></div>
+          <div class="tl-glyph">⟶</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">spawn_agent</span>
+              <span class="tl-agent"><span class="agent-mono h1">14</span>ag_14378f95</span>
+            </div>
+            <div class="tl-summary">task <code>phase1</code> → spawned <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h5">e2</span>ag_e21b59b0</span> <span class="dim">(design-coordinator)</span></div>
+          </div>
+        </div>
+
+        <!-- team_created -->
+        <div class="tl-row cat-lifecycle">
+          <div class="tl-time">14:21:23<span class="delta">+14s</span></div>
+          <div class="tl-glyph">⊞</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">team_created</span>
+              <span class="tl-agent"><span class="agent-mono system">⌬</span><span class="name">depth 1</span></span>
+            </div>
+            <div class="tl-summary">team <code>tm_8756c268</code> · leader <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h5">e2</span>ag_e21b59b0</span> · 1 member</div>
+          </div>
+        </div>
+
+        <!-- declare_plan (NESTED — phase1's leader declares its own sub-plan) -->
+        <div class="tl-row cat-primitive">
+          <div class="tl-time">14:21:24<span class="delta">+15s</span></div>
+          <div class="tl-glyph">◫</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">declare_plan</span>
+              <span class="tl-tags"><span class="tag review">SUB-PLAN</span></span>
+              <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0<span class="name">· phase1 leader</span></span>
+            </div>
+            <div class="tl-summary">
+              plan_id <code>9d05d3b7</code> · <b>6 tasks</b> declared in parallel (no deps):<br/>
+              <code>pm</code> · <code>arch</code> · <code>ui_ux</code> · <code>qa</code> · <code>test</code> · <code>eng_advisor</code>
+              <div class="dim" style="margin-top:3px;">phase1's design committee — each task gets its own sub-plan-task section below</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ───── L1 · sub-plan task: pm (closed by task_failed) ───── -->
+      <div class="tl-l1">
+        <div class="tl-section kind-subplan-failed">
+          <div class="sec-title">
+            <span class="sec-kind">Sub-plan task · failed</span>
+            <span class="sec-id">pm</span>
+            <span class="sec-role">· product-manager</span>
+            <span class="sec-deps">parent: phase1 / 9d05d3b7</span>
+          </div>
+          <div class="sec-time">14:21:25 → 14:57:32<span class="dur">36m 7s</span></div>
+          <div class="sec-meta">
+            <span class="leader"><span class="agent-mono h2">9b</span>ag_9b0c451d</span>
+            <span class="sep-dot">·</span>
+            <span class="count"><b>7</b> milestones</span>
+            <span class="sep-dot">·</span>
+            <span style="color:var(--error);">closed by task_failed</span>
+          </div>
+        </div>
+        <div class="tl">
+          <div class="tl-row cat-primitive">
+            <div class="tl-time">14:21:25<span class="delta">+16s</span></div>
+            <div class="tl-glyph">⟶</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">spawn_agent</span>
+                <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0</span>
+              </div>
+              <div class="tl-summary">task <code>pm</code> → spawned <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h2">9b</span>ag_9b0c451d</span></div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-primitive">
+            <div class="tl-time">14:22:24<span class="delta">+1m15s</span></div>
+            <div class="tl-glyph">?</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">ask_user</span>
+                <span class="tl-tags"><span class="tag user">routes to user</span></span>
+                <span class="tl-agent"><span class="agent-mono h2">9b</span>ag_9b0c451d</span>
+              </div>
+              <div class="tl-summary">
+                3 sub-questions · qid <code>q_d6b22f66</code>
+                <div class="dim" style="margin-top:3px;">用户场景 · 运算类型 · 未来方向</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-question">
+            <div class="tl-time">14:22:24<span class="delta">+1m15s</span></div>
+            <div class="tl-glyph">·</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">question_asked</span>
+                <span class="tl-agent"><span class="agent-mono h2">9b</span>ag_9b0c451d</span>
+              </div>
+              <div class="tl-summary">held by <code>ag_e21b59b0</code> (parent leader)</div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-question">
+            <div class="tl-time">14:22:33<span class="delta">+1m24s</span></div>
+            <div class="tl-glyph">↑</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">question_escalated</span>
+                <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0</span>
+              </div>
+              <div class="tl-summary">
+                <span class="chain">ag_9b0c451d <span class="arrow">→</span> ag_e21b59b0 <span class="arrow">→</span> ag_14378f95</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-question">
+            <div class="tl-time">14:22:38<span class="delta">+1m29s</span></div>
+            <div class="tl-glyph">↑</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">question_escalated</span>
+                <span class="tl-tags"><span class="tag user">→ user</span></span>
+                <span class="tl-agent"><span class="agent-mono h1">14</span>ag_14378f95</span>
+              </div>
+              <div class="tl-summary">
+                <span class="chain">ag_9b0c451d <span class="arrow">→</span> ag_e21b59b0 <span class="arrow">→</span> ag_14378f95 <span class="arrow">→</span> <span class="terminal">user</span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-question">
+            <div class="tl-time">14:25:36<span class="delta">+4m27s</span></div>
+            <div class="tl-glyph">✓</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">question_answered</span>
+                <span class="tl-agent"><span class="agent-mono h2">9b</span>ag_9b0c451d</span>
+              </div>
+              <div class="tl-summary">
+                chain length <code>4</code> · resolved at user
+                <div class="dim" style="margin-top:3px;">"日常计算 / 基础四则 + 简单财务 / react component 或 iframe 接入"</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-error closes closes-fail">
+            <div class="tl-time">14:57:32<span class="delta">+36m23s</span></div>
+            <div class="tl-glyph">!</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">task_failed</span>
+                <span class="tl-tags"><span class="tag fail">force=true · closes section</span></span>
+                <span class="tl-agent"><span class="agent-mono system">⌬</span><span class="name">plan 9d05d3b7</span></span>
+              </div>
+              <div class="tl-summary">plan task <code>pm</code> marked failed · cascaded to <code>ui_ux</code></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ───── L1 · sub-plan task: arch (closed by task_done) ───── -->
+      <div class="tl-l1">
+        <div class="tl-section kind-subplan">
+          <div class="sec-title">
+            <span class="sec-kind">Sub-plan task</span>
+            <span class="sec-id">arch</span>
+            <span class="sec-role">· software-architect</span>
+            <span class="sec-deps">parent: phase1 / 9d05d3b7</span>
+          </div>
+          <div class="sec-time">14:21:25 → 14:57:23<span class="dur">35m 58s</span></div>
+          <div class="sec-meta">
+            <span class="leader"><span class="agent-mono h3">c0</span>ag_c0f0adbf</span>
+            <span class="sep-dot">·</span>
+            <span class="count"><b>3</b> milestones</span>
+            <span class="sep-dot">·</span>
+            <span style="color:var(--info);">closed by task_done</span>
+          </div>
+        </div>
+        <div class="tl">
+          <div class="tl-row cat-primitive">
+            <div class="tl-time">14:21:25<span class="delta">+16s</span></div>
+            <div class="tl-glyph">⟶</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">spawn_agent</span>
+                <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0</span>
+              </div>
+              <div class="tl-summary">task <code>arch</code> → spawned <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h3">c0</span>ag_c0f0adbf</span></div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-deprecated">
+            <div class="tl-time">14:33:03<span class="delta">+11m54s</span></div>
+            <div class="tl-glyph">~</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">report_status</span>
+                <span class="tl-tags"><span class="tag dep">deprecated · use signal_review</span></span>
+                <span class="tl-agent"><span class="agent-mono h3">c0</span>ag_c0f0adbf</span>
+              </div>
+              <div class="tl-summary">
+                state <code>"done"</code> → delegated to signal_review (legacy_done=true)<br/>
+                <span class="dim">/tmp/calc/spec.md — Technical specification for web calculator component</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-plan closes">
+            <div class="tl-time">14:57:23<span class="delta">+36m14s</span></div>
+            <div class="tl-glyph">✓</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">task_done</span>
+                <span class="tl-tags"><span class="tag review">closes section</span></span>
+                <span class="tl-agent"><span class="agent-mono system">⌬</span><span class="name">plan 9d05d3b7</span></span>
+              </div>
+              <div class="tl-summary">plan task <code>arch</code> marked done</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ───── L1 · sub-plan task: qa (still in review at run end — no closing event) ───── -->
+      <div class="tl-l1">
+        <div class="tl-section kind-subplan">
+          <div class="sec-title">
+            <span class="sec-kind">Sub-plan task</span>
+            <span class="sec-id">qa</span>
+            <span class="sec-role">· qa-engineer</span>
+            <span class="sec-deps">parent: phase1 / 9d05d3b7</span>
+          </div>
+          <div class="sec-time">14:21:26 → 14:57:21<span class="dur">35m 55s</span></div>
+          <div class="sec-meta">
+            <span class="leader"><span class="agent-mono h6">e1</span>ag_e17b3483</span>
+            <span class="sep-dot">·</span>
+            <span class="count"><b>2</b> milestones</span>
+            <span class="sep-dot">·</span>
+            <span style="color:var(--review);">closed by terminate_child (no task_done — held for convergence)</span>
+          </div>
+        </div>
+        <div class="tl">
+          <div class="tl-row cat-primitive">
+            <div class="tl-time">14:21:26<span class="delta">+17s</span></div>
+            <div class="tl-glyph">⟶</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">spawn_agent</span>
+                <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0</span>
+              </div>
+              <div class="tl-summary">task <code>qa</code> → spawned <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h6">e1</span>ag_e17b3483</span></div>
+            </div>
+          </div>
+
+          <div class="tl-row cat-primitive">
+            <div class="tl-time">14:34:45<span class="delta">+13m36s</span></div>
+            <div class="tl-glyph">◆</div>
+            <div class="tl-content">
+              <div class="tl-line1">
+                <span class="tl-event-type">signal_review</span>
+                <span class="tl-tags"><span class="tag review">[REVIEW REQUIRED] · stays alive</span></span>
+                <span class="tl-agent"><span class="agent-mono h6">e1</span>ag_e17b3483</span>
+              </div>
+              <div class="tl-summary">
+                iteration <code>1</code> · /tmp/calc/qa_plan.md
+                <div class="dim" style="margin-top:3px;">"Acceptance gate criteria mapped to PM's 32 ACs · 7 cross-document alignment issues raised"</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ───── Collapsed summary: 3 more sub-plan tasks ───── -->
+      <div class="tl-collapsed">
+        <span class="chev">▸</span>
+        <span><b>3 more sub-plan tasks</b> · <code style="font-family:var(--font-mono);">ui_ux</code> · <code style="font-family:var(--font-mono);">test</code> · <code style="font-family:var(--font-mono);">eng_advisor</code></span>
+        <span class="grow"></span>
+        <span><b>87 events</b> · last <code style="font-family:var(--font-mono);">signal_review</code> by eng_advisor at 14:35:39</span>
+      </div>
+
+      <div class="tl-section kind-pending">
+        <div class="sec-title">
+          <span class="sec-kind">Plan task · pending</span>
+          <span class="sec-id">phase2</span>
+          <span class="sec-role">· implementation-coordinator</span>
+          <span class="sec-deps">depends_on: [phase1]</span>
+        </div>
+        <div class="sec-time">— · awaiting phase1 completion</div>
+        <div class="sec-meta">
+          <span style="color:var(--muted);">no agent spawned yet · no events</span>
+        </div>
+      </div>
+      <div class="tl-empty">phase1 must reach <code style="font-family:var(--font-mono); font-size:10px; color:var(--text);">task_done</code> before phase2 spawns.</div>
+
+      <div class="tl-section kind-teardown">
+        <div class="sec-title">
+          <span class="sec-kind">Teardown</span>
+          <span class="sec-id">cascade</span>
+          <span class="sec-role">leader-driven termination · operational only</span>
+        </div>
+        <div class="sec-time">14:57:20 → 14:57:42<span class="dur">22s</span></div>
+        <div class="sec-meta">
+          <span class="leader"><span class="agent-mono h5">e2</span>ag_e21b59b0 · phase1 leader</span>
+          <span class="sep-dot">·</span>
+          <span class="count"><b>4</b> milestones</span>
+          <span class="sep-dot">·</span>
+          <span>plan-resolution events (<code>task_done/failed</code>) live in their sub-plan task sections above</span>
+        </div>
+      </div>
+
+      <div class="tl">
+        <!-- terminate_child x 2 -->
+        <div class="tl-row cat-primitive">
+          <div class="tl-time">14:57:20<span class="delta">+36m11s</span></div>
+          <div class="tl-glyph">×</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">terminate_child</span>
+              <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0<span class="name">· phase1-coordinator (leader)</span></span>
+            </div>
+            <div class="tl-summary">target <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h2">9b</span>ag_9b0c451d</span> <span class="dim">force=false · sentinel posted</span></div>
+          </div>
+        </div>
+
+        <div class="tl-row cat-primitive">
+          <div class="tl-time">14:57:21<span class="delta">+36m12s</span></div>
+          <div class="tl-glyph">×</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">terminate_child</span>
+              <span class="tl-agent"><span class="agent-mono h5">e2</span>ag_e21b59b0</span>
+            </div>
+            <div class="tl-summary">target <span class="tl-agent" style="display:inline-flex;"><span class="agent-mono h3">c0</span>ag_c0f0adbf</span> <span class="dim">force=false · sentinel posted</span></div>
+          </div>
+        </div>
+
+        <!-- agent_completed -->
+        <div class="tl-row cat-lifecycle">
+          <div class="tl-time">14:57:32<span class="delta">+36m23s</span></div>
+          <div class="tl-glyph">−</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">agent_completed</span>
+              <span class="tl-agent"><span class="agent-mono h2">9b</span>ag_9b0c451d</span>
+            </div>
+            <div class="tl-summary">stop_reason <code>end_turn</code> · terminated <span class="dim">(via leader sentinel)</span></div>
+          </div>
+        </div>
+
+        <!-- task_completed -->
+        <div class="tl-row cat-lifecycle">
+          <div class="tl-time">14:57:42<span class="delta">+36m33s</span></div>
+          <div class="tl-glyph">▣</div>
+          <div class="tl-content">
+            <div class="tl-line1">
+              <span class="tl-event-type">task_completed</span>
+              <span class="tl-agent"><span class="agent-mono system">⌬</span><span class="name">system</span></span>
+            </div>
+            <div class="tl-summary">status <code>completed</code> · 17 agents · 1,493 turns · $3.73</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mockup-banner"><b>PR 0 · v0</b>/timeline workspace · milestone view (filter off)</div>
+
+</body>
+</html>
