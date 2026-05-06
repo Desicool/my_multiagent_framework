@@ -67,6 +67,16 @@ and list_pending_reviews are exempt; everything else is denied with
 (an "acknowledged" or "deferred until X" counts), then continue.
 Spec: docs/agent-runtime.md#reply-obligation, docs/tool-surface.md#send_message.
 
+[EVENT-DRIVEN WAIT]
+When you have spawned children, sent a message expecting a reply, or
+completed a coordination step and have no other concrete next action:
+end your turn. The runtime parks your session on the inbox; it resumes
+you the moment a peer's message, child's [REVIEW REQUIRED] envelope, or
+leader's directive arrives. There is no waiting tool to call. Do not
+poll list_pending_reviews / list_peers / list_ready in tight loops —
+the inbox already wakes you. Use those tools at most once as a
+diagnostic if you suspect an agent is stuck, never as a wait mechanism.
+
 [FORBIDDEN TOOLS]
 The following SDK shadow tools are blocked at two layers (SDK
 disallowed_tools and a PreToolUse hook). Do not call them; use the

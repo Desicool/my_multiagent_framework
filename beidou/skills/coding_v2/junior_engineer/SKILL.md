@@ -20,7 +20,6 @@ allowed-tools:
   - list_ready
   - terminate_child
   - list_peers
-  - list_pending_reviews
   - answer_question
   - escalate_question
   - ask_user
@@ -107,6 +106,12 @@ cap) and §5 (per-agent spawn lock).
 
 While any child is open you are a leader:
 
+- After spawning all children, **end your turn**. Each child's
+  `[REVIEW REQUIRED]` envelope arrives in your inbox as a new turn —
+  that is your wake signal. Do not poll. `list_pending_reviews` has
+  been removed from your allowed-tools precisely so this temptation
+  does not exist; `list_peers` is a one-shot diagnostic, not a wait
+  loop.
 - Inspect every child's `[REVIEW REQUIRED]` envelope on arrival.
 - Resolve via `terminate_child(agent_id, ...)` (approve) or
   `send_message(to=agent_id, content="rework: ...")` (rework).
