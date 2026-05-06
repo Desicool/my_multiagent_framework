@@ -59,12 +59,12 @@ def test_mcp_tool_continuity_across_resume(tmp_path):
             version: 1.0.0
             description: Agent for testing MCP tool continuity across resume.
             allowed-tools:
-              - report_status
+              - signal_review
             ---
             You are a test agent. On the first session, call
-            mcp__beidou__report_status with state="working" and
+            mcp__beidou__signal_review with
             detail="pre-resume". On a resumed session, call
-            mcp__beidou__report_status with state="done" and
+            mcp__beidou__signal_review with
             detail="post-resume", then produce a one-sentence
             acknowledgment.
             """
@@ -101,10 +101,10 @@ def test_mcp_tool_continuity_across_resume(tmp_path):
         def agent_skill_name(self, agent_id):
             return "resume_test_agent"
 
-        def agent_completion_pending(self, agent_id):
+        def agent_review_pending(self, agent_id):
             return False
 
-        def agent_completion_pending_ts(self, agent_id):
+        def agent_review_pending_ts(self, agent_id):
             return None
 
         def agent_last_status_detail(self, agent_id):
@@ -124,12 +124,12 @@ def test_mcp_tool_continuity_across_resume(tmp_path):
         inflight_tools=0,
     )
 
-    # --- First run: start a session that calls report_status ---
+    # --- First run: start a session that calls signal_review ---
     spec1 = SpawnSpec(
         caller_id="ag_resume",
         skill_name="resume_test_agent",
         skill_root=tmp_path,
-        task="Call mcp__beidou__report_status with state='working' and detail='pre-resume'. Do not call any other tool. End your turn after the tool call.",
+        task="Call mcp__beidou__signal_review with detail='pre-resume'. Do not call any other tool. End your turn after the tool call.",
         model="claude-haiku-4-5-20251001",
     )
 
@@ -155,7 +155,7 @@ def test_mcp_tool_continuity_across_resume(tmp_path):
     assert "agent_started" in names1, "first session must start"
     assert "tool_called" in names1, (
         "first session must have made an MCP tool call; "
-        "if the model did not call report_status, the agent prompt needs tuning"
+        "if the model did not call signal_review, the agent prompt needs tuning"
     )
     assert "agent_completed" in names1, "first session must complete"
 
@@ -175,7 +175,7 @@ def test_mcp_tool_continuity_across_resume(tmp_path):
         caller_id="ag_resume",
         skill_name="resume_test_agent",
         skill_root=tmp_path,
-        task="Your previous session was interrupted. Resume your work. Call mcp__beidou__report_status with state='done' and detail='post-resume', then produce a one-sentence acknowledgment.",
+        task="Your previous session was interrupted. Resume your work. Call mcp__beidou__signal_review with detail='post-resume', then produce a one-sentence acknowledgment.",
         model="claude-haiku-4-5-20251001",
         resume_session_id=session_id,
     )

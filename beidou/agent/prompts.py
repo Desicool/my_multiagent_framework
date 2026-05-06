@@ -43,11 +43,12 @@ def render_system_prompt(skill, **substitutions: str) -> str:
 # Verbatim section text for the persistent-agent contract block (no substitutions).
 _CONTRACT_BLOCK = """\
 [PERSISTENT-AGENT CONTRACT]
-You do not self-exit. Completion is a state, not an exit: when your task is done,
-call mcp__beidou__report_status(state="done", detail=…). The full
+You do not self-exit. Completion is a state, not an exit: when your work is
+ready for review, call mcp__beidou__signal_review(detail=…). The full
 [REVIEW REQUIRED] envelope MUST live in detail (see [COMPLETION HANDOFF
 CONTRACT] below); the runtime forwards detail verbatim and does not read your
-final assistant message.
+final assistant message. When your entire lifecycle is complete, follow with
+mcp__beidou__request_termination(detail=…).
 
 Use send_message only for mid-task progress updates; it is NOT the completion
 mechanism.
@@ -73,27 +74,30 @@ Beidou primitive instead.
 
 - SendMessage  →  mcp__beidou__send_message(to=..., content=..., expects_reply=...)
 - TodoWrite    →  mcp__beidou__declare_plan + mcp__beidou__update_plan_task
-                  for task tracking; mcp__beidou__report_status(state='done')
+                  for task tracking; mcp__beidou__signal_review(detail=...)
                   for completion handoff. TodoWrite shadows both and is
                   rejected.
 
 Raw AskUserQuestion is also blocked — use mcp__beidou__ask_user so the
 leader chain can answer or escalate before the question reaches the user.
-Spec: docs/tool-surface.md#send_message, #declare_plan, #report_status, #ask_user."""
+Spec: docs/tool-surface.md#send_message, #declare_plan, #signal_review, #ask_user."""
 
 _COMPLETION_HANDOFF_BLOCK = """\
 [COMPLETION HANDOFF CONTRACT]
-When your task is complete:
+When your work is ready for review:
 1. Emit a final assistant message summarizing what you accomplished.
    List files created, decisions made, and next-step pointers your
    leader needs.
-2. Then call report_status(state="done", detail="<full envelope>").
+2. Then call signal_review(detail="<full envelope>").
 
-On report_status(state='done'), your detail argument MUST contain the
-complete [REVIEW REQUIRED] envelope (role, agent, Deliverables, Open
-questions / risks, Leader action required). The runtime rejects calls
-without it via envelope_missing — you will see the error in the next
-tool result and must resubmit with detail filled in.
+On signal_review(detail=…), your detail argument MUST contain the
+complete [REVIEW REQUIRED] or [ITERATION READY] envelope (role, agent,
+Deliverables, Open questions / risks, Leader action required). The runtime
+rejects calls without it via envelope_missing.
+
+After signal_review, if your entire lifecycle work is complete, also call
+request_termination(detail=…) to request teardown. Only call request_termination
+when you are truly done — not for per-iteration progress signals.
 
 Example minimum envelope in detail:
   [REVIEW REQUIRED]

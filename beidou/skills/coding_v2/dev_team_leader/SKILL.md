@@ -17,7 +17,6 @@ allowed-tools:
   - list_peers
   - signal_review
   - request_termination
-  - report_status
   - terminate_child
   - list_pending_reviews
   - answer_question
@@ -58,7 +57,7 @@ review gate, integrator spawn, verification, then signal [DEV READY].
   `signal_review` after each iteration completes.
 
 ### Core NEVER DOs
-- **NEVER call `report_status(state="done")` per iteration.** You are
+- **NEVER call `request_termination` per iteration.** You are
   persistent. Coordinator terminates you when the loop ends.
 - **NEVER call `request_termination` per iteration.** Per-iteration
   signalling uses `signal_review` ONLY. Call `request_termination` ONLY
@@ -181,7 +180,7 @@ Only reimplement the tasks listed above. Do NOT touch tasks that passed QA.
 2. The impl-leader reads `tasks.md` and spawns one child per task row. It
    reviews each child's `[REVIEW REQUIRED]` and terminates/reworks them.
 3. When the impl-leader emits its own `[REVIEW REQUIRED]` envelope and calls
-   `report_status(state="done")`, that is your gate signal.
+   `signal_review`, that is your gate signal.
 
 ### Phase 1b: Review impl-leader completion
 
@@ -298,7 +297,7 @@ While any child (impl-leader or integrator) is active:
 ## Completion
 
 You are terminated ONLY by the coordinator. You never call
-`report_status(state="done")` yourself. The shutdown protocol is:
+`request_termination` yourself. The shutdown protocol is:
 
 1. The coordinator sends an explicit `[SHUTDOWN]` message.
 2. You terminate any active children.

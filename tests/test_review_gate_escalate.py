@@ -1,16 +1,16 @@
 """Deterministic integration tests for the review-gate fix: escalate_question /
-answer_question must be allowed while a sibling child has completion_pending=True.
+answer_question must be allowed while a sibling child has review_pending=True.
 
 bd issue my_simple_agent-7pbj
 
 These tests exercise the multi-child topology described in the plan:
   root leader L
     ├── PM-stub  (asks a question → qid arrives in L's inbox)
-    └── QA-stub  (completion_pending=True → would previously block L)
+    └── QA-stub  (review_pending=True → would previously block L)
 
 Specifically verifies that the review gate does NOT block
 mcp__beidou__escalate_question or mcp__beidou__answer_question even when a
-sibling child has completion_pending=True.
+sibling child has review_pending=True.
 
 Harness mirrors tests/test_review_gate.py (same helpers, no real Anthropic API).
 """
@@ -162,12 +162,12 @@ def _check_no_gate_denied_event(o: Orchestrator) -> None:
 
 
 def test_review_gate_allows_escalate_question_with_sibling_pending(tmp_path: Path) -> None:
-    """Root L leads two children: QA-stub (completion_pending=True) and PM-stub.
+    """Root L leads two children: QA-stub (review_pending=True) and PM-stub.
 
     Topology:
       root L (leader)
         ├── PM-stub  (live, not pending — has sent an [INBOX QUESTION])
-        └── QA-stub  (completion_pending=True — awaiting review)
+        └── QA-stub  (review_pending=True — awaiting review)
 
     Root must be able to call mcp__beidou__escalate_question for PM's question
     even though QA-stub is pending-review. This is the exact failure topology
@@ -181,10 +181,10 @@ def test_review_gate_allows_escalate_question_with_sibling_pending(tmp_path: Pat
     # PM-stub: live, not pending; represents an agent that sent an inbox question.
     _seed_agent(o, "pm_stub", "tm_child", skill="product_manager_v2")
 
-    # QA-stub: completion_pending=True — this previously blocked the gate.
+    # QA-stub: review_pending=True — this previously blocked the gate.
     qa = _seed_agent(o, "qa_stub", "tm_child", skill="qa")
-    qa.completion_pending = True
-    qa.completion_pending_ts = time.time()
+    qa.review_pending = True
+    qa.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
 
@@ -200,7 +200,7 @@ def test_review_gate_allows_escalate_question_with_sibling_pending(tmp_path: Pat
 
     # Must be allowed (empty dict = pass-through).
     assert result == {}, (
-        f"escalate_question must be allowed while sibling has completion_pending=True. "
+        f"escalate_question must be allowed while sibling has review_pending=True. "
         f"Got: {result!r}"
     )
     # No review_gate.denied event must have been emitted.
@@ -208,7 +208,7 @@ def test_review_gate_allows_escalate_question_with_sibling_pending(tmp_path: Pat
 
 
 def test_review_gate_allows_answer_question_with_sibling_pending(tmp_path: Path) -> None:
-    """Root L leads two children: QA-stub (completion_pending=True) and PM-stub.
+    """Root L leads two children: QA-stub (review_pending=True) and PM-stub.
 
     Same topology as above, but root calls mcp__beidou__answer_question instead
     of escalate_question (v1 orchestrators may answer directly rather than escalate).
@@ -221,8 +221,8 @@ def test_review_gate_allows_answer_question_with_sibling_pending(tmp_path: Path)
     _seed_agent(o, "pm_stub", "tm_child", skill="product_manager_v2")
 
     qa = _seed_agent(o, "qa_stub", "tm_child", skill="qa")
-    qa.completion_pending = True
-    qa.completion_pending_ts = time.time()
+    qa.review_pending = True
+    qa.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
 
@@ -236,7 +236,7 @@ def test_review_gate_allows_answer_question_with_sibling_pending(tmp_path: Path)
     ))
 
     assert result == {}, (
-        f"answer_question must be allowed while sibling has completion_pending=True. "
+        f"answer_question must be allowed while sibling has review_pending=True. "
         f"Got: {result!r}"
     )
     _check_no_gate_denied_event(o)
@@ -255,8 +255,8 @@ def test_review_gate_still_denies_create_team_with_sibling_pending(tmp_path: Pat
     _seed_agent(o, "pm_stub", "tm_child", skill="product_manager_v2")
 
     qa = _seed_agent(o, "qa_stub", "tm_child", skill="qa")
-    qa.completion_pending = True
-    qa.completion_pending_ts = time.time()
+    qa.review_pending = True
+    qa.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
 
@@ -268,7 +268,7 @@ def test_review_gate_still_denies_create_team_with_sibling_pending(tmp_path: Pat
 
     # Must be denied (non-empty dict).
     assert result != {}, (
-        f"create_team must still be denied while sibling has completion_pending=True. "
+        f"create_team must still be denied while sibling has review_pending=True. "
         f"Got: {result!r}"
     )
     assert "hookSpecificOutput" in result

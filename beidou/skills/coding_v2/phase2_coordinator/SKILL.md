@@ -18,7 +18,6 @@ allowed-tools:
   - list_peers
   - signal_review
   - request_termination
-  - report_status
   - terminate_child
   - ask_user
   - escalate_question

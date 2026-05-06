@@ -46,8 +46,9 @@ class AgentRecord:
     terminate_grace_deadline: float | None = None
     total_tokens: int = 0
     # Completion-review state (Phase 2 foundation — bd issue 8z3).
-    completion_pending: bool = False
-    completion_pending_ts: float | None = None
+    review_pending: bool = False
+    review_pending_ts: float | None = None
+    termination_requested: bool = False
     last_progress_ts: float = field(default_factory=time.time)
     last_drain_ts: float | None = None
     review_ping_count: int = 0

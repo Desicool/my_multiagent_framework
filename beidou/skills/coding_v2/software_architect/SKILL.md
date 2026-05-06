@@ -18,7 +18,6 @@ allowed-tools:
   - create_team
   - send_message
   - list_peers
-  - report_status
   - signal_review
   - terminate_child
   - ask_user

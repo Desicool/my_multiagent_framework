@@ -44,16 +44,16 @@ def _make_pending_child_in_team(
     *,
     skill: str,
 ) -> tuple[Orchestrator, AgentRecord, AgentRecord]:
-    """Set up: leader L (real agent, has inbox) and child C1 with completion_pending."""
+    """Set up: leader L (real agent, has inbox) and child C1 with review_pending."""
     o, _ = _make_orchestrator(tmp_path)
     # Leader's team is _TM_TOP; the child's team has L as its leader.
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     leader = _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child", skill=skill)
-    child.completion_pending = True
-    # Force the ping threshold: pretend completion_pending fired 1000s ago.
-    child.completion_pending_ts = time.time() - 1000.0
+    child.review_pending = True
+    # Force the ping threshold: pretend review_pending fired 1000s ago.
+    child.review_pending_ts = time.time() - 1000.0
     child.review_ping_count = 0
     return o, leader, child
 

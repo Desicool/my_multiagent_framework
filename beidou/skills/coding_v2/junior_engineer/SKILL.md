@@ -12,7 +12,6 @@ allowed-tools:
   - file_read
   - file_write
   - send_message
-  - report_status
   - signal_review
   - request_termination
   - declare_plan

@@ -16,7 +16,6 @@ from typing import Optional
 
 import pytest
 
-from beidou import plans as _beidou_plans
 from beidou.primitives.core import (
     INBOX_CAP,
     MAX_DEPTH,
@@ -27,7 +26,6 @@ from beidou.primitives.core import (
     ask_user,
     create_team,
     list_peers,
-    report_status,
     send_message,
     terminate_child,
 )
@@ -46,8 +44,8 @@ class _AgentRec:
     role: str = "member"
     status: str = "working"
     skill_name: str = ""
-    completion_pending: bool = False
-    completion_pending_ts: Optional[float] = None
+    review_pending: bool = False
+    review_pending_ts: Optional[float] = None
     last_status_detail: str = ""
     terminate_consumed: bool = False
     # Plan-task association (defaulted None so existing tests don't break).
@@ -82,7 +80,6 @@ class FakeOrchestrator:
         self._spawn_fail: Optional[PrimitiveError] = None
         self._team_counter = 0
         self._agent_counter = 0
-        # Plan state for DAG guard tests (report_status reads these).
         self._active_plan_by_agent: dict[str, str] = {}
         self._plans: dict[str, object] = {}
 
@@ -329,11 +326,11 @@ class FakeOrchestrator:
     def agent_skill_name(self, agent_id: str) -> str:
         return self.agents[agent_id].skill_name
 
-    def agent_completion_pending(self, agent_id: str) -> bool:
-        return self.agents[agent_id].completion_pending
+    def agent_review_pending(self, agent_id: str) -> bool:
+        return self.agents[agent_id].review_pending
 
-    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
-        return self.agents[agent_id].completion_pending_ts
+    def agent_review_pending_ts(self, agent_id: str) -> Optional[float]:
+        return self.agents[agent_id].review_pending_ts
 
     def agent_last_status_detail(self, agent_id: str) -> str:
         return self.agents[agent_id].last_status_detail
@@ -610,237 +607,6 @@ def test_ask_user_malformed_option_dict():
 
 
 # ---------------------------------------------------------------------------
-# report_status
-# ---------------------------------------------------------------------------
-
-
-_ENVELOPE = "[REVIEW REQUIRED]\nrole=worker     agent=A\nDeliverables: done\nOpen questions / risks: none\nLeader action required: approve (terminate_child) OR rework (send_message)"
-
-
-def test_report_status_records_and_emits():
-    o = _build()
-
-    async def body():
-        out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        # report_status(state="done") now delegates to signal_review (deprecated shim).
-        assert out == {"recorded": True, "review_pending": True}
-        assert o.statuses == [("A", "done", _ENVELOPE)]
-        assert any(ev[0] == "status" for ev in o.events)
-        # Deprecation event should be emitted.
-        assert any(ev[0] == "primitive.deprecated" for ev in o.events)
-
-    run(body())
-
-
-def test_report_status_invalid_state():
-    o = _build()
-
-    async def body():
-        with pytest.raises(PrimitiveError) as ei:
-            await report_status(o, caller_id="A", state="exploding")
-        assert ei.value.code == "invalid_state"
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
-# report_status — envelope validation (state="done")
-# ---------------------------------------------------------------------------
-
-
-class TestReportStatusEnvelope:
-    """Envelope validation: state='done' requires [REVIEW REQUIRED] in detail."""
-
-    def test_done_with_envelope_in_detail_succeeds(self) -> None:
-        """state='done', detail with [REVIEW REQUIRED] → success (deprecated shim)."""
-        o = _build()
-
-        async def body():
-            out = await report_status(
-                o,
-                caller_id="A",
-                state="done",
-                detail="[REVIEW REQUIRED]\nrole=foo agent=A\nDeliverables: done.\n",
-            )
-            assert out == {"recorded": True, "review_pending": True}
-
-        run(body())
-
-    def test_done_empty_detail_raises_envelope_missing(self) -> None:
-        """state='done', detail='' → PrimitiveError(code='envelope_missing', reason='detail_empty')."""
-        o = _build()
-
-        async def body():
-            with pytest.raises(PrimitiveError) as ei:
-                await report_status(o, caller_id="A", state="done", detail="")
-            assert ei.value.code == "envelope_missing"
-            assert ei.value.details.get("reason") == "detail_empty"
-
-        run(body())
-
-    def test_done_none_detail_raises_envelope_missing(self) -> None:
-        """state='done', detail=None → PrimitiveError(code='envelope_missing', reason='detail_empty')."""
-        o = _build()
-
-        async def body():
-            with pytest.raises(PrimitiveError) as ei:
-                await report_status(o, caller_id="A", state="done", detail=None)
-            assert ei.value.code == "envelope_missing"
-            assert ei.value.details.get("reason") == "detail_empty"
-
-        run(body())
-
-    def test_done_non_empty_detail_without_marker_raises(self) -> None:
-        """state='done', detail='all good' → PrimitiveError(code='envelope_missing', reason='envelope_missing')."""
-        o = _build()
-
-        async def body():
-            with pytest.raises(PrimitiveError) as ei:
-                await report_status(o, caller_id="A", state="done", detail="all good")
-            assert ei.value.code == "envelope_missing"
-            assert ei.value.details.get("reason") == "envelope_missing"
-
-        run(body())
-
-    def test_done_lowercase_marker_succeeds(self) -> None:
-        """state='done', detail='[review required]\\n...' → success (case-insensitive)."""
-        o = _build()
-
-        async def body():
-            out = await report_status(
-                o,
-                caller_id="A",
-                state="done",
-                detail="[review required]\nrole=foo agent=A\nDeliverables: done.",
-            )
-            assert out == {"recorded": True, "review_pending": True}
-
-        run(body())
-
-    def test_done_leading_whitespace_marker_succeeds(self) -> None:
-        """state='done', detail='   [REVIEW REQUIRED]\\n...' → success (leading whitespace OK)."""
-        o = _build()
-
-        async def body():
-            out = await report_status(
-                o,
-                caller_id="A",
-                state="done",
-                detail="   [REVIEW REQUIRED]\nrole=foo agent=A\nDeliverables: done.",
-            )
-            assert out == {"recorded": True, "review_pending": True}
-
-        run(body())
-
-    def test_idle_state_skips_envelope_validation(self) -> None:
-        """state='idle', detail='anything' → success (validation only on 'done')."""
-        o = _build()
-
-        async def body():
-            out = await report_status(o, caller_id="A", state="idle", detail="anything")
-            assert out == {"recorded": True}
-
-        run(body())
-
-    def test_working_state_skips_envelope_validation(self) -> None:
-        """state='working', no detail → success (validation only on 'done')."""
-        o = _build()
-
-        async def body():
-            out = await report_status(o, caller_id="A", state="working")
-            assert out == {"recorded": True}
-
-        run(body())
-
-
-# ---------------------------------------------------------------------------
-# report_status — DAG guard (plan_incomplete).
-# ---------------------------------------------------------------------------
-
-
-def _make_plan(plan_id: str, agent_id: str, statuses: dict[str, str]) -> "_beidou_plans.Plan":
-    """Build a minimal Plan with one Task per entry in ``statuses``.
-
-    ``statuses`` maps task_id → TaskStatus string.
-    """
-    tasks = {
-        tid: _beidou_plans.Task(
-            id=tid,
-            role="worker",
-            skill="engineer",
-            task_text=f"do {tid}",
-            description="",
-            model=None,
-            depends_on=[],
-            status=st,  # type: ignore[arg-type]
-        )
-        for tid, st in statuses.items()
-    }
-    return _beidou_plans.Plan(
-        plan_id=plan_id,
-        owner_agent_id=agent_id,
-        run_task_id="tsk_test",
-        created_at=0.0,
-        tasks=tasks,
-        file_path="",
-    )
-
-
-def test_report_status_done_with_incomplete_plan_raises():
-    """report_status(state='done') when plan has unfinished tasks raises plan_incomplete.
-    The envelope guard passes (detail contains [REVIEW REQUIRED]), then plan_incomplete fires."""
-    o = _build()
-    plan = _make_plan(
-        plan_id="plan_1",
-        agent_id="A",
-        statuses={"t1": "done", "t2": "ready", "t3": "in_flight"},
-    )
-    o._plans["plan_1"] = plan
-    o._active_plan_by_agent["A"] = "plan_1"
-
-    async def body():
-        with pytest.raises(PrimitiveError) as ei:
-            await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        assert ei.value.code == "plan_incomplete"
-        # Both unfinished tasks should be reported in the error details.
-        incomplete = ei.value.details.get("incomplete_task_ids", [])
-        assert set(incomplete) == {"t2", "t3"}
-
-    run(body())
-
-
-def test_report_status_done_with_all_tasks_finished_succeeds():
-    """report_status(state='done') when all tasks are done/failed must succeed (deprecated shim)."""
-    o = _build()
-    plan = _make_plan(
-        plan_id="plan_2",
-        agent_id="A",
-        statuses={"t1": "done", "t2": "failed", "t3": "done"},
-    )
-    o._plans["plan_2"] = plan
-    o._active_plan_by_agent["A"] = "plan_2"
-
-    async def body():
-        out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        assert out == {"recorded": True, "review_pending": True}
-
-    run(body())
-
-
-def test_report_status_done_with_no_active_plan_succeeds():
-    """report_status(state='done') when the agent has no active plan must succeed."""
-    o = _build()
-    # Agent A has no entry in _active_plan_by_agent — the default FakeOrchestrator
-    # already has _active_plan_by_agent = {} so no further setup is needed.
-
-    async def body():
-        out = await report_status(o, caller_id="A", state="done", detail=_ENVELOPE)
-        assert out == {"recorded": True, "review_pending": True}
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
 # create_team
 # ---------------------------------------------------------------------------
 
@@ -920,10 +686,10 @@ def test_create_team_concurrent_rejected():
 
 
 def test_terminate_child_happy_path():
-    """Happy path: child has reported done (completion_pending=True) → approve path."""
+    """Happy path: child has reported done (review_pending=True) → approve path."""
     o = _build()
-    # The gate requires the child to have called report_status(state="done") first.
-    o.agents["A"].completion_pending = True
+    # The gate requires the child to have signalled completion (review_pending=True) first.
+    o.agents["A"].review_pending = True
 
     async def body():
         out = await terminate_child(o, caller_id="R", agent_id="A")
@@ -967,7 +733,7 @@ def test_terminate_child_unknown_agent():
 def test_terminate_child_blocks_when_child_not_done():
     """Completion gate: no force + no pending + not terminated → PrimitiveError."""
     o = _build()
-    # completion_pending=False, terminate_consumed=False (defaults)
+    # review_pending=False, terminate_consumed=False (defaults)
 
     async def body():
         with pytest.raises(PrimitiveError) as ei:
@@ -980,9 +746,9 @@ def test_terminate_child_blocks_when_child_not_done():
 
 
 def test_terminate_child_approve_path_works():
-    """Completion gate approve path: completion_pending=True passes without force."""
+    """Completion gate approve path: review_pending=True passes without force."""
     o = _build()
-    o.agents["A"].completion_pending = True
+    o.agents["A"].review_pending = True
 
     async def body():
         out = await terminate_child(o, caller_id="R", agent_id="A")
@@ -1000,7 +766,7 @@ def test_terminate_child_approve_path_works():
 def test_terminate_child_force_overrides_gate_and_emits_event():
     """force=True with a not-done child: gate bypassed, terminate.forced emitted."""
     o = _build()
-    # completion_pending=False, terminate_consumed=False (defaults — gate would block)
+    # review_pending=False, terminate_consumed=False (defaults — gate would block)
 
     async def body():
         out = await terminate_child(o, caller_id="R", agent_id="A", force=True)
@@ -1020,9 +786,9 @@ def test_terminate_child_force_overrides_gate_and_emits_event():
 
 
 def test_terminate_child_force_when_already_pending_does_not_emit_forced_event():
-    """force=True when completion_pending=True: gate is not blocked, no forced event."""
+    """force=True when review_pending=True: gate is not blocked, no forced event."""
     o = _build()
-    o.agents["A"].completion_pending = True
+    o.agents["A"].review_pending = True
 
     async def body():
         out = await terminate_child(o, caller_id="R", agent_id="A", force=True)

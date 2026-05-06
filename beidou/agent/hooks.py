@@ -80,7 +80,6 @@ ALLOWED_DURING_PENDING_REVIEW = {
     "mcp__beidou__terminate_child",
     "mcp__beidou__send_message",
     "mcp__beidou__list_pending_reviews",
-    "mcp__beidou__report_status",
     "mcp__beidou__signal_review",
     "mcp__beidou__request_termination",
     "mcp__beidou__ask_user",
@@ -98,7 +97,6 @@ REPLY_GATE_ALLOWLIST = {
     "Grep",
     "Bash",
     "mcp__beidou__send_message",
-    "mcp__beidou__report_status",
     "mcp__beidou__signal_review",
     "mcp__beidou__request_termination",
     "mcp__beidou__ask_user",
@@ -140,7 +138,7 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
     **PostToolUse -- mcp__beidou__signal_review**
         Fires when the agent calls ``mcp__beidou__signal_review(detail="...")``.
         Delivers the detail to the leader's inbox (non-root) or human gateway (root).
-        The primitive already sets ``completion_pending``; the hook handles routing.
+        The primitive already sets ``review_pending``; the hook handles routing.
     """
 
     async def on_ask_user_question(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
@@ -196,187 +194,11 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                 "permissionDecisionReason": reason,
             }
         }
-
-    async def on_report_status(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
-        # Guard: wrong tool (HookMatcher should filter, but be defensive).
-        if input_data.get("tool_name") != "mcp__beidou__report_status":
-            return {}
-        # Guard: only act on state=="done".
-        if input_data.get("tool_input", {}).get("state") != "done":
-            return {}
-        # Guard: PostToolUse also fires for failed calls (is_error=True tool result).
-        # The primitive raised an envelope_missing or other error; the model already
-        # sees the error in the next tool result. Hook is a strict no-op here.
-        tool_response = input_data.get("tool_response") or {}
-        if isinstance(tool_response, dict) and tool_response.get("is_error"):
-            return {}
-
-        # Primitive guarantees envelope presence when is_error=False.
-        # Read detail directly — no assistant_text_for_turn fallback needed.
-        summary = (input_data.get("tool_input") or {}).get("detail") or ""
-
-        rec = orch._agents.get(caller_id)  # type: ignore[attr-defined]
-
-        # Root agent: route the review through the human gateway instead of an
-        # agent leader. Approve -> terminate_root; Rework -> deliver a rework
-        # message back to the root inbox so the next turn can continue.
-        if leader_id == USER_SENTINEL:
-            try:
-                answer = await orch.gateway_ask_user_structured(
-                    caller_id,
-                    [
-                        {
-                            "question": summary,
-                            "header": "Review",
-                            "multiSelect": False,
-                            "options": [
-                                {
-                                    "label": "Approve",
-                                    "description": "Accept the deliverable and end the run.",
-                                    "value": "approve",
-                                },
-                                {
-                                    "label": "Rework",
-                                    "description": "Send feedback back to the agent and continue.",
-                                    "value": "rework",
-                                    "requires_text": True,
-                                },
-                            ],
-                        }
-                    ],
-                    "Root completion review",
-                )
-            except Exception as e:
-                orch.emit_event(
-                    "completion.empty",
-                    {
-                        "agent_id": caller_id,
-                        "leader_id": leader_id,
-                        "reason": f"gateway_failure: {type(e).__name__}",
-                    },
-                )
-                return {}
-
-            sub = (answer.get("answers") or [{}])[0]
-            selected = sub.get("selected_values") or sub.get("selected_labels") or []
-            decision = (selected[0] if selected else "").lower()
-
-            # TerminalGateway / TUIGateway send free-text answers
-            # (selected_labels=[]); fall back to recognising approval keywords
-            # in the typed text so a typed "approve" / "yes" still terminates.
-            if not decision:
-                typed = (sub.get("text") or "").strip().lower()
-                if typed in {"approve", "approved", "yes", "y", "ok", "lgtm"}:
-                    decision = "approve"
-
-            if decision in ("approve", "approved"):
-                orch.emit_event(
-                    "completion.reported",
-                    {
-                        "agent_id": caller_id,
-                        "leader_id": leader_id,
-                        "via": "user_gateway",
-                        "decision": "approve",
-                    },
-                )
-                # Mark completion pending at end of success path, after all
-                # delivery work is done, so an unexpected raise doesn't leave
-                # the agent stuck pending.
-                if rec is not None:
-                    rec.completion_pending = True
-                    rec.completion_pending_ts = time.time()
-                    rec.last_progress_ts = time.time()
-                    rec.idle_nudge_count = 0
-                    if rec.pending_replies:
-                        for msg_id, obl in rec.pending_replies.items():
-                            orch.emit_event("reply.abandoned", {
-                                "agent_id": caller_id,
-                                "message_id": msg_id,
-                                "from_id": obl["from_id"],
-                                "reason": "completion_reported",
-                                "ts": time.time(),
-                            })
-                        rec.pending_replies.clear()
-                        rec.reply_gate_active = False
-                await orch.terminate_root()
-            else:
-                # Treat anything that isn't "approve" as rework so the user can
-                # send free-text guidance even if they pick the "Other" path.
-                rework_text = sub.get("text") or "(no rework details provided)"
-                orch.deliver_message(
-                    from_id="user",
-                    to_id=caller_id,
-                    body=f"rework: {rework_text}",
-                )
-                orch.emit_event(
-                    "completion.reported",
-                    {
-                        "agent_id": caller_id,
-                        "leader_id": leader_id,
-                        "via": "user_gateway",
-                        "decision": "rework",
-                    },
-                )
-                # Mark completion pending at end of success path.
-                if rec is not None:
-                    rec.completion_pending = True
-                    rec.completion_pending_ts = time.time()
-                    rec.last_progress_ts = time.time()
-                    rec.idle_nudge_count = 0
-                    if rec.pending_replies:
-                        for msg_id, obl in rec.pending_replies.items():
-                            orch.emit_event("reply.abandoned", {
-                                "agent_id": caller_id,
-                                "message_id": msg_id,
-                                "from_id": obl["from_id"],
-                                "reason": "completion_reported",
-                                "ts": time.time(),
-                            })
-                        rec.pending_replies.clear()
-                        rec.reply_gate_active = False
-            return {}
-
-        # Non-root path: deliver to leader's inbox.
-        orch.deliver_message(
-            from_id=caller_id,
-            to_id=leader_id,
-            body=summary,
-            kind="completion_report",
-        )
-        orch.emit_event(
-            "completion.reported",
-            {
-                "agent_id": caller_id,
-                "leader_id": leader_id,
-                "via": "hook",
-            },
-        )
-        # Mark completion pending at end of success path, after delivery is done.
-        if rec is not None:
-            rec.completion_pending = True
-            rec.completion_pending_ts = time.time()
-            rec.last_progress_ts = time.time()
-            rec.idle_nudge_count = 0
-            # Clear any pending reply obligations -- agent reported done,
-            # reply obligations are moot.
-            if rec.pending_replies:
-                for msg_id, obl in rec.pending_replies.items():
-                    orch.emit_event("reply.abandoned", {
-                        "agent_id": caller_id,
-                        "message_id": msg_id,
-                        "from_id": obl["from_id"],
-                        "reason": "completion_reported",
-                        "ts": time.time(),
-                    })
-                rec.pending_replies.clear()
-                rec.reply_gate_active = False
-        return {}
-
     async def on_signal_review(input_data: Any, tool_use_id: Optional[str], context: Any) -> dict:
         """PostToolUse hook for ``mcp__beidou__signal_review``.
 
         Delivers the review detail to the leader's inbox (non-root) or to the
-        human gateway (root). The primitive already sets ``completion_pending``;
+        human gateway (root). The primitive already sets ``review_pending``;
         this hook handles message routing.
         """
         # Guard: wrong tool (HookMatcher should filter, but be defensive).
@@ -422,12 +244,18 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                     decision = "approve"
 
             if decision in ("approve", "approved"):
+                if rec is not None:
+                    rec.review_pending = True
+                    rec.review_pending_ts = time.time()
                 orch.emit_event("completion.reported", {
                     "agent_id": caller_id, "leader_id": leader_id,
                     "via": "user_gateway", "decision": "approve",
                 })
                 await orch.terminate_root()
             else:
+                if rec is not None:
+                    rec.review_pending = True
+                    rec.review_pending_ts = time.time()
                 rework_text = sub.get("text") or "(no rework details provided)"
                 orch.deliver_message(from_id="user", to_id=caller_id, body=f"rework: {rework_text}")
                 orch.emit_event("completion.reported", {
@@ -441,6 +269,25 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             from_id=caller_id, to_id=leader_id,
             body=detail, kind="completion_report",
         )
+        # Defense-in-depth: ensure review_pending is set so the review
+        # gate and watchdog see this agent (primitive also sets it, but
+        # this guards against primitive/hook ordering edge cases).
+        if rec is not None:
+            rec.review_pending = True
+            rec.review_pending_ts = time.time()
+            # Clear pending reply obligations — completion reported, so
+            # reply obligations are moot.
+            if rec.pending_replies:
+                for msg_id, obl in rec.pending_replies.items():
+                    orch.emit_event("reply.abandoned", {
+                        "agent_id": caller_id,
+                        "message_id": msg_id,
+                        "from_id": obl["from_id"],
+                        "reason": "completion_reported",
+                        "ts": time.time(),
+                    })
+                rec.pending_replies.clear()
+                rec.reply_gate_active = False
         orch.emit_event("completion.reported", {
             "agent_id": caller_id, "leader_id": leader_id, "via": "hook",
         })
@@ -450,7 +297,7 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         """PostToolUse hook for ``mcp__beidou__request_termination``.
 
         Delivers termination request to leader inbox (non-root) or user gateway
-        (root). The primitive already sets ``completion_pending``; this hook
+        (root). The primitive already sets ``review_pending``; this hook
         handles message routing.
         """
         if input_data.get("tool_name") != "mcp__beidou__request_termination":
@@ -494,12 +341,18 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                     decision = "approve"
 
             if decision in ("approve", "approved"):
+                if rec is not None:
+                    rec.review_pending = True
+                    rec.review_pending_ts = time.time()
                 orch.emit_event("completion.reported", {
                     "agent_id": caller_id, "leader_id": leader_id,
                     "via": "user_gateway", "decision": "approve",
                 })
                 await orch.terminate_root()
             else:
+                if rec is not None:
+                    rec.review_pending = True
+                    rec.review_pending_ts = time.time()
                 rework_text = sub.get("text") or "(no rework details)"
                 orch.deliver_message(from_id="user", to_id=caller_id, body=f"rework: {rework_text}")
                 orch.emit_event("completion.reported", {
@@ -585,7 +438,7 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         """Block a leader from advancing while it has direct children awaiting review.
 
         Fires on EVERY tool call (matcher=None) for the leader agent. If no
-        children have completion_pending=True the hook is a transparent pass-through.
+        children have review_pending=True the hook is a transparent pass-through.
         When pending children exist, only tools in ALLOWED_DURING_PENDING_REVIEW
         are permitted; all others are denied with a directive explaining next steps.
 
@@ -598,9 +451,9 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         if rec is None:
             return {}
 
-        # Collect direct children with completion_pending=True.
+        # Collect direct children with review_pending=True.
         # bd issue xq1: skip children whose SDK session has already ended
-        # (terminate_consumed=True) -- a stale completion_pending flag on a
+        # (terminate_consumed=True) -- a stale review_pending flag on a
         # terminated child must not gate the leader.
         pending_ids: list[str] = []
         for tid in orch.teams_led_by(caller_id):  # type: ignore[attr-defined]
@@ -613,7 +466,7 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                     continue
                 if child_rec.terminate_consumed:  # bd issue xq1: skip terminated children
                     continue
-                if child_rec.completion_pending:
+                if child_rec.review_pending:
                     pending_ids.append(member_id)
 
         if not pending_ids:
@@ -729,9 +582,9 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
         "TodoWrite": (
             "Beidou uses mcp__beidou__declare_plan + "
             "mcp__beidou__update_plan_task for task tracking, and "
-            "mcp__beidou__report_status(state='done') for completion. TodoWrite "
+            "mcp__beidou__signal_review(detail=...) for completion. TodoWrite "
             "is blocked here because it competes with both. Spec: "
-            "docs/tool-surface.md#declare_plan, docs/tool-surface.md#report_status."
+            "docs/tool-surface.md#declare_plan, docs/tool-surface.md#signal_review."
         ),
     }
 
@@ -796,11 +649,6 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
             ),
         ],
         "PostToolUse": [
-            HookMatcher(
-                matcher="mcp__beidou__report_status",
-                hooks=[on_report_status],
-                timeout=HOOK_REVIEW_TIMEOUT_S,
-            ),
             HookMatcher(
                 matcher="mcp__beidou__signal_review",
                 hooks=[on_signal_review],

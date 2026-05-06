@@ -9,7 +9,7 @@ server. The agent-visible names are (see ``docs/tool-surface.md``):
 * ``mcp__beidou__ask_user``             -- Question via the leader chain.
 * ``mcp__beidou__answer_question``      -- Resolve an inbox question (leaders).
 * ``mcp__beidou__escalate_question``    -- Push an inbox question up the chain.
-* ``mcp__beidou__report_status``        -- State update + observability.
+* ``mcp__beidou__signal_review``          -- Signal work ready for review.
 * ``mcp__beidou__declare_plan``         -- Validate DAG + persist plan; no team/agent created.
 * ``mcp__beidou__remove_plan``          -- Remove caller's active plan for replanning.
 * ``mcp__beidou__spawn_agent``          -- Gated spawn from plan; lazily creates team on first call.
@@ -44,7 +44,6 @@ from .core import (
     list_pending_reviews,
     list_ready,
     remove_plan,
-    report_status,
     request_termination,
     send_message,
     signal_review,
@@ -93,7 +92,8 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
                 "mcp__beidou__send_message",
                 "mcp__beidou__list_peers",
                 "mcp__beidou__ask_user",
-                "mcp__beidou__report_status",
+                "mcp__beidou__signal_review",
+                "mcp__beidou__request_termination",
                 "mcp__beidou__create_team",
                 "mcp__beidou__terminate_child",
                 "mcp__beidou__list_pending_reviews",
@@ -370,37 +370,6 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         )
 
     @tool(
-        "report_status",
-        "Report your current state (working|idle|blocked|done) with an "
-        "optional free-text detail. 'done' triggers parent liveness "
-        "re-evaluation.",
-        {
-            "type": "object",
-            "properties": {
-                "state": {
-                    "type": "string",
-                    "enum": ["working", "idle", "blocked", "done"],
-                    "description": "Current agent state.",
-                },
-                "detail": {
-                    "type": "string",
-                    "description": "Free-text summary (required in practice when state='done').",
-                },
-            },
-            "required": ["state"],
-        },
-    )
-    async def _report_status(args: dict[str, Any]) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "orch": orch,
-            "caller_id": caller_id,
-            "state": args["state"],
-        }
-        if "detail" in args and args["detail"] is not None:
-            kwargs["detail"] = args["detail"]
-        return await _wrap("report_status", report_status, args, **kwargs)
-
-    @tool(
         "signal_review",
         "Signal your leader that work is ready for review. Reentrant — call "
         "each time work completes. Detail must contain [REVIEW REQUIRED] or "
@@ -590,7 +559,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
     @tool(
         "terminate_child",
         "Post a terminate sentinel to a child agent's inbox. By default, only "
-        "valid when the child has called report_status(state='done') (the "
+        "valid when the child has called signal_review(detail=...) (the "
         "approve path). Pass force=true to override; emits an audited "
         "terminate.forced event. Only valid if you lead the team that contains "
         "the target — crossing team boundaries is rejected even for ancestor "
@@ -629,7 +598,7 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
         "list_pending_reviews",
         "Return the list of your direct child agents currently awaiting your "
         "approve/rework decision (those that have called "
-        "report_status(state='done') and not yet been terminated or sent "
+        "signal_review(detail=...) and not yet been terminated or sent "
         "rework). Use this if you are unsure which children still need a "
         "decision from you.",
         {
@@ -659,7 +628,8 @@ def build_mcp_server_for(orch: Orchestrator, caller_id: str):
             _ask_user,
             _answer_question,
             _escalate_question,
-            _report_status,
+            _signal_review,
+            _request_termination,
             _create_team,
             _declare_plan,
             _remove_plan,

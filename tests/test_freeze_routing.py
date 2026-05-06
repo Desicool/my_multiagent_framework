@@ -25,10 +25,10 @@ from beidou.agent.hooks import V2_DESIGN_COMMITTEE_SKILLS
 LEADER_ID = "orch_leader_001"
 
 
-def _turn_tool_info_with_report_status() -> dict:
-    """Turn where agent called report_status(state='idle') — wrong tool for FREEZE."""
+def _turn_tool_info_with_non_send() -> dict:
+    """Turn where agent called list_peers — wrong tool for FREEZE (should be send_message)."""
     return {
-        "tu_001": ("mcp__beidou__report_status", {"state": "idle"}),
+        "tu_001": ("mcp__beidou__list_peers", {}),
     }
 
 
@@ -57,14 +57,14 @@ def _turn_tool_info_with_send_message_to_wrong_target() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_freeze_ok_synthesized_when_idle_report_status_on_v2_committee():
-    """[FREEZE OK] in text + report_status(idle) but no send_message → orphan detected."""
+def test_freeze_ok_synthesized_when_non_send_tool_on_v2_committee():
+    """[FREEZE OK] in text + list_peers (not send_message) → orphan detected."""
     assistant_text = (
         "I have reviewed requirements.md and it is stable.\n"
         "[FREEZE OK]\n"
         "No pending revisions."
     )
-    turn_tool_info = _turn_tool_info_with_report_status()
+    turn_tool_info = _turn_tool_info_with_non_send()
 
     result = detect_orphaned_freeze(assistant_text, turn_tool_info, LEADER_ID)
 
@@ -93,7 +93,7 @@ def test_freeze_nack_synthesized_with_reason_capture():
         "[FREEZE NACK]: precision still under debate\n"
         "Will update once resolved."
     )
-    turn_tool_info = _turn_tool_info_with_report_status()
+    turn_tool_info = _turn_tool_info_with_non_send()
 
     result = detect_orphaned_freeze(assistant_text, turn_tool_info, LEADER_ID)
 
@@ -121,7 +121,7 @@ def test_no_synthesis_for_v1_or_non_committee_skills():
     # it returns the correct result based purely on text+tools — this is just
     # belt-and-suspenders validation that the helper itself is correct.
     assistant_text = "[FREEZE OK]\n"
-    turn_tool_info = _turn_tool_info_with_report_status()
+    turn_tool_info = _turn_tool_info_with_non_send()
     result = detect_orphaned_freeze(assistant_text, turn_tool_info, LEADER_ID)
     # Helper alone would find the orphan — confirms the skill gate in loop.py
     # is the correct place to suppress it for non-committee agents.
@@ -147,7 +147,7 @@ def test_last_freeze_line_wins_when_multiple_present():
         "Actually, on reflection everything is stable.\n"
         "[FREEZE OK]\n"
     )
-    turn_tool_info = _turn_tool_info_with_report_status()
+    turn_tool_info = _turn_tool_info_with_non_send()
 
     result = detect_orphaned_freeze(assistant_text, turn_tool_info, LEADER_ID)
 

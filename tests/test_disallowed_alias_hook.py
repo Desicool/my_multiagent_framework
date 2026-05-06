@@ -24,7 +24,7 @@ class FakeOrchForHooks:
 
     def __init__(self) -> None:
         self.events: list[tuple[str, dict]] = []
-        # report_status hook closes over deliver_message; not exercised here
+        # PostToolUse hook closes over deliver_message; not exercised here
         # but we provide a stub so build_hooks doesn't crash.
         self._gateway_called = False
         self._gateway_calls: list[tuple[str, list, Optional[str]]] = []
@@ -88,7 +88,7 @@ class TestDisallowedAliasHook:
         assert "docs/tool-surface.md#send_message" in reason
 
     def test_todowrite_deny_reason_redirects_to_primitive(self) -> None:
-        """TodoWrite call gets denied with a reason pointing at declare_plan/report_status."""
+        """TodoWrite call gets denied with a reason pointing at declare_plan/signal_review."""
         orch = FakeOrchForHooks()
         hook = _get_pretooluse_hook_for(orch, "TodoWrite")
 
@@ -102,7 +102,7 @@ class TestDisallowedAliasHook:
         assert hs.get("permissionDecision") == "deny"
         reason = hs.get("permissionDecisionReason", "")
         assert "mcp__beidou__declare_plan" in reason
-        assert "mcp__beidou__report_status" in reason
+        assert "mcp__beidou__signal_review" in reason
         assert "docs/tool-surface.md#declare_plan" in reason
 
     def test_emits_disallowed_alias_denied_event(self) -> None:

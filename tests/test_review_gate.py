@@ -1,7 +1,7 @@
 """Tests for the leader-side review gate PreToolUse hook.
 
 bd issue be3: Add on_review_gate to build_hooks so a leader cannot advance
-while it has direct children with completion_pending=True.
+while it has direct children with review_pending=True.
 
 All tests are self-contained unit tests — no I/O, no real Anthropic API calls.
 The real Orchestrator + helper factories from test_orchestrator_agent_record.py
@@ -155,13 +155,13 @@ def _input_data(tool_name: str, tool_input: Optional[dict] = None) -> dict:
 
 # bd issue be3: no pending children → create_team allowed
 def test_pretoolc_no_pending_children_allows_create_team(tmp_path: Path) -> None:
-    """Leader with no completion_pending children can call create_team freely."""
+    """Leader with no review_pending children can call create_team freely."""
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = False  # explicit; is the default
+    child.review_pending = False  # explicit; is the default
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(_input_data("mcp__beidou__create_team"), tool_use_id="t1", context=None))
@@ -177,14 +177,14 @@ def test_pretoolc_no_pending_children_allows_create_team(tmp_path: Path) -> None
 
 # bd issue be3: pending child → create_team denied
 def test_pretoolc_pending_child_denies_create_team(tmp_path: Path) -> None:
-    """Leader with 1 completion_pending child cannot call create_team; gets a denial."""
+    """Leader with 1 review_pending child cannot call create_team; gets a denial."""
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(_input_data("mcp__beidou__create_team"), tool_use_id="t2", context=None))
@@ -210,7 +210,7 @@ def test_pretoolc_pending_child_allows_terminate_child(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
+    child.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(_input_data("mcp__beidou__terminate_child", {"agent_id": "C1"}), tool_use_id="t3", context=None))
@@ -227,7 +227,7 @@ def test_pretoolc_pending_child_allows_send_message(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
+    child.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(_input_data("mcp__beidou__send_message", {"to": "C1", "content": "rework: fix the tests"}), tool_use_id="t4", context=None))
@@ -241,7 +241,7 @@ def test_pretoolc_pending_child_allows_escalate_question(tmp_path: Path) -> None
     """Leader with pending child CAN call mcp__beidou__escalate_question (allowlist).
 
     escalate_question is pure question-routing — it resolves an [INBOX QUESTION]
-    already in the leader's inbox. Blocking it while a sibling has completion_pending
+    already in the leader's inbox. Blocking it while a sibling has review_pending
     forces unnatural ordering and breaks the v2 mandate (§6.1) that root ALWAYS
     escalates inbox questions.
     """
@@ -250,7 +250,7 @@ def test_pretoolc_pending_child_allows_escalate_question(tmp_path: Path) -> None
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
+    child.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(
@@ -269,14 +269,14 @@ def test_pretoolc_pending_child_allows_answer_question(tmp_path: Path) -> None:
 
     answer_question is pure question-routing — it resolves an [INBOX QUESTION]
     that was received via leader-chain routing. Blocking it while a sibling has
-    completion_pending forces unnatural ordering.
+    review_pending forces unnatural ordering.
     """
     o, _ = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
+    child.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(
@@ -300,7 +300,7 @@ def test_pretoolc_pending_child_allows_read(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
+    child.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(_input_data("Read", {"file_path": "/workspace/out.txt"}), tool_use_id="t5", context=None))
@@ -318,8 +318,8 @@ def test_pretoolc_multiple_pending_children(tmp_path: Path) -> None:
     _seed_agent(o, "L", _TM_TOP, role="leader")
     c1 = _seed_agent(o, "C1", "tm_child")
     c2 = _seed_agent(o, "C2", "tm_child")
-    c1.completion_pending = True
-    c2.completion_pending = True
+    c1.review_pending = True
+    c2.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     # Use create_team (not Write — Write is now in ALLOWED_DURING_PENDING_REVIEW since bd issue xq1)
@@ -344,8 +344,8 @@ def test_review_gate_v2_committee_resolution_block_has_no_terminate(tmp_path: Pa
     _seed_agent(o, "L", _TM_TOP, role="leader")
     c1 = _seed_agent(o, "C1", "tm_child", skill="qa_engineer_v2")
     c2 = _seed_agent(o, "C2", "tm_child", skill="qa_engineer")
-    c1.completion_pending = True
-    c2.completion_pending = True
+    c1.review_pending = True
+    c2.review_pending = True
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(hook(
@@ -517,8 +517,8 @@ def test_watchdog_pings_at_60s(tmp_path: Path) -> None:
         # Seed a leader agent in the root team that is the leader of tm_child.
         leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
-        child.completion_pending = True
-        child.completion_pending_ts = time.time() - 65.0  # >60s ago
+        child.review_pending = True
+        child.review_pending_ts = time.time() - 65.0  # >60s ago
 
         await o._watchdog_tick()
         await asyncio.sleep(0)  # drain bg tasks
@@ -535,8 +535,8 @@ def test_watchdog_pings_at_60s(tmp_path: Path) -> None:
         # ping_count incremented
         assert child.review_ping_count == 1
         # ts rebased
-        assert child.completion_pending_ts is not None
-        assert abs(child.completion_pending_ts - time.time()) < 5.0
+        assert child.review_pending_ts is not None
+        assert abs(child.review_pending_ts - time.time()) < 5.0
 
         await o.stop_watchdog()
 
@@ -552,8 +552,8 @@ def test_watchdog_no_ping_before_60s(tmp_path: Path) -> None:
         _seed_root_agent(o)
         leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
-        child.completion_pending = True
-        child.completion_pending_ts = time.time() - 30.0  # only 30s ago
+        child.review_pending = True
+        child.review_pending_ts = time.time() - 30.0  # only 30s ago
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
@@ -576,8 +576,8 @@ def test_watchdog_second_ping_warns(tmp_path: Path) -> None:
         _seed_root_agent(o)
         leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
-        child.completion_pending = True
-        child.completion_pending_ts = time.time() - 65.0
+        child.review_pending = True
+        child.review_pending_ts = time.time() - 65.0
         child.review_ping_count = 1  # already had first ping
 
         await o._watchdog_tick()
@@ -601,8 +601,8 @@ def test_watchdog_third_strike_escalates(tmp_path: Path) -> None:
         _seed_root_agent(o)
         _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
-        child.completion_pending = True
-        child.completion_pending_ts = time.time() - 65.0
+        child.review_pending = True
+        child.review_pending_ts = time.time() - 65.0
         child.review_ping_count = 2
 
         # Set up a mock gateway with ask() (for is_gateway_available) and
@@ -647,8 +647,8 @@ def test_watchdog_post_escalation_silence(tmp_path: Path) -> None:
         _seed_root_agent(o)
         leader = _seed_agent(o, "leader_ag", _TM_TOP, role="leader")
         child = _seed_agent(o, "child_ag", "tm_child")
-        child.completion_pending = True
-        child.completion_pending_ts = time.time() - 65.0
+        child.review_pending = True
+        child.review_pending_ts = time.time() - 65.0
         child.review_ping_count = 3  # already escalated
 
         await o._watchdog_tick()
@@ -676,7 +676,7 @@ def test_idle_nudge_fires_for_idle_root(tmp_path: Path) -> None:
         root.last_progress_ts = time.time() - 130.0
         root.last_drain_ts = time.time() - 130.0  # stale drain; last_progress_ts <= last_drain_ts so freshness = last_drain_ts
         root.inflight_tools = 0
-        root.completion_pending = False
+        root.review_pending = False
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
@@ -724,7 +724,7 @@ def test_idle_nudge_fires_for_idle_worker_no_children(tmp_path: Path) -> None:
 
     Under the new contract:
     - last_drain_ts stale + last_progress_ts <= last_drain_ts → freshness = last_drain_ts
-    - inflight_tools=0, completion_pending=False → no zero-freshness short-circuit
+    - inflight_tools=0, review_pending=False → no zero-freshness short-circuit
     - now - freshness >= IDLE_NUDGE_S → Pass B MUST nudge, regardless of leaf/non-leaf shape
     """
 
@@ -736,7 +736,7 @@ def test_idle_nudge_fires_for_idle_worker_no_children(tmp_path: Path) -> None:
         worker.last_progress_ts = time.time() - 200.0
         worker.last_drain_ts = time.time() - 200.0  # stale drain; last_progress_ts <= last_drain_ts → freshness = last_drain_ts
         worker.inflight_tools = 0
-        worker.completion_pending = False
+        worker.review_pending = False
         # worker leads no teams → no direct children
 
         await o._watchdog_tick()
@@ -754,21 +754,21 @@ def test_idle_nudge_fires_for_idle_worker_no_children(tmp_path: Path) -> None:
     run(body())
 
 
-def test_idle_nudge_skipped_when_completion_pending(tmp_path: Path) -> None:
-    """Pass B: completion_pending=True → Pass A handles it; Pass B must skip even with stale drain."""
+def test_idle_nudge_skipped_when_review_pending(tmp_path: Path) -> None:
+    """Pass B: review_pending=True → Pass A handles it; Pass B must skip even with stale drain."""
 
     async def body():
         o, _ = _make_orch_for_watchdog(tmp_path)
         root = _seed_root_agent(o)
         root.last_progress_ts = time.time() - 130.0
-        root.last_drain_ts = time.time() - 130.0  # stale drain; proves completion_pending blocks the nudge regardless
-        root.completion_pending = True  # Pass A territory → freshness=0 → no Pass B nudge
+        root.last_drain_ts = time.time() - 130.0  # stale drain; proves review_pending blocks the nudge regardless
+        root.review_pending = True  # Pass A territory → freshness=0 → no Pass B nudge
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
 
         # No liveness.nudge (Pass A handles it, but in this test there's also no
-        # completion_pending_ts so Pass A skips too — we just verify Pass B skips).
+        # review_pending_ts so Pass A skips too — we just verify Pass B skips).
         assert _events_named(o, "liveness.nudge") == []
 
         await o.stop_watchdog()
@@ -854,8 +854,8 @@ def test_review_gate_denies_SendMessage_classic(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(
@@ -878,10 +878,10 @@ def test_review_gate_denies_SendMessage_classic(tmp_path: Path) -> None:
 
 
 # bd issue 8gen: SDK TodoWrite is a default builtin that competes with
-# mcp__beidou__report_status as a completion signal. tsk_658f44b6 evidence:
+# mcp__beidou__signal_review as a completion signal. tsk_658f44b6 evidence:
 # the impl-leader (junior_engineer) terminated its last child, then called
 # TodoWrite to mark its tasks complete instead of emitting [REVIEW REQUIRED]
-# + report_status — the orchestrator hung waiting forever. The 8gen fix adds
+# + signal_review — the orchestrator hung waiting forever. The 8gen fix adds
 # TodoWrite to disallowed_tools at agent-spawn (loop.py); the review gate
 # denies it as defense-in-depth (TodoWrite is intentionally NOT in
 # ALLOWED_DURING_PENDING_REVIEW, so the gate refuses on absence).
@@ -891,7 +891,7 @@ def test_review_gate_denies_TodoWrite_classic(tmp_path: Path) -> None:
     TodoWrite is suppressed at spawn-time via disallowed_tools in loop.py
     (so the SDK never surfaces it to the model); the review gate is the
     second-layer check. tsk_658f44b6 evidence: impl-leader called TodoWrite
-    to declare completion in lieu of report_status; orchestrator hung.
+    to declare completion in lieu of signal_review; orchestrator hung.
     """
     # bd issue 8gen
     o, _ = _make_orchestrator(tmp_path)
@@ -899,8 +899,8 @@ def test_review_gate_denies_TodoWrite_classic(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(
@@ -935,8 +935,8 @@ def test_review_gate_allows_AskUserQuestion_classic(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(
@@ -960,8 +960,8 @@ def test_review_gate_allows_Write_classic(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(
@@ -985,8 +985,8 @@ def test_review_gate_allows_Edit_classic(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
     result = run(
@@ -1006,7 +1006,7 @@ def test_review_gate_allows_Edit_classic(tmp_path: Path) -> None:
 
 # bd issue xq1: terminate_consumed=True skips child from gating the leader
 def test_review_gate_skips_terminate_consumed(tmp_path: Path) -> None:
-    """Leader with 1 child that has completion_pending=True AND terminate_consumed=True.
+    """Leader with 1 child that has review_pending=True AND terminate_consumed=True.
 
     The terminated child's SDK session has ended; it must not gate the leader.
     Leader tries create_team → should be ALLOWED, no review_gate.denied.
@@ -1017,8 +1017,8 @@ def test_review_gate_skips_terminate_consumed(tmp_path: Path) -> None:
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     child = _seed_agent(o, "C1", "tm_child")
-    child.completion_pending = True
-    child.completion_pending_ts = time.time()
+    child.review_pending = True
+    child.review_pending_ts = time.time()
     child.terminate_consumed = True  # SDK session ended — must not gate
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)
@@ -1036,8 +1036,8 @@ def test_review_gate_skips_terminate_consumed(tmp_path: Path) -> None:
 
 # bd issue xq1: mixed — only the live (non-terminated) child gates the leader
 def test_review_gate_skips_terminate_consumed_mixed(tmp_path: Path) -> None:
-    """Leader has 2 children: one terminated (completion_pending+terminate_consumed=True),
-    one live (completion_pending=True only).
+    """Leader has 2 children: one terminated (review_pending+terminate_consumed=True),
+    one live (review_pending=True only).
 
     Leader tries create_team → DENIED by the live child only. The terminated child
     must NOT appear in pending_children or the denial reason.
@@ -1050,14 +1050,14 @@ def test_review_gate_skips_terminate_consumed_mixed(tmp_path: Path) -> None:
 
     # Terminated child — must be excluded from gating.
     dead = _seed_agent(o, "C_dead", "tm_child")
-    dead.completion_pending = True
-    dead.completion_pending_ts = time.time()
+    dead.review_pending = True
+    dead.review_pending_ts = time.time()
     dead.terminate_consumed = True
 
     # Live child — must gate the leader.
     live = _seed_agent(o, "C_live", "tm_child")
-    live.completion_pending = True
-    live.completion_pending_ts = time.time()
+    live.review_pending = True
+    live.review_pending_ts = time.time()
     live.terminate_consumed = False
 
     hook = _get_review_gate_hook(o, caller_id="L", leader_id=USER_SENTINEL)

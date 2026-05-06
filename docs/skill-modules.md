@@ -225,7 +225,7 @@ Beidou registers three built-in SDK hooks on every agent spawn:
 |--------------|--------------|---------|
 | `on_ask_user_question` | PreToolUse | Intercept raw AskUserQuestion, route to human gateway |
 | `on_review_gate` | PreToolUse | Block leader tool calls while children await review |
-| `on_report_status` | PostToolUse | Completion handoff: read assistant text, route to leader/user |
+| `on_signal_review` | PostToolUse | Completion handoff: read assistant text, route to leader/user |
 
 These built-in hooks **always run first**. User gate handlers from `module.toml`
 are appended after them. This guarantees system integrity — a user gate cannot

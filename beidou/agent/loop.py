@@ -190,7 +190,6 @@ _BEIDOU_PRIMITIVE_TOOLS: list[str] = [
     "mcp__beidou__ask_user",
     "mcp__beidou__answer_question",
     "mcp__beidou__escalate_question",
-    "mcp__beidou__report_status",
     "mcp__beidou__signal_review",
     "mcp__beidou__request_termination",
     "mcp__beidou__declare_plan",

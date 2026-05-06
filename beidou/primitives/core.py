@@ -181,8 +181,8 @@ class Orchestrator(Protocol):
 
     # --- Completion-review accessors (used by list_pending_reviews) --------
     def agent_skill_name(self, agent_id: str) -> str: ...
-    def agent_completion_pending(self, agent_id: str) -> bool: ...
-    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]: ...
+    def agent_review_pending(self, agent_id: str) -> bool: ...
+    def agent_review_pending_ts(self, agent_id: str) -> Optional[float]: ...
     def agent_last_status_detail(self, agent_id: str) -> str: ...
 
     # --- Name accessor (used by list_peers, list_pending_reviews) ----------
@@ -640,8 +640,8 @@ async def signal_review(
 ) -> dict:
     """Signal that work is ready for leader review.
 
-    Replaces the ``state="done"`` path of ``report_status``.
-    The agent remains alive; completion is a state, not an exit.
+    The agent remains alive; review is a state, not an exit.
+    Reentrant — call each time work is ready for review.
     See docs/tool-surface.md#signal_review.
     """
     detail_text = (detail or "").strip()
@@ -656,15 +656,13 @@ async def signal_review(
             reason="envelope_missing" if detail_text else "detail_empty",
         )
 
-    # Set completion_pending on the agent record (field rename to
-    # review_pending will land in orchestrator.py separately).
     rec = getattr(orch, "_agents", {}).get(caller_id)
     if rec is not None:
-        rec.completion_pending = True
-        rec.completion_pending_ts = time.time()
+        rec.review_pending = True
+        rec.review_pending_ts = time.time()
 
     # Record status so leader-side list_pending_reviews picks it up.
-    orch.record_status(caller_id, "done", detail)
+    orch.record_status(caller_id, "review_pending", detail)
     orch.emit_event(
         "status",
         {
@@ -709,11 +707,13 @@ async def request_termination(
                     incomplete_task_ids=incomplete,
                 )
 
-    # Mark completion_pending (termination_requested field rename is pending).
+    # Set both review_pending (so leader sees pending review) and
+    # termination_requested (so leader knows this is a lifecycle-end signal).
     rec = getattr(orch, "_agents", {}).get(caller_id)
     if rec is not None:
-        rec.completion_pending = True
-        rec.completion_pending_ts = time.time()
+        rec.review_pending = True
+        rec.review_pending_ts = time.time()
+        rec.termination_requested = True
 
     orch.emit_event(
         "status",
@@ -727,73 +727,6 @@ async def request_termination(
     return {"recorded": True, "termination_requested": True}
 
 
-async def report_status(
-    orch: Orchestrator,
-    *,
-    caller_id: str,
-    state: str,
-    detail: Optional[str] = None,
-) -> dict:
-    """Record state + emit event. See docs/tool-surface.md#report_status.
-
-    DEPRECATED for state="done": use signal_review + request_termination instead.
-    Non-done states (working, idle, blocked) remain unchanged.
-    """
-    if state not in ("working", "idle", "blocked", "done"):
-        raise PrimitiveError(
-            "invalid_state",
-            f"unknown state: {state}. Valid: 'working', 'idle', 'blocked', 'done'. "
-            f"Spec: docs/tool-surface.md#report_status.",
-            state=state,
-        )
-
-    if state == "done":
-        # Deprecated path -- delegate to signal_review with legacy flag.
-        # Preserve the old plan-incomplete guard for backward compat.
-        plan_id = orch._active_plan_by_agent.get(caller_id)
-        if plan_id is not None:
-            plan = orch._plans.get(plan_id)
-            if plan is not None:
-                incomplete = [
-                    t.id for t in plan.tasks.values()
-                    if t.status not in ("done", "failed")
-                ]
-                if incomplete:
-                    raise PrimitiveError(
-                        "plan_incomplete",
-                        f"cannot report done: {len(incomplete)} plan task(s) "
-                        f"unfinished: {', '.join(incomplete)}. Mark each task "
-                        f"done via update_plan_task before report_status. "
-                        f"Spec: docs/tool-surface.md#declare_plan.",
-                        plan_id=plan_id,
-                        incomplete_task_ids=incomplete,
-                    )
-
-        orch.emit_event(
-            "primitive.deprecated",
-            {
-                "name": "report_status",
-                "state": "done",
-                "agent_id": caller_id,
-                "ts": time.time(),
-            },
-        )
-        return await signal_review(
-            orch, caller_id=caller_id, detail=detail or "", _legacy_done=True
-        )
-
-    # Non-done states: keep existing behaviour.
-    orch.record_status(caller_id, state, detail)
-    orch.emit_event(
-        "status",
-        {
-            "agent_id": caller_id,
-            "state": state,
-            "detail": detail,
-            "ts": time.time(),
-        },
-    )
-    return {"recorded": True}
 
 
 async def create_team(
@@ -1022,7 +955,7 @@ async def terminate_child(
     member. Crossing team boundaries (even for ancestor leaders) is rejected.
 
     The plain (force=False) call requires the child to have called
-    report_status(state="done") first (completion_pending=True) or to already
+    report_status(state="done") first (review_pending=True) or to already
     have consumed a prior terminate (terminate_consumed=True).  Pass
     force=True to override; an audited terminate.forced event is emitted.
     """
@@ -1049,7 +982,7 @@ async def terminate_child(
     # terminated) unless the caller explicitly passes force=True.
     target_rec = orch._agents.get(agent_id)
     # Defensive (target_rec should exist if agent_exists passed) — keep simple.
-    target_pending = bool(target_rec and target_rec.completion_pending)
+    target_pending = bool(target_rec and target_rec.review_pending)
     target_terminated = bool(target_rec and target_rec.terminate_consumed)
     if not force and not target_pending and not target_terminated:
         raise PrimitiveError(
@@ -1122,21 +1055,21 @@ def list_pending_reviews(
     """Return direct children of ``caller_id`` that are awaiting review.
 
     "Direct children" are members of any team that ``caller_id`` leads
-    (via ``orch.teams_led_by``). Only those with ``completion_pending=True``
+    (via ``orch.teams_led_by``). Only those with ``review_pending=True``
     are returned. The caller itself is excluded even if it somehow appears
     as a member of one of its own teams.
 
     Each entry is a dict with:
       - ``agent_id``              -- the child's agent id
       - ``role``                  -- skill name (from ``agent_skill_name``)
-      - ``completion_pending_ts`` -- unix float when the child called done, or null
-      - ``age_s``                 -- seconds since completion_pending_ts, or null
+      - ``review_pending_ts`` -- unix float when the child called done, or null
+      - ``age_s``                 -- seconds since review_pending_ts, or null
       - ``summary``               -- ``last_status_detail`` text (may be empty string)
 
-    Results are sorted ascending by ``completion_pending_ts`` (oldest first).
+    Results are sorted ascending by ``review_pending_ts`` (oldest first).
     A ``None`` ts sorts after all timestamped entries.
 
-    Returns ``[]`` if no direct children have ``completion_pending=True``.
+    Returns ``[]`` if no direct children have ``review_pending=True``.
     See ``docs/tool-surface.md#list_pending_reviews``.
     """
     now = time.time()
@@ -1146,15 +1079,15 @@ def list_pending_reviews(
         for member_id in orch.team_members(team_id):
             if member_id == caller_id:
                 continue
-            if not orch.agent_completion_pending(member_id):
+            if not orch.agent_review_pending(member_id):
                 continue
-            ts = orch.agent_completion_pending_ts(member_id)
+            ts = orch.agent_review_pending_ts(member_id)
             age_s = (now - ts) if ts is not None else None
             pending.append(
                 {
                     "agent_id": member_id,
                     "role": orch.agent_skill_name(member_id),
-                    "completion_pending_ts": ts,
+                    "review_pending_ts": ts,
                     "age_s": age_s,
                     "summary": orch.agent_last_status_detail(member_id),
                     "name": orch.agent_name(member_id),
@@ -1162,7 +1095,7 @@ def list_pending_reviews(
             )
 
     # Sort by ts ascending; None ts sorts last.
-    pending.sort(key=lambda d: (d["completion_pending_ts"] is None, d["completion_pending_ts"] or 0))
+    pending.sort(key=lambda d: (d["review_pending_ts"] is None, d["review_pending_ts"] or 0))
     return pending
 
 
@@ -1186,7 +1119,6 @@ __all__ = [
     "escalate_question",
     "signal_review",
     "request_termination",
-    "report_status",
     "create_team",
     "terminate_child",
     "list_pending_reviews",

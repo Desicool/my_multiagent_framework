@@ -13,8 +13,9 @@ from beidou.primitives.core import (
     ask_user,
     create_team,
     list_peers,
-    report_status,
+    request_termination,
     send_message,
+    signal_review,
     terminate_child,
 )
 from beidou.primitives.mcp import build_mcp_server_for
@@ -32,7 +33,8 @@ __all__ = [
     "send_message",
     "list_peers",
     "ask_user",
-    "report_status",
+    "signal_review",
+    "request_termination",
     "create_team",
     "terminate_child",
     "build_mcp_server_for",

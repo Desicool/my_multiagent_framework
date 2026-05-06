@@ -67,7 +67,7 @@ class _AgentRec:
         self.last_progress_ts: float = time.time()
         self.last_drain_ts: Optional[float] = None
         self.inflight_tools: int = 0
-        self.completion_pending: bool = False
+        self.review_pending: bool = False
         self.terminate_consumed: bool = False
         self.idle_nudge_count: int = 0
 
@@ -873,14 +873,14 @@ def test_watchdog_pass_b_suppresses_nudge_for_intermediate_hop(tmp_path):
         pm_rec.last_progress_ts = time.time() - IDLE_NUDGE_S - 10.0
         pm_rec.idle_nudge_count = 0
         pm_rec.inflight_tools = 0
-        pm_rec.completion_pending = False
+        pm_rec.review_pending = False
 
         # Also make root_ag look idle so we can verify it IS nudged (it's the
         # current target, not an intermediate hop).
         root_rec.last_progress_ts = time.time() - IDLE_NUDGE_S - 10.0
         root_rec.idle_nudge_count = 0
         root_rec.inflight_tools = 0
-        root_rec.completion_pending = False
+        root_rec.review_pending = False
 
         # Run one watchdog tick.
         await o._watchdog_tick()
@@ -963,7 +963,7 @@ def test_watchdog_pass_b_nudges_stale_leaf_worker_with_keep_working_option(tmp_p
         worker_rec.last_drain_ts = stale_ts
         worker_rec.last_progress_ts = stale_ts - 1  # older than drain
         worker_rec.inflight_tools = 0
-        worker_rec.completion_pending = False
+        worker_rec.review_pending = False
         worker_rec.idle_nudge_count = 0
 
         # Run one watchdog tick; yield to allow emit tasks to flush.
@@ -1045,7 +1045,7 @@ def test_watchdog_pass_b_skips_running_agent_with_inflight_tool(tmp_path):
         stale_ts = now - IDLE_NUDGE_S - 10
         worker_rec.last_drain_ts = stale_ts
         worker_rec.last_progress_ts = stale_ts - 1
-        worker_rec.completion_pending = False
+        worker_rec.review_pending = False
         worker_rec.idle_nudge_count = 0
         # … but inflight_tools = 1: agent is still actively running.
         worker_rec.inflight_tools = 1
@@ -1069,7 +1069,7 @@ def test_watchdog_pass_b_skips_leader_with_teams(tmp_path):
 
     Leaders are covered by Pass A (review-pending escalation) and Pass C
     (terminate-grace backstop).  A leader waiting on children should not receive
-    idle nudges; Pass A already pings them when a child has completion_pending.
+    idle nudges; Pass A already pings them when a child has review_pending.
     """
     from beidou.orchestrator import (
         AgentRecord, Orchestrator, TeamRecord,
@@ -1094,7 +1094,7 @@ def test_watchdog_pass_b_skips_leader_with_teams(tmp_path):
         )
 
         # root_ag leads tm_top; leader_ag is a member of tm_top AND leads tm_inner;
-        # child_ag is a member of tm_inner with completion_pending=True.
+        # child_ag is a member of tm_inner with review_pending=True.
         top_team = TeamRecord(
             team_id="tm_top", name="top", task="",
             leader_id="root_ag", depth=1, member_ids=[], rules=[],
@@ -1122,20 +1122,20 @@ def test_watchdog_pass_b_skips_leader_with_teams(tmp_path):
         leader_rec = _add("leader_ag", "tm_top")
         child_rec = _add("child_ag", "tm_inner")
 
-        # leader_ag: stale drain, no inflight activity, NOT completion_pending itself.
+        # leader_ag: stale drain, no inflight activity, NOT review_pending itself.
         now = time.time()
         stale_ts = now - IDLE_NUDGE_S - 10
         leader_rec.last_drain_ts = stale_ts
         leader_rec.last_progress_ts = stale_ts - 1
         leader_rec.inflight_tools = 0
-        leader_rec.completion_pending = False
+        leader_rec.review_pending = False
         leader_rec.idle_nudge_count = 0
 
-        # child_ag: has completion_pending=True (waiting for leader to review).
-        # Set completion_pending_ts=None to prevent Pass A from also firing
+        # child_ag: has review_pending=True (waiting for leader to review).
+        # Set review_pending_ts=None to prevent Pass A from also firing
         # (keeps the test focused on Pass B behaviour only).
-        child_rec.completion_pending = True
-        child_rec.completion_pending_ts = None
+        child_rec.review_pending = True
+        child_rec.review_pending_ts = None
 
         await o._watchdog_tick()
         await asyncio.sleep(0)
@@ -1151,9 +1151,9 @@ def test_watchdog_pass_b_skips_leader_with_teams(tmp_path):
             f"leader_ag was nudged despite leading a team; events: {nudge_events}"
         )
 
-        # Child MUST NOT be nudged — completion_pending=True gives it freshness=0.
+        # Child MUST NOT be nudged — review_pending=True gives it freshness=0.
         assert "child_ag" not in nudged_agents, (
-            f"child_ag was nudged despite completion_pending=True; events: {nudge_events}"
+            f"child_ag was nudged despite review_pending=True; events: {nudge_events}"
         )
 
     asyncio.run(body())
@@ -1164,7 +1164,7 @@ def test_watchdog_pass_b_nudges_ex_parent_after_all_children_exit(tmp_path):
 
     Regression for tsk_658f44b6: the impl-leader (junior_engineer) terminated
     its last child via terminate_child, then ended its turn without emitting
-    [REVIEW REQUIRED] + report_status. The old leaf check
+    [REVIEW REQUIRED] + signal_review. The old leaf check
     `if self.teams_led_by(agent_id): continue` excluded any agent that had
     EVER spawned a team — so the ex-parent never got a Pass-B nudge and the
     orchestrator hung waiting forever. The 8gen fix replaces the predicate
@@ -1234,12 +1234,12 @@ def test_watchdog_pass_b_nudges_ex_parent_after_all_children_exit(tmp_path):
         root_rec.last_progress_ts = now
 
         # ex_parent_ag has stale drain (idle past IDLE_NUDGE_S), no inflight,
-        # not completion_pending — i.e. has hung and needs a nudge.
+        # not review_pending — i.e. has hung and needs a nudge.
         stale_ts = now - IDLE_NUDGE_S - 10
         ex_parent_rec.last_drain_ts = stale_ts
         ex_parent_rec.last_progress_ts = stale_ts - 1
         ex_parent_rec.inflight_tools = 0
-        ex_parent_rec.completion_pending = False
+        ex_parent_rec.review_pending = False
         ex_parent_rec.idle_nudge_count = 0
 
         # Sanity: under the new predicate, ex_parent_ag has no active children.

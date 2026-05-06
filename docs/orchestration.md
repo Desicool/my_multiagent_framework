@@ -177,7 +177,7 @@ can in turn report `done` upward.
 
 Two mechanisms, BOTH active:
 
-1. **Triggered**: every `report_status(state="done", ...)` call wakes up
+1. **Triggered**: every `signal_review(detail=...)` call wakes up
    Beidou's liveness evaluator for the reporter's **parent leader**. The
    evaluator walks the parent leader's direct children; if all are `done`
    and the parent leader's own state is `done`, Beidou injects a

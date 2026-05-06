@@ -18,7 +18,6 @@ allowed-tools:
   - list_peers
   - signal_review
   - request_termination
-  - report_status
   - terminate_child
   - ask_user
   - escalate_question
@@ -186,11 +185,11 @@ The issue ledger schema and ownership rules are inlined in each member's SKILL.m
 
 ## Convergence and freeze probe
 
-After each turn where a `[REVIEW REQUIRED]` envelope arrives or an issue is resolved, check convergence. Call `mcp__beidou__list_pending_reviews` to confirm which members have reported round-done. A member whose agent id appears in `list_pending_reviews` has called `report_status(state="done")` and is waiting on your review. Your review action is "hold for convergence" (see Reviewing a committee member's completion) — you do NOT terminate them.
+After each turn where a `[REVIEW REQUIRED]` envelope arrives or an issue is resolved, check convergence. Call `mcp__beidou__list_pending_reviews` to confirm which members have reported round-done. A member whose agent id appears in `list_pending_reviews` has called `signal_review` and is waiting on your review. Your review action is "hold for convergence" (see Reviewing a committee member's completion) — you do NOT terminate them.
 
 Phase 1 is ready for the user approval gate when ALL of the following hold simultaneously:
 
-1. `list_pending_reviews` returns all six committee member agent ids — every member's latest `report_status` is `state="done"` and their review is pending with you. If fewer than six are pending, end your turn and wait for the remaining members to report. Do NOT probe or gate early.
+1. `list_pending_reviews` returns all six committee member agent ids — every member has submitted `signal_review` and their review is pending with you. If fewer than six are pending, end your turn and wait for the remaining members to report. Do NOT probe or gate early.
 2. `{project_workspace_path}/design_issues/` contains no file with `status: open` or `status: escalated`. Check by reading the YAML frontmatter of every `.md` file in that directory. If any open or escalated issues remain, arbitrate them first (see Issue arbitration handler) or wait for members to resolve peer-to-peer issues.
 3. Once conditions 1 and 2 both hold, broadcast the freeze probe to each member simultaneously in a single turn:
    ```
@@ -250,7 +249,7 @@ Do NOT terminate committee members. Execute:
    send_message(to=<member>, content="rework: <feedback relevant to that member's deliverable>")
    ```
 2. Read `{project_workspace_path}/design_iteration.json` (create with `{"iteration": 1}` if absent). Increment `iteration`. Write the file.
-3. Committee members must revert to `state="working"`, revise deliverables, and re-call `report_status(state="done")` when stable.
+3. Committee members must revert to `state="working"`, revise deliverables, and re-call `signal_review` when stable.
 4. Prior `design_issues/` files are NOT deleted — they remain on disk for audit. However, only issue files created in the new iteration count toward the convergence check (identify by checking whether `status: open`/`escalated` would block convergence only for issues whose round timestamps post-date the rework broadcast).
 5. Resume monitoring. When re-convergence conditions hold, run the freeze probe again, then re-present the design package to the user.
 

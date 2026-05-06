@@ -378,7 +378,7 @@ web UI right pane).
 
 ### `status`
 
-Emitted on every `report_status` call.
+Emitted on every `signal_review` call.
 
 | Field | Source |
 |---|---|
@@ -392,7 +392,7 @@ Emitted on every `report_status` call.
 ### `liveness_check`
 
 Data-only event. Emitted by the orchestrator when an agent calls
-`report_status(state="done")`. JSONL-only -- no SQLite rollup. Leader agents
+`signal_review(detail=...)`. JSONL-only -- no SQLite rollup. Leader agents
 observe member status via `list_peers`.
 
 | Field | Source |
@@ -406,7 +406,7 @@ observe member status via `list_peers`.
 
 ### `completion.reported`
 
-Emitted by the `on_report_status` PostToolUse hook after the completion
+Emitted by the `on_signal_review` PostToolUse hook after the completion
 review has been routed. JSONL-only.
 
 | Field | Source |
@@ -437,7 +437,7 @@ This event is only emitted for root agents (where the gateway is the reviewer).
 For non-root agents, envelope validation is enforced at the primitive level —
 calls without a valid envelope are rejected before the hook runs.
 
-The legacy `reason="root_no_leader"` and `reason="no summary in report_status turn"` values are retired.
+The legacy `reason="root_no_leader"` and `reason="no summary in signal_review turn"` values are retired.
 
 ---
 

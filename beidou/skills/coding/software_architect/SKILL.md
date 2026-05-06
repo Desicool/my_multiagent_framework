@@ -19,7 +19,6 @@ allowed-tools:
   - create_team          # transitional fallback only; prefer declare_plan + spawn_agent
   - send_message
   - list_peers
-  - report_status
   - signal_review
   - request_termination
   - terminate_child

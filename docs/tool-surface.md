@@ -20,7 +20,6 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 | `ask_user` | Agent-Beidou | Yes (chain-bounded) |
 | `answer_question` | Agent-Beidou | No |
 | `escalate_question` | Agent-Beidou | No |
-| `report_status` | Agent-Beidou | No |
 | `create_team` (deprecated) | Agent-Beidou | No |
 | `declare_plan` | Agent-Beidou | No |
 | `remove_plan` | Agent-Beidou | No |
@@ -226,62 +225,6 @@ future. The escalator's tool call ends as soon as the forward is sent.
 
 ---
 
-## report_status (DEPRECATED)
-
-> **Deprecated.** Use `signal_review` for review checkpoints and
-> `request_termination` for lifecycle end. This primitive is preserved as a
-> compatibility shim: `state="done"` maps to `signal_review` + internal
-> `termination_requested` flag. Non-done states (`working`, `idle`, `blocked`)
-> remain as pure status recorders. Migration: replace
-> `report_status(state="done", detail=...)` with `signal_review(detail=...)`,
-> and optionally follow with `request_termination()` when the agent's entire
-> work is truly complete.
-
-**Kind:** Agent-Beidou. Pushes a state update into observability and may
-trigger liveness evaluation.
-
-**Input schema**
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `state` | string enum | yes | One of: `working`, `idle`, `blocked`, `done`. |
-| `detail` | string | no | Free-text summary. **Required and must contain the `[REVIEW REQUIRED]` envelope when `state="done"`.** For other states, free-form text. |
-
-**Output schema**
-```
-{ "recorded": true }
-```
-
-**Error cases**
-- `invalid_state`: `state` not in the enum above.
-- `envelope_missing`: `state="done"` was called but `detail` does not
-  contain `[REVIEW REQUIRED]` (case-insensitive substring check). The
-  call is rejected; the model sees this error in its next tool result
-  and must resubmit with the full envelope in `detail`.
-  - `reason: "detail_empty"` — `detail` is null, absent, or
-    whitespace-only.
-  - `reason: "envelope_missing"` — `detail` is non-empty but lacks the
-    `[REVIEW REQUIRED]` marker.
-- `plan_incomplete`: `state="done"` was called while the agent's active
-  plan has unfinished tasks.
-
-**Side effects**
-- Emits a `status` event to the observability sinks.
-- If `state="done"`, the orchestrator's `on_report_status` PostToolUse
-  hook fires (see `architecture.md`):
-  - For non-root agents, the `detail` field (which the primitive has
-    already validated to contain the `[REVIEW REQUIRED]` envelope) is
-    delivered verbatim to the leader's inbox as a `completion_report`
-    message.
-  - For the root agent, the same `detail` body is routed through the
-    human gateway (`Orchestrator.gateway_ask_user_structured`). The
-    user chooses **Approve** (→ `terminate_root`) or **Rework** (→ a
-    `from_id="user"`, `body="rework: …"` message delivered back to
-    the root's inbox so the next turn continues).
-- Triggers a liveness re-evaluation on the caller's reviewer (leader or,
-  for the root, the user) — see `orchestration.md`.
-
----
-
 ## signal_review
 
 **Kind:** Agent-Beidou. Signals the agent's leader that deliverables are
@@ -322,7 +265,7 @@ leader. Can be called multiple times per lifecycle (reentrant).
   `terminate_child`, the agent is terminated (review implicitly approved).
 
 **Lifecycle semantics**
-- Does NOT check plan completion (unlike the deprecated `report_status(done)`).
+- Does NOT check plan completion (unlike the deprecated `signal_review(detail=...)`).
   An agent may signal review mid-plan to report iteration progress.
 - Does NOT imply lifecycle end. The agent remains alive after signaling and
   can continue working after the leader acknowledges.
@@ -624,14 +567,14 @@ inbox.
 - `unknown_agent`: `agent_id` not resolvable.
 - `already_terminating`: a terminate sentinel is already in the target's
   inbox (idempotent; structured error indicating no-op).
-- `child_not_pending_review`: `target.completion_pending == false` AND
+- `child_not_pending_review`: `target.review_pending == false` AND
   `target.terminate_consumed == false` AND `force != true`. The leader
-  must wait for the child to call `report_status(state="done")`, send a
+  must wait for the child to call `signal_review(detail=...)`, send a
   rework message via `send_message`, or pass `force=true` to override.
 
 **Validation rules**
 - `terminate_child` is the leader's APPROVE verdict on a child's
-  `report_status(state="done")` request. The plain (`force=false`) call
+  `signal_review(detail=...)` request. The plain (`force=false`) call
   requires the child to be in completion-review state.
 - `force=true` is the explicit override. It emits a `terminate.forced`
   audit event with `reason="leader_force"`. Use sparingly.
@@ -658,7 +601,7 @@ No input fields.
   {
     "agent_id": "<string>",
     "role": "<skill_name string>",
-    "completion_pending_ts": <float | null>,
+    "review_pending_ts": <float | null>,
     "age_s": <float | null>,
     "summary": "<last_status_detail string>",
     "name": "<string | null>"
@@ -668,12 +611,12 @@ No input fields.
 ```
 
 Returns the list of the caller's direct child agents (members of any team the
-caller leads) that currently have `completion_pending=True` — meaning they have
-called `report_status(state="done")` and the caller has not yet responded with
+caller leads) that currently have `review_pending=True` — meaning they have
+called `signal_review(detail=...)` and the caller has not yet responded with
 `terminate_child` or a rework `send_message`.
 
-`age_s` is `now - completion_pending_ts` (positive float) or `null` if the
-timestamp is absent. Results are sorted ascending by `completion_pending_ts`
+`age_s` is `now - review_pending_ts` (positive float) or `null` if the
+timestamp is absent. Results are sorted ascending by `review_pending_ts`
 (oldest pending review first); entries with no timestamp sort last.
 
 **Error cases:** none. Returns `[]` when there are no pending reviews.
@@ -695,7 +638,7 @@ compete with Beidou primitives:
 | Forbidden tool | Use this primitive instead | Why blocked |
 |---|---|---|
 | `SendMessage` | `mcp__beidou__send_message` | SDK team-mode messaging shadow that bypasses Beidou's inbox / reply-gate. |
-| `TodoWrite` | `mcp__beidou__declare_plan` + `mcp__beidou__update_plan_task` for tracking; `mcp__beidou__report_status(state='done')` for completion handoff | TodoWrite competes with both task tracking and the completion signal. Using it has caused agents to claim "done" via TodoWrite while skipping the report_status review (tsk_658f44b6). |
+| `TodoWrite` | `mcp__beidou__declare_plan` + `mcp__beidou__update_plan_task` for tracking; `mcp__beidou__signal_review(detail=...)` for completion handoff | TodoWrite competes with both task tracking and the completion signal. Using it has caused agents to claim "done" via TodoWrite while skipping the signal_review review (tsk_658f44b6). |
 
 Raw `AskUserQuestion` is also blocked — see [`ask_user`](#ask_user) for
 the leader-chain routing rationale.

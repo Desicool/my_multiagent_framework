@@ -87,7 +87,8 @@ def test_server_lists_all_tools():
             "ask_user",
             "answer_question",
             "escalate_question",
-            "report_status",
+            "signal_review",
+            "request_termination",
             "create_team",
             "declare_plan",
             "remove_plan",
@@ -250,89 +251,6 @@ def test_ask_user_tool_schema_shape():
 
 
 # ---------------------------------------------------------------------------
-# report_status
-# ---------------------------------------------------------------------------
-
-
-_MCP_ENVELOPE = (
-    "[REVIEW REQUIRED]\nrole=worker     agent=A\n"
-    "Deliverables: done\nOpen questions / risks: none\n"
-    "Leader action required: approve (terminate_child) OR rework (send_message)"
-)
-
-
-def test_report_status_happy_path():
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="A")
-
-    async def body():
-        result = await _call(
-            cfg, "report_status", {"state": "done", "detail": _MCP_ENVELOPE}
-        )
-        payload = _text_payload(result)
-        assert payload == {"recorded": True, "review_pending": True}
-        assert ("A", "done", _MCP_ENVELOPE) in o.statuses
-
-    run(body())
-
-
-def test_report_status_envelope_missing_is_structured_error():
-    """envelope_missing PrimitiveError serialises to the standard structured-error shape.
-
-    The MCP layer wraps PrimitiveError as:
-        {"error": e.code, "message": e.message, "details": e.details}
-    This test verifies envelope_missing round-trips correctly with that shape.
-    """
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="A")
-
-    async def body():
-        result = await _call(
-            cfg, "report_status", {"state": "done", "detail": "all good"}
-        )
-        assert result.isError is True
-        payload = _text_payload(result)
-        # Standard PrimitiveError serialisation contract.
-        assert payload["error"] == "envelope_missing"
-        assert "message" in payload
-        assert isinstance(payload["details"], dict)
-        assert payload["details"].get("reason") == "envelope_missing"
-
-    run(body())
-
-
-def test_report_status_detail_empty_reason():
-    """When detail is empty, reason field inside details is 'detail_empty'."""
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="A")
-
-    async def body():
-        result = await _call(
-            cfg, "report_status", {"state": "done", "detail": ""}
-        )
-        assert result.isError is True
-        payload = _text_payload(result)
-        assert payload["error"] == "envelope_missing"
-        assert payload["details"].get("reason") == "detail_empty"
-
-    run(body())
-
-
-def test_report_status_invalid_state_rejected_by_schema():
-    """Enum schema rejects bad values at the MCP layer (stricter than, and
-    subsumes, the primitive's invalid_state check)."""
-    o = _build()
-    cfg = build_mcp_server_for(o, caller_id="A")
-
-    async def body():
-        result = await _call(cfg, "report_status", {"state": "exploding"})
-        assert result.isError is True
-        assert "exploding" in result.content[0].text
-
-    run(body())
-
-
-# ---------------------------------------------------------------------------
 # create_team
 # ---------------------------------------------------------------------------
 
@@ -371,8 +289,8 @@ def test_create_team_happy_path():
 def test_terminate_child_happy_path():
     """Happy path via MCP: child has reported done (approve path)."""
     o = _build()
-    # Set completion_pending=True so the completion gate allows the call.
-    o.agents["A"].completion_pending = True
+    # Set review_pending=True so the completion gate allows the call.
+    o.agents["A"].review_pending = True
     cfg = build_mcp_server_for(o, caller_id="R")
 
     async def body():

@@ -1,7 +1,7 @@
 """Tests for the list_pending_reviews primitive.
 
 bd issue 7gm: Add list_pending_reviews() so a leader can enumerate direct
-children currently in completion_pending=True state.
+children currently in review_pending=True state.
 
 The FakeOrchestrator here is intentionally self-contained (same pattern as
 test_sdk_agent.py and test_primitives_core.py) — tests/ has no __init__.py so
@@ -40,8 +40,8 @@ class _AgentRec:
     role: str = "member"
     status: str = "working"
     skill_name: str = ""
-    completion_pending: bool = False
-    completion_pending_ts: Optional[float] = None
+    review_pending: bool = False
+    review_pending_ts: Optional[float] = None
     last_status_detail: str = ""
 
 
@@ -170,11 +170,11 @@ class FakeOrchestrator:
     def agent_skill_name(self, agent_id: str) -> str:
         return self.agents[agent_id].skill_name
 
-    def agent_completion_pending(self, agent_id: str) -> bool:
-        return self.agents[agent_id].completion_pending
+    def agent_review_pending(self, agent_id: str) -> bool:
+        return self.agents[agent_id].review_pending
 
-    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
-        return self.agents[agent_id].completion_pending_ts
+    def agent_review_pending_ts(self, agent_id: str) -> Optional[float]:
+        return self.agents[agent_id].review_pending_ts
 
     def agent_last_status_detail(self, agent_id: str) -> str:
         return self.agents[agent_id].last_status_detail
@@ -203,16 +203,16 @@ def _add_child(
     *,
     role: str = "worker",
     skill: str = "junior_engineer",
-    completion_pending: bool = False,
-    completion_pending_ts: Optional[float] = None,
+    review_pending: bool = False,
+    review_pending_ts: Optional[float] = None,
     last_status_detail: str = "",
 ) -> None:
     """Register a child agent under ``team_id`` with optional pending state."""
     o.register_agent(agent_id, task_id="tsk_1", team_id=team_id, role=role)
     rec = o.agents[agent_id]
     rec.skill_name = skill
-    rec.completion_pending = completion_pending
-    rec.completion_pending_ts = completion_pending_ts
+    rec.review_pending = review_pending
+    rec.review_pending_ts = review_pending_ts
     rec.last_status_detail = last_status_detail
 
 
@@ -232,15 +232,15 @@ def test_no_pending_children_with_non_pending_children():
     """Leader has children but none are pending — must return []."""
     o = _make("L")
     o.register_team("team1", "team1", leader_id="L", depth=1, members=[])
-    _add_child(o, "C1", "team1", completion_pending=False)
-    _add_child(o, "C2", "team1", completion_pending=False)
+    _add_child(o, "C1", "team1", review_pending=False)
+    _add_child(o, "C2", "team1", review_pending=False)
 
     result = list_pending_reviews(o, caller_id="L")
     assert result == []
 
 
 def test_pending_child_returned():
-    """A child with completion_pending=True must appear in the result."""
+    """A child with review_pending=True must appear in the result."""
     o = _make("L")
     o.register_team("team1", "team1", leader_id="L", depth=1, members=[])
     ts = time.time() - 10.0
@@ -249,8 +249,8 @@ def test_pending_child_returned():
         "C1",
         "team1",
         skill="junior_engineer",
-        completion_pending=True,
-        completion_pending_ts=ts,
+        review_pending=True,
+        review_pending_ts=ts,
         last_status_detail="Finished the module.",
     )
 
@@ -260,7 +260,7 @@ def test_pending_child_returned():
     entry = result[0]
     assert entry["agent_id"] == "C1"
     assert entry["role"] == "junior_engineer"
-    assert entry["completion_pending_ts"] == ts
+    assert entry["review_pending_ts"] == ts
     assert entry["summary"] == "Finished the module."
     # age_s should be a positive float, approximately 10 s.
     assert entry["age_s"] is not None
@@ -273,8 +273,8 @@ def test_non_pending_children_excluded():
     o = _make("L")
     o.register_team("team1", "team1", leader_id="L", depth=1, members=[])
     ts = time.time() - 5.0
-    _add_child(o, "C_pending", "team1", completion_pending=True, completion_pending_ts=ts)
-    _add_child(o, "C_working", "team1", completion_pending=False)
+    _add_child(o, "C_pending", "team1", review_pending=True, review_pending_ts=ts)
+    _add_child(o, "C_working", "team1", review_pending=False)
 
     result = list_pending_reviews(o, caller_id="L")
     assert len(result) == 1
@@ -282,14 +282,14 @@ def test_non_pending_children_excluded():
 
 
 def test_sorted_by_oldest_first():
-    """Three pending children must be ordered by completion_pending_ts ascending."""
+    """Three pending children must be ordered by review_pending_ts ascending."""
     o = _make("L")
     o.register_team("team1", "team1", leader_id="L", depth=1, members=[])
 
     now = time.time()
-    _add_child(o, "C_newest", "team1", completion_pending=True, completion_pending_ts=now - 1.0)
-    _add_child(o, "C_oldest", "team1", completion_pending=True, completion_pending_ts=now - 100.0)
-    _add_child(o, "C_middle", "team1", completion_pending=True, completion_pending_ts=now - 50.0)
+    _add_child(o, "C_newest", "team1", review_pending=True, review_pending_ts=now - 1.0)
+    _add_child(o, "C_oldest", "team1", review_pending=True, review_pending_ts=now - 100.0)
+    _add_child(o, "C_middle", "team1", review_pending=True, review_pending_ts=now - 50.0)
 
     result = list_pending_reviews(o, caller_id="L")
     assert len(result) == 3
@@ -304,23 +304,23 @@ def test_caller_excluded_from_results():
     # Manually add L as a member of its own child team (edge case from spec).
     o.teams["team1"].members.append("L")
     # Force L's record to look pending.
-    o.agents["L"].completion_pending = True
-    o.agents["L"].completion_pending_ts = time.time() - 5.0
+    o.agents["L"].review_pending = True
+    o.agents["L"].review_pending_ts = time.time() - 5.0
 
     result = list_pending_reviews(o, caller_id="L")
     assert all(r["agent_id"] != "L" for r in result)
 
 
 def test_null_ts_handled_gracefully():
-    """A pending child with completion_pending_ts=None must be returned with age_s=None."""
+    """A pending child with review_pending_ts=None must be returned with age_s=None."""
     o = _make("L")
     o.register_team("team1", "team1", leader_id="L", depth=1, members=[])
     _add_child(
         o,
         "C_no_ts",
         "team1",
-        completion_pending=True,
-        completion_pending_ts=None,
+        review_pending=True,
+        review_pending_ts=None,
         last_status_detail="Done but no ts.",
     )
 
@@ -328,7 +328,7 @@ def test_null_ts_handled_gracefully():
     assert len(result) == 1
     entry = result[0]
     assert entry["agent_id"] == "C_no_ts"
-    assert entry["completion_pending_ts"] is None
+    assert entry["review_pending_ts"] is None
     assert entry["age_s"] is None
 
 
@@ -338,8 +338,8 @@ def test_null_ts_sorts_after_timestamped():
     o.register_team("team1", "team1", leader_id="L", depth=1, members=[])
 
     now = time.time()
-    _add_child(o, "C_with_ts", "team1", completion_pending=True, completion_pending_ts=now - 5.0)
-    _add_child(o, "C_no_ts", "team1", completion_pending=True, completion_pending_ts=None)
+    _add_child(o, "C_with_ts", "team1", review_pending=True, review_pending_ts=now - 5.0)
+    _add_child(o, "C_no_ts", "team1", review_pending=True, review_pending_ts=None)
 
     result = list_pending_reviews(o, caller_id="L")
     assert len(result) == 2

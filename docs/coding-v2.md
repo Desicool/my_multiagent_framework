@@ -449,7 +449,7 @@ indefinitely until the user responds.
 | `signal_review` | Signals review-ready; reentrant, no plan check. Replaces `report_status(done)`. |
 | `request_termination` | Requests lifecycle end; checks plan completion. |
 
-`report_status(state="done")` is deprecated and mapped to `signal_review` with
+`signal_review(detail=...)` is deprecated and mapped to `signal_review` with
 backward-compatible semantics via a compatibility shim.
 
 ### Why no shared base

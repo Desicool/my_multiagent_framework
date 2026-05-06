@@ -394,7 +394,7 @@ def test_cascade_leader_terminates_members_then_exits(tmp_path, monkeypatch):
             msg = await asyncio.wait_for(q.get(), timeout=5.0)
             if msg.kind == "terminate":
                 # Cascade: terminate each member, await ack via sentinel receipt.
-                # Use force=True because leaves haven't called report_status(state="done")
+                # Use force=True because leaves haven't signalled completion
                 # in this test — this models a user-signal-driven force-cascade, not the
                 # standard approve path.
                 from beidou.primitives.core import terminate_child
@@ -690,7 +690,7 @@ def test_assistant_text_for_turn_returns_none_when_no_data(tmp_path):
 
 
 def test_hook_success_path_delivers_message(tmp_path):
-    """Hook on_report_status delivers to leader when all guards pass."""
+    """Hook on_signal_review delivers to leader when all guards pass."""
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
@@ -698,7 +698,7 @@ def test_hook_success_path_delivers_message(tmp_path):
     _seed_agent(o, "leader_ag", _TM_TOP)
     _seed_agent(o, "child_ag", _TM_TOP)
 
-    # Pre-record assistant text bound to the report_status tool_use_id.
+    # Pre-record assistant text bound to the signal_review tool_use_id.
     o.record_assistant_text("child_ag", "I completed the work.", ["toolu_done"])
 
     hooks_dict = build_hooks(o, "child_ag", "leader_ag")
@@ -706,8 +706,8 @@ def test_hook_success_path_delivers_message(tmp_path):
     callback = matchers[0].hooks[0]
 
     input_data = {
-        "tool_name": "mcp__beidou__report_status",
-        "tool_input": {"state": "done"},
+        "tool_name": "mcp__beidou__signal_review",
+        "tool_input": {"detail": "[REVIEW REQUIRED]\nrole=worker agent=child_ag\nDeliverables: done."},
         "tool_response": {"is_error": False},
     }
 
@@ -723,8 +723,8 @@ def test_hook_success_path_delivers_message(tmp_path):
     run(body())
 
 
-def test_hook_wrong_state_is_noop(tmp_path):
-    """Hook does nothing when state != 'done'."""
+def test_hook_wrong_tool_name_is_noop(tmp_path):
+    """Hook is a no-op when tool_name doesn't match the matcher guard."""
     from beidou.sdk_agent import build_hooks
 
     o, emitter = _make_orchestrator(tmp_path)
@@ -735,13 +735,14 @@ def test_hook_wrong_state_is_noop(tmp_path):
     hooks_dict = build_hooks(o, "child2", "leader2")
     callback = hooks_dict["PostToolUse"][0].hooks[0]
 
+    # Pass a non-matching tool_name — the guard should return {} early.
     input_data = {
-        "tool_name": "mcp__beidou__report_status",
-        "tool_input": {"state": "working"},
+        "tool_name": "mcp__beidou__send_message",
+        "tool_input": {"detail": "not a review"},
         "tool_response": {},
     }
     run(callback(input_data, "toolu_1", None))
-    # No events should have been emitted.
+    # No events should have been emitted — wrong tool_name triggers guard.
     assert not any(c[0].startswith("completion") for c in emitter.calls)
 
 
@@ -758,8 +759,8 @@ def test_hook_is_error_is_skipped(tmp_path):
     callback = hooks_dict["PostToolUse"][0].hooks[0]
 
     input_data = {
-        "tool_name": "mcp__beidou__report_status",
-        "tool_input": {"state": "done"},
+        "tool_name": "mcp__beidou__signal_review",
+        "tool_input": {"detail": "[REVIEW REQUIRED]\nrole=worker agent=child_ag\nDeliverables: done."},
         "tool_response": {"is_error": True},
     }
     run(callback(input_data, "toolu_err", None))
@@ -783,8 +784,8 @@ def test_hook_is_error_true_is_noop(tmp_path):
 
     # Simulate a primitive rejection (is_error=True) — the hook must be a no-op.
     input_data = {
-        "tool_name": "mcp__beidou__report_status",
-        "tool_input": {"state": "done"},
+        "tool_name": "mcp__beidou__signal_review",
+        "tool_input": {"detail": "[REVIEW REQUIRED]\nrole=worker agent=child_ag\nDeliverables: done."},
         "tool_response": {"is_error": True},
     }
 
@@ -828,8 +829,8 @@ def test_hook_root_sentinel_routes_through_user_gateway(tmp_path):
     callback = hooks_dict["PostToolUse"][0].hooks[0]
 
     input_data = {
-        "tool_name": "mcp__beidou__report_status",
-        "tool_input": {"state": "done"},
+        "tool_name": "mcp__beidou__signal_review",
+        "tool_input": {"detail": "[REVIEW REQUIRED]\nrole=worker agent=child_ag\nDeliverables: done."},
         "tool_response": {},
     }
 

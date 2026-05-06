@@ -12,7 +12,6 @@ allowed-tools:
   - file_write
   - web_search
   - send_message
-  - report_status
   - signal_review
   - ask_user
   - answer_question

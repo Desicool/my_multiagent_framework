@@ -17,7 +17,6 @@ allowed-tools:
   - send_message
   - list_peers
   - signal_review
-  - report_status
   - terminate_child
   - escalate_question
   - list_pending_reviews
@@ -45,7 +44,7 @@ Thin sequencer. You declare a two-task DAG, spawn coordinators, review their com
 - Declare a two-task DAG on first turn via `declare_plan`.
 - Spawn `phase1_coordinator` immediately.
 - When phase1 is done: terminate it, spawn `phase2_coordinator`.
-- When phase2 is done: review deliverables, approve, call `report_status(state="done")`.
+- When phase2 is done: review deliverables, approve, call `signal_review(detail=...)`.
 - Make every `task` field self-contained; include upstream artifact paths.
 
 ### Core NEVER-DOs
@@ -99,7 +98,7 @@ When a coordinator sends `[REVIEW REQUIRED]` (via `signal_review`):
 2. If gate passes: call `mcp__beidou__terminate_child(agent_id=<that child>)`.
 3. If gate fails: call `mcp__beidou__send_message(to=<that child>, content="rework: <what to fix>")`.
 4. After terminating phase1: call `mcp__beidou__spawn_agent("phase2")` (it becomes ready from the plan DAG).
-5. After terminating phase2: call `mcp__beidou__report_status(state="done", detail="<summary of all deliverables>")` — this ends the root run.
+5. After terminating phase2: call `mcp__beidou__signal_review(detail="<summary of all deliverables>")` — this ends the root run.
 
 ## [INBOX QUESTION] handling
 
@@ -118,7 +117,7 @@ must decide. There is no exception to this rule.
 
 ## Completion is a request, not a declaration
 
-You can never mark yourself done. `report_status(state="done")` is a REQUEST FOR REVIEW sent to the user gateway. You remain alive until the user terminates you. If the user judges your work incomplete, you will receive a rework message — keep working from there.
+You can never mark yourself done. `signal_review(detail=...)` is a REQUEST FOR REVIEW sent to the user gateway. You remain alive until the user terminates you. If the user judges your work incomplete, you will receive a rework message — keep working from there.
 
 When you believe your work is ready for final delivery:
 
@@ -133,7 +132,7 @@ When you believe your work is ready for final delivery:
    Open questions / risks: none
    Leader action required: approve (terminate_root) OR rework (send_message)
    ```
-2. In the SAME turn, call `mcp__beidou__report_status(state="done", detail="<paste envelope verbatim>")`.
+2. In the SAME turn, call `mcp__beidou__signal_review(detail="<paste envelope verbatim>")`.
 3. End the turn. Wait for the user's decision.
 
 ## Granularity rule

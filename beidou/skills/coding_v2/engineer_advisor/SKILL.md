@@ -13,7 +13,6 @@ allowed-tools:
   - file_write
   - web_search
   - send_message
-  - report_status
   - signal_review
   - answer_question
   - escalate_question

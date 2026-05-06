@@ -154,13 +154,13 @@ skills="all",
 
 ## PostToolUse hook — completion reporting
 
-The orchestrator registers a `PostToolUse` hook on `mcp__beidou__report_status`
+The orchestrator registers a `PostToolUse` hook on `mcp__beidou__signal_review`
 for every agent (including the root). The hook:
 
-1. Fires when the agent calls `report_status(state="done")`.
+1. Fires when the agent calls `signal_review(detail=...)`.
 2. Reads the agent's last assistant text (bound to the same turn's `tool_use_id`)
    via `Orchestrator.assistant_text_for_turn()`; falls back to the `detail`
-   tool-input argument; emits `completion.empty(reason="no summary in report_status turn")`
+   tool-input argument; emits `completion.empty(reason="no summary in signal_review turn")`
    if both are empty.
 3. Synthesizes a `[REVIEW REQUIRED]` envelope if the body lacks one, so the
    reviewer always gets the unmissable signal.
@@ -182,7 +182,7 @@ for every agent (including the root). The hook:
 The hook is **owned by the orchestrator**, not by any agent. It is built in
 `beidou/sdk_agent.py::build_hooks(orch, caller_id, leader_id)` and passed to
 `ClaudeAgentOptions.hooks`. Both `AskUserQuestion` (PreToolUse) and
-`mcp__beidou__report_status` (PostToolUse) HookMatchers are constructed with
+`mcp__beidou__signal_review` (PostToolUse) HookMatchers are constructed with
 `timeout=HOOK_REVIEW_TIMEOUT_S` (1800s) so human review round-trips are not
 truncated by claude-code's 60s default.
 
@@ -251,7 +251,7 @@ by the runtime, not by any skill):
 |------|--------------|---------|
 | `on_ask_user_question` | PreToolUse | Intercept raw `AskUserQuestion` calls, route to human gateway |
 | `on_review_gate` | PreToolUse | Block leader from advancing while children await review |
-| `on_report_status` | PostToolUse | Completion handoff: read assistant text, route to leader/user gateway |
+| `on_signal_review` | PostToolUse | Completion handoff: read assistant text, route to leader/user gateway |
 
 Skills may optionally declare **user hooks** via `module.toml` in the skill
 directory. User hooks are additive — they run **after** built-in hooks pass,

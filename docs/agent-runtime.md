@@ -24,7 +24,7 @@ process exit.
 
 | Situation | Correct action |
 |---|---|
-| Work done | Call `report_status(state="done", detail=<summary>)`, then end your turn. The runtime parks you on your inbox until the next message arrives. |
+| Work done | Call `signal_review(detail=<summary>)`, then end your turn. The runtime parks you on your inbox until the next message arrives. |
 | Nothing to do | End your turn. The runtime keeps your session alive and resumes you when a new inbox message arrives. |
 | Re-assigned (parent sent new work) | The new task arrives as the next user-role turn from the runtime. Resume in the same SDK session. No re-spawn. |
 | Asked a question by peer | Answer via `send_message`, then end your turn. |
@@ -160,12 +160,12 @@ message and is never duplicated into the system prompt.
 
 ### Completion reporting
 
-Calling `report_status(state="done")` is a **request for review**, not a
+Calling `signal_review(detail=...)` is a **request for review**, not a
 self-declaration. The agent never marks itself done; only the leader's
 `terminate_child` (approve) or `send_message` (rework) closes the loop. The
 agent remains alive and parked on its inbox until the leader acts.
 
-**Review envelope.** The `detail` argument to `report_status(state="done")`
+**Review envelope.** The `detail` argument to `signal_review(detail=...)`
 MUST contain a structured envelope. The primitive rejects calls where `detail`
 is missing or does not contain `[REVIEW REQUIRED]` (case-insensitive) with an
 `envelope_missing` tool error; the agent sees the error in its next tool result
@@ -185,7 +185,7 @@ text. The prompt-side rule in `[COMPLETION HANDOFF CONTRACT]` (assembled by
 the full envelope in `detail` on every `done` call.
 
 A `PostToolUse` SDK hook fires when an agent calls
-`mcp__beidou__report_status(state="done")` (`beidou/agent/hooks.py::on_report_status`).
+`mcp__beidou__signal_review(detail=...)` (`beidou/agent/hooks.py::on_signal_review`).
 When `is_error=False` (primitive accepted the call), the hook reads `detail`
 from the tool input and delivers it verbatim to the leader's inbox as a
 `completion_report` message. This emits a `completion.reported` event.
@@ -194,8 +194,8 @@ When `is_error=True` (primitive rejected the call — `envelope_missing`,
 `plan_incomplete`, etc.), the hook is a strict no-op: no delivery, no state
 mutation. The agent already sees the error in its next tool result.
 
-On the `AgentRecord`, the hook sets `completion_pending=True` and stamps
-`completion_pending_ts` with the current time (`beidou/orchestrator.py`,
+On the `AgentRecord`, the hook sets `review_pending=True` and stamps
+`review_pending_ts` with the current time (`beidou/orchestrator.py`,
 `AgentRecord` fields). This mutation happens **at the end of the success path**,
 after the leader-vs-root delivery is set up, so an unexpected raise during
 delivery does not leave the agent stuck pending. The pending flag is cleared when:
@@ -207,7 +207,7 @@ delivery does not leave the agent stuck pending. The pending flag is cleared whe
   emitted (`beidou/orchestrator.py::inbox_put`).
 
 The plain `terminate_child(agent_id)` call is the leader's APPROVE verdict
-on the child's `report_status(state="done")` request. If the child has not
+on the child's `signal_review(detail=...)` request. If the child has not
 reported done, the call fails with `child_not_pending_review`. The leader
 may pass `force=true` to override (rare, audited via `terminate.forced`
 with `reason="leader_force"`). The watchdog terminate-grace cancel (§3.1)
@@ -233,11 +233,11 @@ that is the prompt-side half of the contract.
   If the gateway round-trip raises, the hook falls back to
   `completion.empty(reason="gateway_failure: <ExcType>")` and returns so the
   tool call does not deadlock. The hook execution timeout for both
-  `AskUserQuestion` (PreToolUse) and `mcp__beidou__report_status` (PostToolUse)
+  `AskUserQuestion` (PreToolUse) and `mcp__beidou__signal_review` (PostToolUse)
   is `HOOK_REVIEW_TIMEOUT_S = 1800.0` (30 minutes), set in
   `beidou/agent/hooks.py`; this overrides claude-code's 60s default so a real
   human review is not silently truncated.
-- Hook is skipped if the `report_status` call itself errored (`is_error=True`).
+- Hook is skipped if the `signal_review` call itself errored (`is_error=True`).
 
 ## 3.1 Liveness watchdog
 
@@ -261,18 +261,18 @@ watchdog continues — it never crashes the orchestrator.
 
 ### Pass A — review-pending escalation
 
-For every `AgentRecord` with `completion_pending=True`, let
-Δt = now − `completion_pending_ts`. The escalation ladder:
+For every `AgentRecord` with `review_pending=True`, let
+Δt = now − `review_pending_ts`. The escalation ladder:
 
 | Δt | `review_ping_count` before action | Action |
 |---|---|---|
 | < 60 s | any | nothing |
-| ≥ 60 s | 0 | ping #1: deliver directive message to leader — "child X awaiting your decision; call `terminate_child` or `send_message` NOW." `review_ping_count++`; reset `completion_pending_ts` to now (so next threshold counts from this ping). Emits `completion.reping`. |
-| ≥ 60 s | 1 | ping #2: same body + warn "If you do not act, this will escalate to the user gateway in ~60s." `review_ping_count++`; reset `completion_pending_ts`. Emits `completion.reping`. |
+| ≥ 60 s | 0 | ping #1: deliver directive message to leader — "child X awaiting your decision; call `terminate_child` or `send_message` NOW." `review_ping_count++`; reset `review_pending_ts` to now (so next threshold counts from this ping). Emits `completion.reping`. |
+| ≥ 60 s | 1 | ping #2: same body + warn "If you do not act, this will escalate to the user gateway in ~60s." `review_ping_count++`; reset `review_pending_ts`. Emits `completion.reping`. |
 | ≥ 60 s | 2 | escalate: emit `review.escalated_to_user`; if a gateway is registered, call `gateway_ask_user` (best-effort). `review_ping_count++`. |
 | any | ≥ 3 | silent — user owns it; watchdog stops acting on this agent. |
 
-Each ping resets `completion_pending_ts` so the countdown restarts from the
+Each ping resets `review_pending_ts` so the countdown restarts from the
 previous ping, not from the original report. The pings are delivered to the
 **leader** via `deliver_message(from_id="beidou", kind="ping")`.
 
@@ -285,7 +285,7 @@ Pass B uses a single **freshness** number per agent computed by
 agent is still active or legitimately waiting:
 
 - `inflight_tools > 0` — a tool call is currently running.
-- `completion_pending=True` — this agent is waiting for its leader to review
+- `review_pending=True` — this agent is waiting for its leader to review
   its completion; Pass A handles waking that leader.
 - `_questions.has_pending_through(agent_id)` — the agent forwarded a question
   upstream and is waiting for it to be resolved (nudging it to "call ask_user"
@@ -316,7 +316,7 @@ escalation) and Pass C (terminate-grace backstop) cover them.
 
 The nudge body names four concrete actions the agent can take:
 
-1. Call `report_status(state="done", detail="…")` if work is complete.
+1. Call `signal_review(detail=...)` if work is complete.
 2. Take the needed coordination step (e.g. `send_message` or `terminate_child`)
    if waiting on another agent.
 3. Call `ask_user` if blocked on missing user input.
@@ -348,7 +348,7 @@ itself only consumes freshness — it does not read `last_progress_ts` directly.
 
 ### Leader-side review gate (PreToolUse interceptor)
 
-A leader agent with any direct child whose `completion_pending=True` is
+A leader agent with any direct child whose `review_pending=True` is
 blocked from calling any tool except the following allowlist
 (`beidou/sdk_agent.py::on_review_gate`):
 
@@ -357,7 +357,7 @@ Read, Glob, Grep, Bash,
 mcp__beidou__terminate_child,
 mcp__beidou__send_message,
 mcp__beidou__list_pending_reviews,
-mcp__beidou__report_status,
+mcp__beidou__signal_review,
 mcp__beidou__ask_user,
 mcp__beidou__answer_question,
 mcp__beidou__escalate_question
@@ -396,8 +396,8 @@ work.
 
 | Event | Emitted by | Meaning |
 |---|---|---|
-| `completion.approved` | `orchestrator.py::inbox_put` | `terminate_child` fired for a `completion_pending` agent; review accepted. |
-| `completion.rework` | `orchestrator.py::inbox_put` | Leader or user delivered a message to a `completion_pending` agent; review returned for rework. |
+| `completion.approved` | `orchestrator.py::inbox_put` | `terminate_child` fired for a `review_pending` agent; review accepted. |
+| `completion.rework` | `orchestrator.py::inbox_put` | Leader or user delivered a message to a `review_pending` agent; review returned for rework. |
 | `completion.reping` | `orchestrator.py::_watchdog_tick` | Watchdog pinged the leader again (Pass A). |
 | `review.escalated_to_user` | `orchestrator.py::_watchdog_tick` | Leader failed to act after 3 pings; escalated to user gateway. |
 | `liveness.nudge` | `orchestrator.py::_watchdog_tick` | Idle agent nudged (Pass B). |

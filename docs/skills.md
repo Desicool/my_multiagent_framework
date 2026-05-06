@@ -169,13 +169,13 @@ far:
 
 - **Always-on default builtins** (e.g. `TodoWrite`). These are exposed
   by the SDK runtime with no env gate. `TodoWrite` competes with
-  `mcp__beidou__report_status` as a completion signal — in
+  `mcp__beidou__signal_review` as a completion signal — in
   `tsk_658f44b6` the impl-leader (junior_engineer) terminated its last
   child via `terminate_child`, then called `TodoWrite` to mark its
   todos complete in lieu of emitting `[REVIEW REQUIRED]` +
-  `report_status`. The orchestrator hung waiting for the report
+  `signal_review`. The orchestrator hung waiting for the report
   forever. Beidou's task tracking uses `bd` (cross-session) and
-  `report_status` (in-conversation); `TodoWrite` has no role.
+  `signal_review` (in-conversation); `TodoWrite` has no role.
 
 `build_options` (`beidou/agent/loop.py`) defends in two layers:
 
@@ -205,7 +205,7 @@ A third runtime defense backs up the SDK layer:
    this hook converts the would-be silent SDK drop into a model-visible
    `permissionDecision="deny"` with a `permissionDecisionReason` that
    names the canonical primitive
-   (`mcp__beidou__send_message` / `declare_plan` + `report_status`)
+   (`mcp__beidou__send_message` / `declare_plan` + `signal_review`)
    and the spec section. Each deny emits `disallowed_alias.denied`
    for observability. See
    [`docs/tool-surface.md#forbidden-tools`](tool-surface.md#forbidden-tools).
@@ -221,7 +221,7 @@ A fourth defense applies at the prompt layer:
 
 All inter-agent messaging in Beidou MUST go through
 `mcp__beidou__send_message`. All in-conversation completion signals
-MUST go through `mcp__beidou__report_status`. Skills MUST NOT list
+MUST go through `mcp__beidou__signal_review`. Skills MUST NOT list
 `SendMessage`, `TodoWrite`, or any other SDK shadow-tool name in their
 `allowed-tools`; the disallow takes precedence regardless. Removing
 either entry from the disallow list, restoring the env var in

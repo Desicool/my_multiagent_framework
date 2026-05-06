@@ -57,7 +57,7 @@ class FakeOrchForHooks:
     ) -> str:
         return self._gateway_answer
 
-    # report_status hook path — not used by ask_user tests but build_hooks
+    # PostToolUse hook path — not used by ask_user tests but build_hooks
     # also closes over these; stubs prevent AttributeError if called.
     def assistant_text_for_turn(self, caller_id: str, tool_use_id: str) -> Optional[str]:
         return None
@@ -107,14 +107,13 @@ class TestAskUserQuestionHook:
         assert matcher_names.count(None) == 2, f"Expected 2 match-all entries in {matcher_names}"
 
     def test_posttooluse_still_present(self) -> None:
-        """build_hooks includes PostToolUse hooks for report_status, signal_review, and send_message."""
+        """build_hooks includes PostToolUse hooks for signal_review, request_termination, and send_message."""
         orch = FakeOrchForHooks()
         hooks = build_hooks(orch, caller_id="agent1", leader_id="leader1")
         assert "PostToolUse" in hooks
         matchers = hooks["PostToolUse"]
-        assert len(matchers) == 4
+        assert len(matchers) == 3
         matcher_vals = [m.matcher for m in matchers]
-        assert "mcp__beidou__report_status" in matcher_vals
         assert "mcp__beidou__signal_review" in matcher_vals
         assert "mcp__beidou__request_termination" in matcher_vals
         assert "mcp__beidou__send_message" in matcher_vals

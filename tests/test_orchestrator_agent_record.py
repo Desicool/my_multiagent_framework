@@ -1,6 +1,6 @@
 """Tests for the completion-review foundation fields on AgentRecord.
 
-bd issue 8z3: Add completion_pending, completion_pending_ts, last_progress_ts,
+bd issue 8z3: Add review_pending, review_pending_ts, last_progress_ts,
 review_ping_count to AgentRecord; update inbox_put to maintain them.
 """
 from __future__ import annotations
@@ -119,8 +119,8 @@ def test_agent_record_has_pending_review_fields(tmp_path):
     rec = _seed_agent(o, "ag1", _TM_TOP)
 
     # Field existence and defaults.
-    assert rec.completion_pending is False
-    assert rec.completion_pending_ts is None
+    assert rec.review_pending is False
+    assert rec.review_pending_ts is None
     assert rec.review_ping_count == 0
     # last_progress_ts is set to time.time() at construction — must be a recent float.
     assert isinstance(rec.last_progress_ts, float)
@@ -147,8 +147,8 @@ def test_inbox_put_updates_last_progress_ts(tmp_path):
     run(body())
 
 
-def test_inbox_put_from_leader_clears_completion_pending(tmp_path):
-    """When the direct leader delivers a non-system message, completion_pending must clear."""
+def test_inbox_put_from_leader_clears_review_pending(tmp_path):
+    """When the direct leader delivers a non-system message, review_pending must clear."""
     o, emitter = _make_orchestrator(tmp_path)
     # Topology: leader "L" leads team "tm_child"; agent "A" is a member.
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
@@ -156,9 +156,9 @@ def test_inbox_put_from_leader_clears_completion_pending(tmp_path):
     _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
-    # Manually set completion_pending as if on_report_status had done it.
-    rec.completion_pending = True
-    rec.completion_pending_ts = time.time() - 5.0
+    # Manually set review_pending as if the signal_review hook had done it.
+    rec.review_pending = True
+    rec.review_pending_ts = time.time() - 5.0
     rec.review_ping_count = 2
 
     async def body():
@@ -172,8 +172,8 @@ def test_inbox_put_from_leader_clears_completion_pending(tmp_path):
             ),
         )
         # Flags must be cleared.
-        assert rec.completion_pending is False
-        assert rec.completion_pending_ts is None
+        assert rec.review_pending is False
+        assert rec.review_pending_ts is None
         assert rec.review_ping_count == 0
 
         # completion.rework event must have been emitted.
@@ -189,7 +189,7 @@ def test_inbox_put_from_leader_clears_completion_pending(tmp_path):
 
 
 def test_inbox_put_from_non_leader_does_not_clear(tmp_path):
-    """A message from a peer (not the leader) must NOT clear completion_pending."""
+    """A message from a peer (not the leader) must NOT clear review_pending."""
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
@@ -197,8 +197,8 @@ def test_inbox_put_from_non_leader_does_not_clear(tmp_path):
     _seed_agent(o, "P", "tm_child", role="peer")   # peer in same team
     rec = _seed_agent(o, "A", "tm_child")
 
-    rec.completion_pending = True
-    rec.completion_pending_ts = time.time() - 2.0
+    rec.review_pending = True
+    rec.review_pending_ts = time.time() - 2.0
     rec.review_ping_count = 1
 
     async def body():
@@ -212,7 +212,7 @@ def test_inbox_put_from_non_leader_does_not_clear(tmp_path):
             ),
         )
         # Flags must remain untouched.
-        assert rec.completion_pending is True
+        assert rec.review_pending is True
         assert rec.review_ping_count == 1
 
         await asyncio.sleep(0)
@@ -222,7 +222,7 @@ def test_inbox_put_from_non_leader_does_not_clear(tmp_path):
 
 
 def test_terminate_emits_completion_approved_when_pending(tmp_path):
-    """Terminating an agent with completion_pending=True must emit completion.approved."""
+    """Terminating an agent with review_pending=True must emit completion.approved."""
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
@@ -230,8 +230,8 @@ def test_terminate_emits_completion_approved_when_pending(tmp_path):
     rec = _seed_agent(o, "A", "tm_child")
 
     # Manually simulate pending completion.
-    rec.completion_pending = True
-    rec.completion_pending_ts = time.time() - 3.0
+    rec.review_pending = True
+    rec.review_pending_ts = time.time() - 3.0
 
     async def body():
         await o.inbox_put(
@@ -251,20 +251,20 @@ def test_terminate_emits_completion_approved_when_pending(tmp_path):
         assert agent_id_emitted == "A"
         assert kw["leader_id"] == "L"
         # Duration must be a positive number (we waited ~3 s above).
-        assert kw["completion_pending_duration_ms"] is not None
-        assert kw["completion_pending_duration_ms"] > 0
+        assert kw["review_pending_duration_ms"] is not None
+        assert kw["review_pending_duration_ms"] > 0
 
     run(body())
 
 
 def test_terminate_no_completion_approved_when_not_pending(tmp_path):
-    """Terminating an agent with completion_pending=False must NOT emit completion.approved."""
+    """Terminating an agent with review_pending=False must NOT emit completion.approved."""
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
-    # completion_pending defaults to False — leave it.
+    # review_pending defaults to False — leave it.
 
     async def body():
         await o.inbox_put(
@@ -283,16 +283,16 @@ def test_terminate_no_completion_approved_when_not_pending(tmp_path):
     run(body())
 
 
-def test_inbox_put_from_user_gateway_clears_completion_pending(tmp_path):
-    """A message from the user gateway (from_id='user') must also clear completion_pending."""
+def test_inbox_put_from_user_gateway_clears_review_pending(tmp_path):
+    """A message from the user gateway (from_id='user') must also clear review_pending."""
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     rec = _seed_agent(o, "A", "tm_child")
 
-    rec.completion_pending = True
-    rec.completion_pending_ts = time.time() - 1.0
+    rec.review_pending = True
+    rec.review_pending_ts = time.time() - 1.0
     rec.review_ping_count = 3
 
     async def body():
@@ -305,8 +305,8 @@ def test_inbox_put_from_user_gateway_clears_completion_pending(tmp_path):
                 message_id="m4",
             ),
         )
-        assert rec.completion_pending is False
-        assert rec.completion_pending_ts is None
+        assert rec.review_pending is False
+        assert rec.review_pending_ts is None
         assert rec.review_ping_count == 0
 
         await asyncio.sleep(0)
@@ -319,15 +319,15 @@ def test_inbox_put_from_user_gateway_clears_completion_pending(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Tests for bd issue ql2: terminate_child must clear completion_pending.
+# Tests for bd issue ql2: terminate_child must clear review_pending.
 # ---------------------------------------------------------------------------
 
 
-def test_terminate_child_clears_completion_pending(tmp_path):
-    """Terminating a completion_pending child must clear all pending-review fields.
+def test_terminate_child_clears_review_pending(tmp_path):
+    """Terminating a review_pending child must clear all pending-review fields.
 
     Regression for tsk_e92d672b: after terminate, the AgentRecord was left with
-    completion_pending=True, which caused the leader's on_review_gate hook to
+    review_pending=True, which caused the leader's on_review_gate hook to
     deny every subsequent tool call (create_team, etc.).
     """
     o, emitter = _make_orchestrator(tmp_path)
@@ -338,8 +338,8 @@ def test_terminate_child_clears_completion_pending(tmp_path):
 
     # Simulate pending completion with known timestamps.
     known_ts = time.time() - 3.0
-    rec.completion_pending = True
-    rec.completion_pending_ts = known_ts
+    rec.review_pending = True
+    rec.review_pending_ts = known_ts
     rec.review_ping_count = 2
     rec.idle_nudge_count = 1
 
@@ -362,14 +362,14 @@ def test_terminate_child_clears_completion_pending(tmp_path):
         _agent_id, _team, kw = approved[0]
         assert _agent_id == "A"
         assert kw["leader_id"] == "L"
-        assert kw["completion_pending_duration_ms"] is not None
-        assert kw["completion_pending_duration_ms"] > 0, (
-            f"duration_ms should be >0 (was {kw['completion_pending_duration_ms']})"
+        assert kw["review_pending_duration_ms"] is not None
+        assert kw["review_pending_duration_ms"] > 0, (
+            f"duration_ms should be >0 (was {kw['review_pending_duration_ms']})"
         )
 
         # (b) All pending-review fields must be cleared.
-        assert rec.completion_pending is False, "completion_pending must be False after terminate"
-        assert rec.completion_pending_ts is None, "completion_pending_ts must be None after terminate"
+        assert rec.review_pending is False, "review_pending must be False after terminate"
+        assert rec.review_pending_ts is None, "review_pending_ts must be None after terminate"
         assert rec.review_ping_count == 0, f"review_ping_count must be 0, got {rec.review_ping_count}"
         assert rec.idle_nudge_count == 0, f"idle_nudge_count must be 0, got {rec.idle_nudge_count}"
 
@@ -388,7 +388,7 @@ def test_terminate_child_blocks_when_not_pending(tmp_path):
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     _seed_agent(o, "A", "tm_child")
-    # completion_pending defaults to False — leave it.
+    # review_pending defaults to False — leave it.
 
     async def body():
         with pytest.raises(PrimitiveError) as ei:
@@ -407,7 +407,7 @@ def test_terminate_child_force_emits_forced_event(tmp_path):
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     _seed_agent(o, "L", _TM_TOP, role="leader")
     _seed_agent(o, "A", "tm_child")
-    # completion_pending=False, terminate_consumed=False (defaults — gate would block without force)
+    # review_pending=False, terminate_consumed=False (defaults — gate would block without force)
 
     async def body():
         out = await terminate_child(o, caller_id="L", agent_id="A", force=True)
@@ -433,11 +433,11 @@ def test_terminate_child_pending_then_leader_can_proceed(tmp_path):
     """Integration regression: after terminate clears pending, on_review_gate allows create_team.
 
     Exact scenario from tsk_e92d672b:
-      1. Child reports done (completion_pending=True).
+      1. Child reports done (review_pending=True).
       2. Leader calls terminate_child → inbox_put delivers terminate sentinel.
       3. Leader now calls create_team (Phase 2).
-      4. Before fix: review gate still sees completion_pending=True and denies.
-         After fix: review gate sees completion_pending=False and allows.
+      4. Before fix: review gate still sees review_pending=True and denies.
+         After fix: review gate sees review_pending=False and allows.
     """
     o, emitter = _make_orchestrator(tmp_path)
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
@@ -445,9 +445,9 @@ def test_terminate_child_pending_then_leader_can_proceed(tmp_path):
     leader_rec = _seed_agent(o, "L", _TM_TOP, role="leader")
     child_rec = _seed_agent(o, "C", "tm_child")
 
-    # Simulate child having called report_status(state="done").
-    child_rec.completion_pending = True
-    child_rec.completion_pending_ts = time.time() - 2.0
+    # Simulate child having called signal_review to signal completion.
+    child_rec.review_pending = True
+    child_rec.review_pending_ts = time.time() - 2.0
 
     async def body():
         # Step 1: leader terminates the child (delivers terminate sentinel).
@@ -464,8 +464,8 @@ def test_terminate_child_pending_then_leader_can_proceed(tmp_path):
         await asyncio.sleep(0)  # drain bg tasks so pending state is cleared
 
         # Verify the fix took effect on the record.
-        assert child_rec.completion_pending is False, (
-            "After terminate, child's completion_pending must be False"
+        assert child_rec.review_pending is False, (
+            "After terminate, child's review_pending must be False"
         )
 
         # Step 2: build the leader's hooks and call on_review_gate for create_team.

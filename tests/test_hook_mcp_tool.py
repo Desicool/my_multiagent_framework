@@ -1,7 +1,7 @@
 """Regression test: PostToolUse hook fires for MCP-namespaced tools.
 
 Proves that ``claude_agent_sdk``'s ``PostToolUse`` hook fires for
-``mcp__beidou__report_status`` — an MCP-namespaced tool invocation.
+``mcp__beidou__test_echo`` — an MCP-namespaced tool invocation.
 
 WHY THIS TEST EXISTS:
 A larger refactor depends on PostToolUse hooks being dispatched for
@@ -39,40 +39,36 @@ _API_KEY = os.getenv("ANTHROPIC_API_KEY")
     reason="requires ANTHROPIC_API_KEY and claude CLI on PATH",
 )
 def test_post_tool_use_hook_fires_for_mcp_namespaced_tool():
-    """PostToolUse hook callback is invoked when the agent calls mcp__beidou__report_status."""
+    """PostToolUse hook callback is invoked when the agent calls mcp__beidou__test_echo."""
     import claude_agent_sdk
     from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, tool
     from claude_agent_sdk.types import HookMatcher
 
     # ------------------------------------------------------------------
-    # 1. Build a minimal MCP server exposing only report_status.
+    # 1. Build a minimal MCP server exposing only test_echo.
     # ------------------------------------------------------------------
 
     @tool(
-        "report_status",
-        "Report your current state.",
+        "test_echo",
+        "Echo back a message.",
         {
             "type": "object",
             "properties": {
-                "state": {
+                "msg": {
                     "type": "string",
-                    "description": "Current state.",
-                },
-                "detail": {
-                    "type": "string",
-                    "description": "Optional detail.",
+                    "description": "Message to echo.",
                 },
             },
-            "required": ["state"],
+            "required": ["msg"],
         },
     )
-    async def _report_status(args: dict[str, Any]) -> dict[str, Any]:
-        return {"recorded": True}
+    async def _test_echo(args: dict[str, Any]) -> dict[str, Any]:
+        return {"echo": args.get("msg", "")}
 
     mcp_server = create_sdk_mcp_server(
         name="beidou",
         version="1.0.0",
-        tools=[_report_status],
+        tools=[_test_echo],
     )
 
     # ------------------------------------------------------------------
@@ -103,13 +99,13 @@ def test_post_tool_use_hook_fires_for_mcp_namespaced_tool():
     options = ClaudeAgentOptions(
         model="claude-haiku-4-5-20251001",
         mcp_servers={"beidou": mcp_server},
-        allowed_tools=["mcp__beidou__report_status"],
+        allowed_tools=["mcp__beidou__test_echo"],
         permission_mode="bypassPermissions",
         setting_sources=[],
-        hooks={"PostToolUse": [HookMatcher(matcher="mcp__beidou__report_status", hooks=[on_post])]},
+        hooks={"PostToolUse": [HookMatcher(matcher="mcp__beidou__test_echo", hooks=[on_post])]},
         system_prompt=(
             "You are a minimal test agent. "
-            "Call mcp__beidou__report_status(state='done', detail='hi') exactly once, "
+            "Call mcp__beidou__test_echo(msg='hi') exactly once, "
             "then stop."
         ),
     )
@@ -137,14 +133,14 @@ def test_post_tool_use_hook_fires_for_mcp_namespaced_tool():
 
     tool_name, tool_input, _tool_response = hook_calls[0]
 
-    assert tool_name == "mcp__beidou__report_status", (
-        f"Expected tool_name='mcp__beidou__report_status', got {tool_name!r}"
+    assert tool_name == "mcp__beidou__test_echo", (
+        f"Expected tool_name='mcp__beidou__test_echo', got {tool_name!r}"
     )
 
     assert isinstance(tool_input, dict), (
         f"tool_input should be a dict, got {type(tool_input)!r}: {tool_input!r}"
     )
 
-    assert tool_input.get("state") == "done", (
-        f"Expected tool_input['state']=='done', got tool_input={tool_input!r}"
+    assert tool_input.get("msg") == "hi", (
+        f"Expected tool_input['msg']=='hi', got tool_input={tool_input!r}"
     )

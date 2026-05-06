@@ -44,7 +44,7 @@ class FakeOrchestrator:
         self._terminated: set[str] = set()
         # Minimal extras so the MCP wrapper wouldn't crash if the agent made
         # primitive calls; the mechanical tests don't, but the integration
-        # test does (report_status only).
+        # test does (signal_review only).
         self.inboxes: dict[str, asyncio.Queue] = {}
         self.statuses: list[tuple[str, str, Optional[str]]] = []
         # Assistant text tracking (mirrors orchestrator.py).
@@ -173,10 +173,10 @@ class FakeOrchestrator:
     def agent_skill_name(self, agent_id: str) -> str:
         return ""
 
-    def agent_completion_pending(self, agent_id: str) -> bool:
+    def agent_review_pending(self, agent_id: str) -> bool:
         return False
 
-    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
+    def agent_review_pending_ts(self, agent_id: str) -> Optional[float]:
         return None
 
     def agent_last_status_detail(self, agent_id: str) -> str:
@@ -279,7 +279,7 @@ def _make_skill_dir(tmp_path: Path, skill_name: str = "fake_skill") -> Path:
             version: 1.0.0
             description: Fake skill for tests.
             allowed-tools:
-              - report_status
+              - signal_review
             ---
             You are the fake agent. Role: {{role}}.
             """
@@ -319,7 +319,7 @@ def test_mechanical_happy_path_terminated(tmp_path, monkeypatch):
     messages = [
         SystemMessage(),
         AssistantMessage(
-            content=[ToolUseBlock(name="mcp__beidou__report_status")],
+            content=[ToolUseBlock(name="mcp__beidou__signal_review")],
             message_id="msg_1",
             usage=usage,
             stop_reason="tool_use",
@@ -400,7 +400,7 @@ def test_mechanical_happy_path_terminated(tmp_path, monkeypatch):
 
     # Options were assembled with the new four-section system prompt and setting_sources.
     opts = captured[0]["options"]
-    assert "mcp__beidou__report_status" in opts.allowed_tools
+    assert "mcp__beidou__signal_review" in opts.allowed_tools
     assert opts.setting_sources == ["user", "project"]
     assert opts.skills == "all"
     # system_prompt is the new four-section structure: skill body first.
@@ -737,8 +737,8 @@ def test_tool_called_and_result_events_paired(tmp_path, monkeypatch):
         AssistantMessage(
             content=[
                 ToolUseBlock(
-                    name="mcp__beidou__report_status",
-                    input={"state": "done"},
+                    name="mcp__beidou__signal_review",
+                    input={"detail": "review done"},
                     id="toolu_abc123",
                 ),
             ],
@@ -782,8 +782,8 @@ def test_tool_called_and_result_events_paired(tmp_path, monkeypatch):
     # tool_called fields.
     assert tc["tool_use_id"] == "toolu_abc123"
     assert tc["message_id"] == "msg_tool"
-    assert tc["name"] == "mcp__beidou__report_status"
-    assert tc["input"] == {"state": "done"}
+    assert tc["name"] == "mcp__beidou__signal_review"
+    assert tc["input"] == {"detail": "review done"}
     assert tc["caller_id"] == "ag_tool"
 
     # tool_result fields.
@@ -948,7 +948,7 @@ def test_drain_loop_records_assistant_text_bound_to_tool_use_id(tmp_path, monkey
         yield AssistantMessage(
             content=[
                 TextBlock("I finished the work."),
-                ToolUseBlock(name="mcp__beidou__report_status", input={"state": "done"}, id="toolu_report"),
+                ToolUseBlock(name="mcp__beidou__signal_review", input={"detail": "done"}, id="toolu_report"),
             ],
             message_id="msg_done",
             usage={"input_tokens": 5, "output_tokens": 3},
@@ -1402,11 +1402,11 @@ def test_integration_real_sdk_agent(tmp_path):
             version: 1.0.0
             description: Minimal SDK-agent test skill.
             allowed-tools:
-              - report_status
+              - signal_review
             ---
             You are a test agent. Your only job is to call the
-            mcp__beidou__report_status tool exactly once with
-            state="done" and detail="ok", then produce a one-sentence final
+            mcp__beidou__signal_review tool exactly once with
+            detail="ok", then produce a one-sentence final
             acknowledgment. Do not call any other tool.
             """
         )
@@ -1424,7 +1424,7 @@ def test_integration_real_sdk_agent(tmp_path):
 
     async def _drive() -> object:
         # Pre-seed a terminate sentinel on the agent's queue. After the agent
-        # finishes its single turn (report_status + final ack), the outer loop
+        # finishes its single turn (signal_review + final ack), the outer loop
         # in sdk_agent will park on queue.get() and immediately consume the
         # sentinel, ending the SDK session. Without this the run hangs forever
         # under streaming-input mode (agents are now persistent listeners).

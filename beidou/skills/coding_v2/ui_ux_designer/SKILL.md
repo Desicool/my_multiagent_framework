@@ -18,7 +18,6 @@ allowed-tools:
   - web_search
   - web_fetch
   - send_message
-  - report_status
   - signal_review
   - list_peers
   - list_pending_reviews

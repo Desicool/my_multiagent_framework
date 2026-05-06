@@ -222,11 +222,11 @@ class Orchestrator:
     def agent_skill_name(self, agent_id: str) -> str:
         return self._agents[agent_id].skill_name
 
-    def agent_completion_pending(self, agent_id: str) -> bool:
-        return self._agents[agent_id].completion_pending
+    def agent_review_pending(self, agent_id: str) -> bool:
+        return self._agents[agent_id].review_pending
 
-    def agent_completion_pending_ts(self, agent_id: str) -> Optional[float]:
-        return self._agents[agent_id].completion_pending_ts
+    def agent_review_pending_ts(self, agent_id: str) -> Optional[float]:
+        return self._agents[agent_id].review_pending_ts
 
     def agent_last_status_detail(self, agent_id: str) -> str:
         return self._agents[agent_id].last_status_detail
@@ -337,10 +337,10 @@ class Orchestrator:
             if rec.terminate_grace_deadline is None:
                 rec.terminate_grace_deadline = time.time() + TERMINATE_GRACE_S
 
-            if rec.completion_pending:
+            if rec.review_pending:
                 duration_ms: Optional[float] = (
-                    (time.time() - rec.completion_pending_ts) * 1000
-                    if rec.completion_pending_ts is not None
+                    (time.time() - rec.review_pending_ts) * 1000
+                    if rec.review_pending_ts is not None
                     else None
                 )
                 leader_id_for_event = (
@@ -352,17 +352,17 @@ class Orchestrator:
                     {
                         "agent_id": rec.agent_id,
                         "leader_id": leader_id_for_event,
-                        "completion_pending_duration_ms": duration_ms,
+                        "review_pending_duration_ms": duration_ms,
                         "ts": time.time(),
                     },
                 )
                 # Clear the pending state AFTER emitting (so duration_ms is
                 # computed against the pre-cleared ts).  Without this, the
-                # AgentRecord persists with completion_pending=True after the
+                # AgentRecord persists with review_pending=True after the
                 # child is terminated, and the leader's on_review_gate hook
                 # keeps denying every subsequent tool call (tsk_e92d672b repro).
-                rec.completion_pending = False
-                rec.completion_pending_ts = None
+                rec.review_pending = False
+                rec.review_pending_ts = None
                 rec.review_ping_count = 0
                 rec.idle_nudge_count = 0
 
@@ -380,10 +380,10 @@ class Orchestrator:
                     await self.inbox_put(mid, cascade)
             return
 
-        # Non-terminate message: clear completion_pending when the sender is
+        # Non-terminate message: clear review_pending when the sender is
         # the agent's direct leader or the human user gateway ("user").
         # Exclude system messages (from_id == "beidou") explicitly.
-        if msg.from_id != "beidou" and rec.completion_pending:
+        if msg.from_id != "beidou" and rec.review_pending:
             leader_id_for_msg = (
                 USER_SENTINEL if rec.team_id is None
                 else self.leader_of(rec.team_id)
@@ -391,8 +391,9 @@ class Orchestrator:
             is_from_leader = msg.from_id == leader_id_for_msg
             is_from_user = msg.from_id == "user"
             if is_from_leader or is_from_user:
-                rec.completion_pending = False
-                rec.completion_pending_ts = None
+                rec.review_pending = False
+                rec.review_pending_ts = None
+                rec.termination_requested = False
                 rec.review_ping_count = 0
                 rec.idle_nudge_count = 0
                 content_preview = (msg.content or "")[:200]
@@ -421,7 +422,7 @@ class Orchestrator:
                     "completion handoff as your first submission:\n"
                     "1. Write the [REVIEW REQUIRED] envelope as the LAST text in your turn\n"
                     "2. In the SAME turn, call mcp__beidou__signal_review(detail=\"...\")\n"
-                    "   (or report_status(state=\"done\", detail=\"...\") for legacy agents)\n"
+                    "\n"
                     "Do NOT just say \"done\" or call TodoWrite — signal_review is the ONLY "
                     "signal your leader receives."
                 )
@@ -1109,7 +1110,7 @@ class Orchestrator:
 
         Exact binding: looks up the per-tool_use_id map populated by the drain loop.
         Fallback: if the tool_use_id is not found (e.g. model emitted text in a
-        prior message before the signal_review / report_status call), returns
+        prior message before the signal_review call), returns
         the most recent assistant text for the agent.
 
         Returns None if no text has been recorded for this agent at all.
@@ -1234,7 +1235,7 @@ class Orchestrator:
         """Background coroutine: tick every WATCHDOG_INTERVAL_S seconds.
 
         Two passes per tick:
-        - Pass A: escalate agents with completion_pending=True that their
+        - Pass A: escalate agents with review_pending=True that their
           leader hasn't reviewed in time.
         - Pass B: nudge idle agents that have made no progress.
         """
@@ -1289,7 +1290,7 @@ class Orchestrator:
 
         Returns 0.0 when:
           - a tool call is in-flight (inflight_tools > 0),
-          - this agent is waiting for its leader to review its completion (completion_pending),
+          - this agent is waiting for its leader to review its completion (review_pending),
           - the agent forwarded a question and is waiting for it to be resolved upstream, or
           - last_drain_ts is None or last_progress_ts > last_drain_ts (inbox/tool activity is
             newer than the most recent natural drain, so the current turn is still in-flight or
@@ -1299,7 +1300,7 @@ class Orchestrator:
         drain that Pass B can compare against now to decide whether the agent has been idle.
         """
         rec = self._agents[agent_id]
-        if rec.inflight_tools > 0 or rec.completion_pending:
+        if rec.inflight_tools > 0 or rec.review_pending:
             return 0.0
         if self._questions.has_pending_through(agent_id):
             return 0.0
@@ -1321,13 +1322,13 @@ class Orchestrator:
         # Pass A — review-pending escalation.
         # ------------------------------------------------------------------
         for rec in agents:
-            if not rec.completion_pending:
+            if not rec.review_pending:
                 continue
             if rec.terminate_consumed:
                 continue
-            if rec.completion_pending_ts is None:
+            if rec.review_pending_ts is None:
                 continue
-            delta = now - rec.completion_pending_ts
+            delta = now - rec.review_pending_ts
             if delta < REVIEW_PING_INTERVAL_S:
                 continue
             # Determine the leader of this child.
@@ -1372,7 +1373,7 @@ class Orchestrator:
                     kind="ping",
                 )
                 rec.review_ping_count += 1
-                rec.completion_pending_ts = now
+                rec.review_pending_ts = now
                 self.emit_event(
                     "completion.reping",
                     {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ping_count": rec.review_ping_count, "delta_s": delta_s, "ts": now},
@@ -1393,7 +1394,7 @@ class Orchestrator:
                     kind="ping",
                 )
                 rec.review_ping_count += 1
-                rec.completion_pending_ts = now
+                rec.review_pending_ts = now
                 self.emit_event(
                     "completion.reping",
                     {"agent_id": child_id, "team_id": rec.team_id, "leader_id": leader, "ping_count": rec.review_ping_count, "delta_s": delta_s, "ts": now},
