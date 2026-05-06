@@ -8,6 +8,16 @@ Autonomous multi-agent CLI system. Agents create teams; teams run in parallel; e
 - **Ask before any functional change.** Do not modify behaviour, APIs, or data schemas without explicit approval. Bug fixes and doc updates are fine; anything that changes how the system works requires confirmation first.
 - Before any non-trivial edit, open `docs/README.md`; any boundary change requires user approval (see `docs/limits.md`).
 
+## Commit policy (overrides default "ask before commit")
+
+For this project, **small atomic commits are preferred and pre-authorized** within the scope of an approved task. You do NOT need to ask before committing each logical slice:
+
+- Each logically complete unit (a passing feature slice, a green refactor, a doc/spec sync, a removed dead file) is its own commit. Smaller is better than monolithic.
+- Always include `Signed-off-by` tag in commit messages.
+- Do NOT push to remote unless the user explicitly asks. Local commits are cheap; pushed commits are public and require explicit approval.
+- Do NOT skip pre-commit hooks (`--no-verify`) or amend already-committed work without asking.
+- Bundle the **same-commit doc update** required by the Cohesion rule into the commit that introduces the behaviour change — never split docs from code.
+
 ## Specs first
 
 Before any non-trivial edit, open `docs/README.md` first and follow its pointers to the affected specs. Name which specs you read in chat.
