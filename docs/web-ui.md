@@ -16,7 +16,7 @@ bookmarkable:
 | `/` | task list (home) | shipped |
 | `/tasks/{id}/agents` | preserved 3-pane (`TaskOverview` / `PinnedAgentPanel` / `TeamTree`) | shipped (PR 1) |
 | `/tasks/{id}/timeline` | milestone event timeline | placeholder; PR 3 |
-| `/tasks/{id}/tools` | primitive card explorer | placeholder; PR 2 |
+| `/tasks/{id}/tools` | primitive card explorer | shipped (PR 2) |
 | `/tasks/{id}/stats` | dashboard | disabled; P1 deferred |
 | `/tasks/{id}/overview` | summary tiles | disabled; P1 deferred |
 | `/tasks/{id}/questions` | Q&A history | disabled; P1 deferred |
@@ -32,7 +32,7 @@ bookmarkable:
 │ │ WORKSPACE        │  │  │              │  + Composer              │              │  │ │
 │ │  ▤ Agents  ●     │  │  └──────────────┴──────────────────────────┴──────────────┘  │ │
 │ │  ≡ Timeline      │  │                                                               │ │
-│ │  ▦ Tools         │  │  /timeline, /tools render placeholders ("Coming in PR N")     │ │
+│ │  ▦ Tools         │  │  /tools = primitive card explorer (PR 2)                      │ │
 │ │  ◔ Stats   ·P1   │  │                                                               │ │
 │ │  ○ Overview·P1   │  │                                                               │ │
 │ │  ○ Q&A     ·P1   │  │                                                               │ │
@@ -56,8 +56,23 @@ bookmarkable:
   (`280px` `TaskOverviewPanel` / fluid `PinnedAgentPanel` / `320px` `TeamTreePanel`).
   No internal change to `PinnedAgentPanel`, `TeamTree`, `QuestionBanner`,
   `TaskOverview`, or `GlobalActivityFeed` in PR 1.
+- **`components/workspaces/ToolsWorkspace.svelte`** — `/tools` workspace (PR 2). Aggregates
+  every `tool` stream item across all agents whose name resolves to a known primitive
+  (`lib/primitives.ts`), sorts by ts, and renders each via `components/primitives/PrimitiveCard.svelte`.
+  Filter pills cover the five categories (coordination / lifecycle / plan / review / human),
+  plus an agent dropdown and an errors-only toggle. A category legend strip below the
+  filters documents the classification rule for each.
+- **`components/primitives/`** — one Svelte component per primitive (13 total) sharing
+  `PCardShell.svelte` (top accent stripe, head with category label + badges + ts/duration,
+  body grid). `FlowStrip.svelte` renders the prominent FROM/TO band on `send_message`,
+  `spawn_agent`, `terminate_child`, and `ask_user`. `AgentChip.svelte` renders the
+  monogram + id + role chip used in caller fields. `PrimitiveCard.svelte` is a thin
+  dispatcher that routes a `ToolStreamItem` to the matching component by bare tool name.
+  The same components are reused inline by `components/middle/stream/ToolCard.svelte`,
+  which delegates to `PrimitiveCard` whenever `lib/primitives.ts:isPrimitive()` matches
+  and falls back to its compact collapsible card for non-primitive tools (Bash, Read, …).
 - **`components/workspaces/PlaceholderWorkspace.svelte`** — parameterized stub used by
-  `/timeline` (PR 3) and `/tools` (PR 2) and any P1-deferred workspace reachable by URL.
+  `/timeline` (PR 3) and any P1-deferred workspace reachable by URL.
 
 ### Router
 

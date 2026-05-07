@@ -3,6 +3,7 @@
   import TopBar from './components/TopBar.svelte';
   import Layout from './components/Layout.svelte';
   import AgentsWorkspace from './components/workspaces/AgentsWorkspace.svelte';
+  import ToolsWorkspace from './components/workspaces/ToolsWorkspace.svelte';
   import PlaceholderWorkspace from './components/workspaces/PlaceholderWorkspace.svelte';
   import TasksList from './components/home/TasksList.svelte';
   import { route, startRouter, navigate } from './lib/router.svelte';
@@ -96,7 +97,7 @@
         {:else if r.workspace === 'timeline'}
           <PlaceholderWorkspace name="timeline" glyph="≡" pr="PR 3" hint="milestone event timeline" />
         {:else if r.workspace === 'tools'}
-          <PlaceholderWorkspace name="tools" glyph="▦" pr="PR 2" hint="primitive card explorer" />
+          <ToolsWorkspace />
         {:else}
           <PlaceholderWorkspace name={r.workspace} glyph="○" pr="P1" hint="deferred post-MVP" />
         {/if}
