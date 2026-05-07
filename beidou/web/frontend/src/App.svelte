@@ -2,11 +2,10 @@
   import { onMount, onDestroy } from 'svelte';
   import TopBar from './components/TopBar.svelte';
   import Layout from './components/Layout.svelte';
-  import TaskOverviewPanel from './components/left/TaskOverviewPanel.svelte';
-  import PinnedAgentPanel from './components/middle/PinnedAgentPanel.svelte';
-  import TeamTreePanel from './components/right/TeamTreePanel.svelte';
+  import AgentsWorkspace from './components/workspaces/AgentsWorkspace.svelte';
+  import PlaceholderWorkspace from './components/workspaces/PlaceholderWorkspace.svelte';
   import TasksList from './components/home/TasksList.svelte';
-  import { route, startRouter } from './lib/router.svelte';
+  import { route, startRouter, navigate } from './lib/router.svelte';
   import { startPolling as startTasks, stopPolling as stopTasks } from './stores/tasks.svelte';
   import { startPolling as startQ, stopPolling as stopQ, questions } from './stores/questions.svelte';
   import { openTask, closeTask } from './lib/streamService';
@@ -39,18 +38,28 @@
     if (pinAgentListener) window.removeEventListener('beidou:pin-agent', pinAgentListener);
   });
 
+  // Legacy /tasks/{id} → /tasks/{id}/agents
   $effect(() => {
     const r = route.current;
-    if (r.name === 'task') {
-      openTask(r.taskId);
-    } else {
-      closeTask();
-    }
+    if (r.name === 'task') navigate(`/tasks/${r.taskId}/agents`);
+  });
+
+  // Active task drives the WS subscription regardless of which workspace is selected.
+  let activeTaskId = $derived.by(() => {
+    const r = route.current;
+    if (r.name === 'task_workspace') return r.taskId;
+    if (r.name === 'task') return r.taskId;
+    return null;
   });
 
   $effect(() => {
-    const r = route.current;
-    if (r.name === 'task' && !ui.pinnedAgentId && events.rootAgentId) {
+    if (activeTaskId) openTask(activeTaskId);
+    else closeTask();
+  });
+
+  // Auto-pin root agent when entering a task.
+  $effect(() => {
+    if (activeTaskId && !ui.pinnedAgentId && events.rootAgentId) {
       pinAgent(events.rootAgentId);
     }
   });
@@ -76,14 +85,38 @@
   <TopBar />
 
   {#if route.current.name === 'home'}
-    <main class="overflow-y-auto h-[calc(100vh-3.25rem)]"><TasksList /></main>
-  {:else if route.current.name === 'task' || route.current.name === 'agent'}
-    <Layout>
-      {#snippet left()}<TaskOverviewPanel />{/snippet}
-      {#snippet middle()}<PinnedAgentPanel />{/snippet}
-      {#snippet right()}<TeamTreePanel />{/snippet}
+    <main class="overflow-y-auto h-[calc(100vh-44px)]"><TasksList /></main>
+
+  {:else if route.current.name === 'task_workspace'}
+    {@const r = route.current}
+    <Layout taskId={r.taskId}>
+      {#snippet workspace()}
+        {#if r.workspace === 'agents'}
+          <AgentsWorkspace />
+        {:else if r.workspace === 'timeline'}
+          <PlaceholderWorkspace name="timeline" glyph="≡" pr="PR 3" hint="milestone event timeline" />
+        {:else if r.workspace === 'tools'}
+          <PlaceholderWorkspace name="tools" glyph="▦" pr="PR 2" hint="primitive card explorer" />
+        {:else}
+          <PlaceholderWorkspace name={r.workspace} glyph="○" pr="P1" hint="deferred post-MVP" />
+        {/if}
+      {/snippet}
     </Layout>
+
+  {:else if route.current.name === 'task'}
+    <main class="p-8 text-slate-500 text-sm">Redirecting to /agents…</main>
+
+  {:else if route.current.name === 'agent'}
+    <main class="p-8 text-slate-400 max-w-3xl mx-auto">
+      <p class="mb-2">Agent-only deep links are no longer top-level routes.</p>
+      <p class="text-sm text-slate-500">
+        Open the task that hosts this agent and use the team tree to pin it.
+      </p>
+    </main>
+
   {:else}
-    <main class="p-8 text-slate-400">Unknown route: {route.current.name === 'unknown' ? route.current.raw : ''}</main>
+    <main class="p-8 text-slate-400">
+      Unknown route: {route.current.name === 'unknown' ? route.current.raw : ''}
+    </main>
   {/if}
 </div>

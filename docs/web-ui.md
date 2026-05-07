@@ -5,36 +5,76 @@ The Beidou web UI is a Svelte 5 + Vite + TypeScript single-page application that
 delivered by the WebSocket relay and derives all state by reduction; it never writes to
 the JSONL file or to the SQLite database.
 
-## Three-pane layout
+## Spine + Workspace layout (PR 1+)
+
+PR 1 introduced a persistent left **spine** (240px) and a shared **topbar** (44px). The
+remaining viewport is occupied by a **workspace** chosen via the spine. Routes are
+bookmarkable:
+
+| Route | Workspace | Status |
+|---|---|---|
+| `/` | task list (home) | shipped |
+| `/tasks/{id}/agents` | preserved 3-pane (`TaskOverview` / `PinnedAgentPanel` / `TeamTree`) | shipped (PR 1) |
+| `/tasks/{id}/timeline` | milestone event timeline | placeholder; PR 3 |
+| `/tasks/{id}/tools` | primitive card explorer | placeholder; PR 2 |
+| `/tasks/{id}/stats` | dashboard | disabled; P1 deferred |
+| `/tasks/{id}/overview` | summary tiles | disabled; P1 deferred |
+| `/tasks/{id}/questions` | Q&A history | disabled; P1 deferred |
+| `/tasks/{id}` (legacy) | 302 → `/tasks/{id}/agents` | redirect |
 
 ```
-┌──────────────┬──────────────────────────────┬──────────────┐
-│              │  ⚠ Question Banner (sticky)  │              │
-│ TASK         │  ┌────────────────────────┐  │ TEAM TREE    │
-│ OVERVIEW     │  │ Pinned Agent Header    │  │              │
-│              │  │ (role/id/status/tok/$) │  │  • root      │
-│ + global     │  ├────────────────────────┤  │  ▾ team-A    │
-│   activity   │  │  Stream:               │  │    ├ engineer│
-│   feed       │  │   • markdown bubble    │  │    └ tester  │
-│              │  │   • tool card (▸/▾)   │  │  ▸ team-B    │
-│ + question   │  │   • chat bubbles       │  │              │
-│   count chip │  │   • turn divider       │  │              │
-│              │  ├────────────────────────┤  │              │
-│              │  │ Composer (textarea)    │  │              │
-│              │  └────────────────────────┘  │              │
-└──────────────┴──────────────────────────────┴──────────────┘
-        LEFT              MIDDLE (★ primary)        RIGHT
+┌─ TopBar ─ ◆ BEIDOU · tsk_abc123 · elapsed 14:25 · 7 agents · cost $0.42 · ⚠ 1 question ─┐
+│ ┌─ Spine (240px) ──┐  ┌────────────── Workspace area ─────────────────────────────────┐ │
+│ │ TASKS            │  │  /agents (preserved 3-pane):                                  │ │
+│ │  ○ tsk_abc123    │  │  ┌──────────────┬──────────────────────────┬──────────────┐  │ │
+│ │  ○ tsk_def456    │  │  │ TaskOverview │  Question Banner +       │ TeamTree     │  │ │
+│ │                  │  │  │  + Activity  │  PinnedAgent stream      │              │  │ │
+│ │ WORKSPACE        │  │  │              │  + Composer              │              │  │ │
+│ │  ▤ Agents  ●     │  │  └──────────────┴──────────────────────────┴──────────────┘  │ │
+│ │  ≡ Timeline      │  │                                                               │ │
+│ │  ▦ Tools         │  │  /timeline, /tools render placeholders ("Coming in PR N")     │ │
+│ │  ◔ Stats   ·P1   │  │                                                               │ │
+│ │  ○ Overview·P1   │  │                                                               │ │
+│ │  ○ Q&A     ·P1   │  │                                                               │ │
+│ └──────────────────┘  └───────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Left** — `TaskOverview.svelte` (id, elapsed, cost, pending question count chip) +
-  `GlobalActivityFeed.svelte` (last 100 cross-agent events).
-- **Middle** — `PinnedAgentPanel.svelte`: sticky `AgentHeader`, optional `QuestionBanner`
-  (`role="alert"`), per-agent `AgentStream`, and `Composer` (textarea + Cmd/Ctrl+Enter send).
-- **Right** — `TeamTree.svelte`: the root agent is rendered as a top-level
-  node (not wrapped in a synthetic root-team row). Real teams the root agent
-  spawns appear as separate top-level team nodes (those whose
-  `parent_team_id == null`). Sub-teams are nested under their parent team.
-  Clicking an `AgentRow` pins that agent in the middle panel.
+### Shell components
+
+- **`components/TopBar.svelte`** — brand glyph (◆ in `review` cyan), task_id (mono),
+  elapsed (HH:MM:SS, live-updating), agents-alive count, cost (`tabular-nums`), amber
+  pending-question pulse chip (clicking the chip jumps to `/agents` for that task).
+- **`components/spine/Spine.svelte`** — 240px left rail composing
+  `SpineTaskList` (top group) and `WorkspaceNav` (bottom group). The active workspace
+  gets a cyan left border + tinted background; disabled `·P1` items are visually muted
+  and non-interactive.
+- **`components/Layout.svelte`** — 2-column shell (spine | workspace area). Used only
+  while a task is selected. The home view (`/`) renders the task list directly under
+  the topbar without the spine.
+- **`components/workspaces/AgentsWorkspace.svelte`** — preserved 3-pane verbatim
+  (`280px` `TaskOverviewPanel` / fluid `PinnedAgentPanel` / `320px` `TeamTreePanel`).
+  No internal change to `PinnedAgentPanel`, `TeamTree`, `QuestionBanner`,
+  `TaskOverview`, or `GlobalActivityFeed` in PR 1.
+- **`components/workspaces/PlaceholderWorkspace.svelte`** — parameterized stub used by
+  `/timeline` (PR 3) and `/tools` (PR 2) and any P1-deferred workspace reachable by URL.
+
+### Router
+
+`lib/router.svelte.ts` parses hash routes:
+
+- `/tasks/{id}/{workspace}` → `task_workspace` (App dispatches by workspace name).
+- `/tasks/{id}` → `task` (App `$effect` rewrites to `/tasks/{id}/agents`).
+- `/agents/{id}` → `agent` (legacy info screen — agent-only deep links are no longer
+  top-level; pin via the team tree inside `/agents`).
+- `/` → `home`.
+
+### Density & typography
+
+The shell pulls in JetBrains Mono for IDs, durations, and counts (`font-mono` / `.tabnum`).
+Density CSS variables (`--row-h`, `--pad-x`, `--pad-y`, `--lh`) default to comfortable
+(`/agents`); future workspaces (`/timeline`, `/tools`, `/stats`) opt into Bloomberg-dense
+via `data-density="dense"`.
 
 ### QuestionBanner — structured multi-part questions
 
