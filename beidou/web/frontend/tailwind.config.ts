@@ -15,9 +15,11 @@ export default {
         info:    '#0ea5e9',   // sky-500     — outbound message, turn divider
         accent:  '#8b5cf6',   // violet-500  — structural (team_created)
         muted:   '#64748b',   // slate-500   — timestamps, dt labels
+        review:  '#06b6d4',   // cyan-500    — signal_review / request_termination cards & state pills
         surface: {
           DEFAULT: '#020617', // slate-950   — primary background
           raised:  '#0f172a', // slate-900   — raised card backgrounds
+          2:       '#0b1322', // slightly lighter raised for spine/secondary panels
           border:  '#1e293b', // slate-800   — dividers
         },
         // ── Legacy accent shorthands (kept for backward compat) ───────────
@@ -33,6 +35,13 @@ export default {
         rose: {
           accent: '#f43f5e',
         },
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['JetBrains Mono', 'ui-monospace', "'SF Mono'", 'Consolas', 'monospace'],
+      },
+      fontVariantNumeric: {
+        tabular: ['tabular-nums'],
       },
     },
   },

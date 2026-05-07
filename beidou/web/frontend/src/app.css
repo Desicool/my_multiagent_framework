@@ -2,4 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+
+  /* Density: default = comfortable. Workspace opt-in via data-density="dense". */
+  --row-h:        2.25rem;   /* 36px comfortable row height */
+  --pad-x:        1rem;      /* 16px comfortable horizontal padding */
+  --pad-y:        0.75rem;   /* 12px comfortable vertical padding */
+  --lh:           1.6;       /* comfortable line-height */
+}
+
+[data-density="dense"] {
+  --row-h:  1.5rem;  /* 24px dense row height  */
+  --pad-x:  0.5rem;  /* 8px dense horizontal padding */
+  --pad-y:  0.5rem;  /* 8px dense vertical padding   */
+  --lh:     1.4;     /* dense line-height */
+}
+
+/* Tabular-nums utility — activates wherever a count/$/duration appears */
+.tabnum {
+  font-variant-numeric: tabular-nums;
+}
