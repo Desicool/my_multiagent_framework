@@ -1,5 +1,5 @@
 import type {
-  AgentState, TeamState, TaskRecord, StreamItem,
+  AgentState, TeamState, TaskRecord, StreamItem, TimelineEvent,
 } from '../lib/types';
 
 export type ReducerState = {
@@ -9,6 +9,8 @@ export type ReducerState = {
   rootAgentId: string | null;
   stats: { total_cost_usd: number; total_tokens: number };
   globalActivity: GlobalActivityItem[];
+  /** Flat, append-only feed of milestone-eligible events for /timeline. */
+  timelineEvents: TimelineEvent[];
   cursor: number;
 };
 
@@ -22,6 +24,7 @@ export type GlobalActivityItem = {
 
 export const STREAM_CAP = 500;
 export const GLOBAL_ACTIVITY_CAP = 500;
+export const TIMELINE_CAP = 5000;
 
 export function createInitialState(): ReducerState {
   return {
@@ -31,6 +34,7 @@ export function createInitialState(): ReducerState {
     rootAgentId: null,
     stats: { total_cost_usd: 0, total_tokens: 0 },
     globalActivity: [],
+    timelineEvents: [],
     cursor: 0,
   };
 }

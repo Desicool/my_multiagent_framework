@@ -4,6 +4,7 @@
   import Layout from './components/Layout.svelte';
   import AgentsWorkspace from './components/workspaces/AgentsWorkspace.svelte';
   import ToolsWorkspace from './components/workspaces/ToolsWorkspace.svelte';
+  import TimelineWorkspace from './components/workspaces/TimelineWorkspace.svelte';
   import PlaceholderWorkspace from './components/workspaces/PlaceholderWorkspace.svelte';
   import TasksList from './components/home/TasksList.svelte';
   import { route, startRouter, navigate } from './lib/router.svelte';
@@ -95,7 +96,7 @@
         {#if r.workspace === 'agents'}
           <AgentsWorkspace />
         {:else if r.workspace === 'timeline'}
-          <PlaceholderWorkspace name="timeline" glyph="≡" pr="PR 3" hint="milestone event timeline" />
+          <TimelineWorkspace />
         {:else if r.workspace === 'tools'}
           <ToolsWorkspace />
         {:else}

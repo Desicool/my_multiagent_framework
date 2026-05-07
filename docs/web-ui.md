@@ -15,7 +15,7 @@ bookmarkable:
 |---|---|---|
 | `/` | task list (home) | shipped |
 | `/tasks/{id}/agents` | preserved 3-pane (`TaskOverview` / `PinnedAgentPanel` / `TeamTree`) | shipped (PR 1) |
-| `/tasks/{id}/timeline` | milestone event timeline | placeholder; PR 3 |
+| `/tasks/{id}/timeline` | milestone event timeline | shipped (PR 3) |
 | `/tasks/{id}/tools` | primitive card explorer | shipped (PR 2) |
 | `/tasks/{id}/stats` | dashboard | disabled; P1 deferred |
 | `/tasks/{id}/overview` | summary tiles | disabled; P1 deferred |
@@ -31,7 +31,7 @@ bookmarkable:
 │ │                  │  │  │  + Activity  │  PinnedAgent stream      │              │  │ │
 │ │ WORKSPACE        │  │  │              │  + Composer              │              │  │ │
 │ │  ▤ Agents  ●     │  │  └──────────────┴──────────────────────────┴──────────────┘  │ │
-│ │  ≡ Timeline      │  │                                                               │ │
+│ │  ≡ Timeline      │  │  /timeline = plan-task milestone tree (PR 3)                  │ │
 │ │  ▦ Tools         │  │  /tools = primitive card explorer (PR 2)                      │ │
 │ │  ◔ Stats   ·P1   │  │                                                               │ │
 │ │  ○ Overview·P1   │  │                                                               │ │
@@ -71,8 +71,21 @@ bookmarkable:
   The same components are reused inline by `components/middle/stream/ToolCard.svelte`,
   which delegates to `PrimitiveCard` whenever `lib/primitives.ts:isPrimitive()` matches
   and falls back to its compact collapsible card for non-primitive tools (Bash, Read, …).
+- **`components/workspaces/TimelineWorkspace.svelte`** — `/timeline` workspace (PR 3).
+  Projects `ReducerState.timelineEvents` (a flat, append-only feed of milestone
+  events captured by the reducer) into a tree of plan-task sections derived in
+  `lib/timeline.ts`. Setup section opens at the run start and ends at the first
+  `task_spawned` of the root plan; each declared root-plan task becomes its own
+  section bounded by the spawn and the matching `task_done`/`task_failed`
+  closing event; nested `declare_plan` calls open L1 sub-plan-task sections
+  recursively (60px indent + dashed left rail). Default expansion: 3 most-active
+  sub-tasks per parent; rest collapse into a "▸ N more sub-plan tasks" summary.
+  Pending plan tasks (deps unresolved) render as collapsed pending stubs.
+  Filter pills surface five categories (primitive / lifecycle / plan / question /
+  error); a "Show all events" toggle reveals the firehose (turn.usage,
+  tool_called, status, send_message, agent_input, completion.\*, liveness.\*).
 - **`components/workspaces/PlaceholderWorkspace.svelte`** — parameterized stub used by
-  `/timeline` (PR 3) and any P1-deferred workspace reachable by URL.
+  any P1-deferred workspace reachable by URL.
 
 ### Router
 
