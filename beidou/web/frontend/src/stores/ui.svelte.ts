@@ -6,7 +6,17 @@ const ui = $state({
   agentDrafts: {} as Record<string, string>,
   agentSendStatus: {} as Record<string, SendStatus>,
   agentSendError: {} as Record<string, string | null>,
+  /** When true, the keyboard-shortcut palette overlay (`?`) is showing. */
+  shortcutOverlayOpen: false,
 });
+
+export function toggleShortcutOverlay(): void {
+  ui.shortcutOverlayOpen = !ui.shortcutOverlayOpen;
+}
+
+export function closeShortcutOverlay(): void {
+  ui.shortcutOverlayOpen = false;
+}
 
 export function pinAgent(agent_id: string | null): void {
   ui.pinnedAgentId = agent_id;

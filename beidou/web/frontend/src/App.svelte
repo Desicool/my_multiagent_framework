@@ -7,17 +7,53 @@
   import TimelineWorkspace from './components/workspaces/TimelineWorkspace.svelte';
   import PlaceholderWorkspace from './components/workspaces/PlaceholderWorkspace.svelte';
   import TasksList from './components/home/TasksList.svelte';
+  import ShortcutOverlay from './components/ShortcutOverlay.svelte';
   import { route, startRouter, navigate } from './lib/router.svelte';
   import { startPolling as startTasks, stopPolling as stopTasks } from './stores/tasks.svelte';
   import { startPolling as startQ, stopPolling as stopQ, questions } from './stores/questions.svelte';
   import { openTask, closeTask } from './lib/streamService';
   import { notifications } from './lib/notifications';
-  import { ui, pinAgent } from './stores/ui.svelte';
+  import { ui, pinAgent, toggleShortcutOverlay, closeShortcutOverlay } from './stores/ui.svelte';
   import { events } from './stores/events.svelte';
+  import { downloadTaskJSON } from './lib/exportTask';
 
   let stopRouter: (() => void) | null = null;
   let pinAgentListener: ((ev: Event) => void) | null = null;
+  let keydownListener: ((ev: KeyboardEvent) => void) | null = null;
   let prevQids = new Set<string>();
+
+  // Active task drives the WS subscription regardless of which workspace is selected.
+  let activeTaskIdForShortcuts = $derived.by(() => {
+    const r = route.current;
+    if (r.name === 'task_workspace') return r.taskId;
+    if (r.name === 'task') return r.taskId;
+    return null;
+  });
+
+  function handleGlobalKey(ev: KeyboardEvent): void {
+    // Ignore keypresses when the user is typing in an input / textarea.
+    const t = ev.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+    if (ev.key === '?') {
+      ev.preventDefault();
+      toggleShortcutOverlay();
+      return;
+    }
+    if (ev.key === 'Escape') {
+      if (ui.shortcutOverlayOpen) { ev.preventDefault(); closeShortcutOverlay(); return; }
+    }
+    // Workspace shortcuts only when a task is open.
+    const tid = activeTaskIdForShortcuts;
+    if (tid) {
+      if (ev.key === '1') { ev.preventDefault(); navigate(`/tasks/${tid}/agents`);    return; }
+      if (ev.key === '2') { ev.preventDefault(); navigate(`/tasks/${tid}/timeline`);  return; }
+      if (ev.key === '3') { ev.preventDefault(); navigate(`/tasks/${tid}/tools`);     return; }
+      if (ev.key === 'e') { ev.preventDefault(); downloadTaskJSON(events);            return; }
+    }
+    if (ev.key === '0') { ev.preventDefault(); navigate('/'); return; }
+  }
 
   onMount(() => {
     notifications.init();
@@ -29,6 +65,8 @@
       if (detail?.agentId) pinAgent(detail.agentId);
     };
     window.addEventListener('beidou:pin-agent', pinAgentListener);
+    keydownListener = handleGlobalKey;
+    window.addEventListener('keydown', keydownListener);
   });
 
   onDestroy(() => {
@@ -38,6 +76,7 @@
     stopQ();
     closeTask();
     if (pinAgentListener) window.removeEventListener('beidou:pin-agent', pinAgentListener);
+    if (keydownListener) window.removeEventListener('keydown', keydownListener);
   });
 
   // Legacy /tasks/{id} → /tasks/{id}/agents
@@ -122,3 +161,5 @@
     </main>
   {/if}
 </div>
+
+<ShortcutOverlay />
