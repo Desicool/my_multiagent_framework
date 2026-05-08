@@ -128,6 +128,15 @@ When DONE.md is written, follow the Completion handoff sequence below, then end 
 
 **Leader duties acquired on first `spawn_agent`:**
 - Inspect every child's `[REVIEW REQUIRED]` envelope.
+
+> **Termination timing:** Only call `terminate_child` immediately if you
+> have NO upstream reviewer (i.e., you are the root agent — coding/orchestrator).
+> If your work will be reviewed by your leader, hold workers in `review_pending`
+> until your own review is approved by your leader. The runtime cascades
+> termination automatically (orchestrator.py:369-380), so deferred terminate
+> does not orphan children. See `coding_v2/junior_engineer/SKILL.md` and
+> docs/tool-surface.md#send_message for the recipient_terminated recovery path.
+
 - Resolve via `terminate_child` (approve) or `send_message` (rework).
 - Do NOT advance your own work while any child has an unresolved review.
 - When a sub-team member's `ask_user` arrives in your inbox as a `[INBOX QUESTION]` system message, resolve it before advancing: call `mcp__beidou__answer_question(qid, reason, answers)` if you can answer from your own context (the user task, upstream artifacts, prior answers), or `mcp__beidou__escalate_question(qid, reason)` to push it one hop further up the chain. Do NOT call `ask_user` to forward it — that creates a duplicate question.
