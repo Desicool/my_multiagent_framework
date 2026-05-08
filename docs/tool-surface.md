@@ -47,6 +47,11 @@ MCP closure. `caller_id` is NEVER read from the model's tool input.
 
 **Error cases**
 - `unknown_recipient`: `to` does not resolve to a live agent in this task.
+- `recipient_terminated`: recipient has `terminate_consumed=True` (the agent
+  record persists for accounting but its inbox is unreachable). The sender's
+  workflow had a bug — typically a leader called `terminate_child` on the child
+  before its work was finalized upstream. Escalate to your own leader rather
+  than spawning a replacement.
 - `inbox_full`: recipient's inbox has reached the cap in `limits.md`. Returned
   as a structured tool error; sender decides how to react.
 - `task_mismatch`: `to` resolves but belongs to a different task.
