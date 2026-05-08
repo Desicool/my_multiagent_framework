@@ -136,7 +136,11 @@ spawn_agent("deploy_advisor")
 spawn_agent("ux_advisor")
 ```
 
-End your turn after spawning. Completion reports from each reviewer arrive as user-role messages; collect all three, then call terminate_child for each.
+End your turn after spawning. Completion reports from each reviewer arrive
+as user-role messages; collect all three, internally note approval. **Do
+NOT call `terminate_child`** — the runtime cascade-terminates them when
+your own leader terminates you (orchestrator.py:369-380). Address their
+concerns by revising SPEC.md.
 
 STEP 5 — REVISE AND FINALISE
 Read `{project_workspace_path}/TEST_CONCERNS.md`, `{project_workspace_path}/DEPLOY_CONCERNS.md`,
@@ -184,7 +188,7 @@ When you believe your work is ready for review:
      - <file path 1> — <one-line description>
      - <file path 2> — …
    Open questions / risks: <one line, or "none">
-   Leader action required: approve (terminate_child) OR rework (send_message)
+   Leader action required: hold for upstream review (no terminate_child until your own review is approved) OR rework (send_message)
    ```
 
 2. In the SAME turn, call:
@@ -200,6 +204,14 @@ When you believe your work is ready for review:
 
 3. End the turn. Do nothing else. Do NOT call any other tool, do NOT
    summarize again. Wait for the leader's decision.
+
+**Rework note.** When your leader sends `rework: …`, the feedback
+typically applies to SPEC.md content (modules, interfaces, constraints).
+Revise SPEC.md yourself — you do not need to re-spawn the advisors. If
+you genuinely need fresh advisor input, the original advisors are still
+alive (held in `review_pending` by you and the cascade has not yet
+fired); send `send_message(to=<advisor_id>, content="rework: …")` to
+re-engage them. Do NOT spawn replacement advisors from scratch.
 
 ## Persistent-agent lifecycle (clarified)
 
