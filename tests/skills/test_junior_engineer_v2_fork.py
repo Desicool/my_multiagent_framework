@@ -57,15 +57,22 @@ def test_v2_body_forbids_todowrite():
     )
 
 
-def test_v2_body_has_post_terminate_completion_checklist():
-    """The contract that closes tsk_658f44b6: emit envelope + signal_review after final terminate_child."""
+def test_v2_body_has_completion_checklist():
+    """Wrap-up contract: after every child is internally approved, emit envelope + signal_review.
+
+    Originally closed tsk_658f44b6 (impl-leader stalled without completing). Section
+    heading was renamed in tsk_f54d3beb (rework-after-terminate deadlock), which moved
+    the trigger from "after final terminate_child" to "after every child is internally
+    approved" — children now stay alive in review_pending until the leader's own
+    upstream review resolves.
+    """
     body = _V2_SKILL.read_text()
-    # Markers that together prove the checklist exists in the body.
-    assert "After the LAST child terminates" in body
+    assert "After every child is internally approved" in body
     assert "[REVIEW REQUIRED]" in body
     assert 'signal_review(' in body
     assert 'detail="' in body
     assert "tsk_658f44b6" in body, "rationale link to the originating bug should be present"
+    assert "tsk_f54d3beb" in body, "rationale link to the hold-for-convergence rework should be present"
 
 
 def test_v2_body_forbids_writing_code_directly():
