@@ -115,6 +115,13 @@ V2_DESIGN_COMMITTEE_SKILLS = {
     "engineer_advisor",
 }
 
+# Leader skills whose contract requires holding approved children in
+# review_pending until the leader's own upstream review is approved. Different
+# from V2_DESIGN_COMMITTEE_SKILLS (those are CHILD skills doing multi-round
+# critique). See plan: tsk-f54d3beb. Triggered by impl-leader (junior_engineer_v2)
+# rework-after-terminate deadlock.
+HOLD_UNTIL_UPSTREAM_LEADER_SKILLS = {"junior_engineer_v2", "software_architect"}
+
 
 def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> dict:
     """Build hook dicts for the SDK agent.
@@ -504,6 +511,21 @@ def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> d
                     f"  o mcp__beidou__send_message(to=\"{pid}\", content=\"rework: <what>\")  to ask for changes, OR\n"
                     f"    mcp__beidou__send_message(to=\"{pid}\", content=\"ack: <stable so far>\")  to keep them alive while peers converge.\n"
                     f"    (v2 design-committee member — do NOT call terminate_child until the User Approve gate.)"
+                )
+            # bd issue 2uwj / plan tsk-f54d3beb: leader skills that must hold
+            # approved children in review_pending until the leader's own
+            # upstream review is approved. Cascade-terminate handles cleanup
+            # via orchestrator.py:369-380 when the leader is itself terminated.
+            leader_team_id = child_rec.team_id if child_rec is not None else None
+            leader_team_rec = orch._teams.get(leader_team_id) if leader_team_id is not None else None  # type: ignore[attr-defined]
+            leader_id_for_child = leader_team_rec.leader_id if leader_team_rec is not None else None
+            leader_rec = orch._agents.get(leader_id_for_child) if leader_id_for_child else None  # type: ignore[attr-defined]
+            leader_skill = getattr(leader_rec, "skill_name", None) if leader_rec else None
+            if leader_skill in HOLD_UNTIL_UPSTREAM_LEADER_SKILLS:
+                return (
+                    f"  o mcp__beidou__send_message(to=\"{pid}\", content=\"rework: <what>\")  to ask for changes.\n"
+                    f"    DO NOT call terminate_child until your own [REVIEW REQUIRED] is approved by your leader\n"
+                    f"    — the runtime will cascade-terminate this child when you are torn down."
                 )
             return (
                 f"  o mcp__beidou__terminate_child(agent_id=\"{pid}\")  to approve, OR\n"
