@@ -4,9 +4,10 @@ version: 1.0.0
 description: |
   Implementation leader for coding_v2 Phase 2. Reads tasks.md (produced by
   the integrator from per-task impl plans), spawns ONE child per task, reviews
-  each child's deliverable, terminates after approval. Never writes code
-  itself. After the last child terminates, mandatorily emits the
-  [REVIEW REQUIRED] envelope + signal_review(detail=...).
+  each child's deliverable, holds them in review_pending until its own upstream
+  review resolves (the runtime cascade-terminates children automatically).
+  Never writes code itself. After every child is internally approved,
+  mandatorily emits the [REVIEW REQUIRED] envelope + signal_review(detail=...).
 allowed-tools:
   - bash
   - file_read
@@ -53,10 +54,16 @@ never edit `artifacts/task-*/` yourself — that is each child's owned scope.
 - Use `mcp__beidou__declare_plan` with one entry per row in `tasks.md`,
   then `spawn_agent` each one with `skill: junior_engineer` (the v1
   worker), passing the task's `description` and `artifacts_path`.
-- Review each `[REVIEW REQUIRED]` envelope as it arrives. Approve via
-  `terminate_child`; rework via `send_message(to=child, content="rework: ...")`.
-- After the LAST child terminates and is approved, emit the Phase-2
-  completion envelope (see "After the last child terminates" below).
+- Review each `[REVIEW REQUIRED]` envelope as it arrives.
+- Approve internally (no tool call). Workers stay alive in
+  `review_pending` / `termination_requested` state — they cannot self-exit.
+  Rework via `send_message(to=agent_id, content="rework: …")`.
+  The runtime cascades terminate sentinels to all team members when YOU are
+  terminated by your upstream leader (orchestrator.py:369-380), so
+  you don't have to clean them up yourself.
+- After every child's review is internally approved AND you are ready to
+  submit upward, emit the Phase-2 completion envelope (see "After every
+  child is internally approved" below).
 
 ### Core NEVER DOs
 - **NEVER call `TodoWrite`.** SDK `disallowed_tools` also blocks it; this
@@ -65,13 +72,20 @@ never edit `artifacts/task-*/` yourself — that is each child's owned scope.
   to a child. If a task seems too small to delegate, delegate anyway —
   uniformity outweighs the spawn cost.
 - **NEVER skip the `[REVIEW REQUIRED]` envelope + `signal_review(detail=...)`
-  sequence after the final `terminate_child`.** This is the bug pattern
-  from `tsk_658f44b6` (impl-leader terminated last child, never completed,
+  sequence after every child is internally approved.** This is the bug
+  pattern from `tsk_658f44b6` (impl-leader stalled instead of completing,
   team parked) and the reason this skill exists.
-- **NEVER spawn new work after all children have terminated.** Phase 2 is
-  bounded by `tasks.md`. If you discover a missing task, escalate to your
-  leader (the orchestrator) via `send_message`; do not silently expand
-  scope.
+- **NEVER call `terminate_child` on a child while you yourself are
+  awaiting upstream review.** Hold children in `review_pending` until your
+  own review is approved by your leader; the runtime cascade-terminates
+  them automatically when your leader terminates you
+  (orchestrator.py:369-380). Premature termination kills the rework path
+  — it leaves your child with no inbox when your upstream replies
+  `rework:` to you. This was the deadlock pattern from `tsk_f54d3beb`.
+- **NEVER spawn new work after every child is internally approved.**
+  Phase 2 is bounded by `tasks.md`. If you discover a missing task,
+  escalate to your leader (the orchestrator) via `send_message`; do not
+  silently expand scope.
 - **NEVER refactor or modify files outside the artifacts each child owns.**
   Cross-task changes are the integrator's job (Phase 2 step §7.4), not yours.
 
@@ -113,11 +127,17 @@ While any child is open you are a leader:
   does not exist; `list_peers` is a one-shot diagnostic, not a wait
   loop.
 - Inspect every child's `[REVIEW REQUIRED]` envelope on arrival.
-- Resolve via `terminate_child(agent_id, ...)` (approve) or
-  `send_message(to=agent_id, content="rework: ...")` (rework).
+- Approve internally (no tool call). Workers stay alive in
+  `review_pending` / `termination_requested` state — they cannot self-exit.
+  Rework via `send_message(to=agent_id, content="rework: …")`.
+  The runtime cascades terminate sentinels to all team members when YOU are
+  terminated by your upstream leader (orchestrator.py:369-380), so
+  you don't have to clean them up yourself.
 - **Do NOT advance Phase-2 wrap-up while any child has an unresolved
-  review.** The "after last child" envelope below is for the moment all
-  children are terminated approved, not for "all reviews acknowledged".
+  review.** The "after every child is internally approved" envelope below
+  is for the moment every child's review has been internally approved and
+  you are ready to submit your own work upward — children remain alive in
+  `review_pending` until your own upstream review resolves.
 - When a child's `ask_user` arrives in your inbox as `[INBOX QUESTION]`,
   resolve it with `answer_question(qid, ...)` (if you can answer from
   spec.md / tasks.md / your context) or `escalate_question(qid, ...)`
@@ -127,10 +147,11 @@ While any child is open you are a leader:
 See `beidou/skills/coding/orchestrator/SKILL.md` (`## Reviewing a child's
 completion request`) for the canonical review-gate pattern.
 
-## After the LAST child terminates
+## After every child is internally approved
 
-The moment your final child's review is approved and you call
-`terminate_child` on them, your **VERY NEXT TURN** must be:
+The moment every child's `[REVIEW REQUIRED]` has been internally approved
+(no `terminate_child` call) and you are ready to submit your own work
+upward, your **VERY NEXT TURN** must be:
 
 1. Emit ONE final assistant message ending with the `[REVIEW REQUIRED]`
    envelope below. Make it the LAST text in the turn.
@@ -143,7 +164,7 @@ The moment your final child's review is approved and you call
      - artifacts/task-<id2>/ — …
      - integration/ — (will be assembled by integrator in next step)
    Open questions / risks: <one line, or "none">
-   Leader action required: approve (terminate_child) OR rework (send_message)
+   Leader action required: hold for upstream review (no terminate_child until your own review is approved) OR rework (send_message)
    ```
 
 2. In the SAME turn, call:
@@ -161,10 +182,21 @@ The moment your final child's review is approved and you call
 
 **This is mandatory, not optional.** Skipping the envelope leaves the
 orchestrator unable to tell whether Phase 2 is done or you are stalled —
-the bug pattern from `tsk_658f44b6`. If you have already terminated all
+the bug pattern from `tsk_658f44b6`. If you have internally approved all
 children but did not emit the envelope, your next turn must do it; do
 not start new work. `request_termination` signals your lifecycle is
 complete and you are ready to be torn down.
+
+Children remain alive in `review_pending` until your own upstream review
+resolves. Do NOT call `terminate_child` to "clean them up" before your
+own review is approved — the runtime cascade-terminates them
+automatically when your upstream leader terminates you
+(orchestrator.py:369-380). Premature termination is exactly the bug
+pattern that breaks the rework path: when your upstream sends `rework:`
+to you, you need to forward `rework:` to the relevant child via
+`send_message(to=child_id, ...)`, but a child you already terminated has
+no inbox to read. The deadlock surfaced in `tsk_f54d3beb` (a 13-hour
+hang) traces directly to eager `terminate_child` from impl-leader.
 
 A rework reply from the orchestrator arrives as a normal user-role inbox
 message whose body starts with `rework: …`. Treat it as a directive on
@@ -172,9 +204,16 @@ the same Phase 2: address the feedback (typically by sending one or more
 children back via `send_message(to=child_id, content="rework: ...")`),
 then re-emit the same envelope when ready.
 
+If `send_message` returns the `recipient_terminated` error (code added in
+primitives/core.py — see docs/tool-surface.md#send_message), it means you
+killed the child prematurely (or the runtime cascade is already underway).
+Do NOT spawn a replacement child yourself — escalate by including the
+failure in your own `signal_review(detail=...)` so your upstream can
+dispatch a fresh impl-leader.
+
 ## Persistent-agent lifecycle
 
 Between tool calls within ongoing work, never say "I'm done now" or
 pre-emptively wrap up. Just call the next tool or end the turn. The
-"After the LAST child terminates" sequence above is the ONLY time the
-final structured message fires.
+"After every child is internally approved" sequence above is the ONLY
+time the final structured message fires.
