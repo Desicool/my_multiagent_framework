@@ -31,6 +31,10 @@ beidou = "beidou.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["beidou*"]
+# Exclude the frontend source/build tree — node_modules can contain stray
+# .py files (e.g. flatted/python/flatted.py) that setuptools would otherwise
+# discover as packages and ship in the wheel.
+exclude = ["beidou.web.frontend*"]
 
 [tool.pytest.ini_options]
 markers = [
