@@ -269,9 +269,12 @@ Field semantics — internalize these before writing:
   sparingly; the default is `none`.
 - **Deletes** = files this task explicitly removes from `integration/`. Use only for
   intentional cleanup (e.g. removing a deprecated module replaced by this task). Default `none`.
-- **Runs_before** declares the dependency edge for the integrator's topological sort. List
-  the task ids whose outputs must be placed before this task's outputs. The integrator
-  detects cycles.
+- **Runs_before** declares the dependency edge for the integrator's topological sort AND
+  for `dev_team_leader`'s wave-based worker dispatch. List the task ids whose outputs must
+  be placed before this task's outputs. The integrator detects cycles. Any task whose
+  `Inputs` is non-`none` MUST have a non-empty `Runs_before` — otherwise `dev_team_leader`
+  fans out workers in parallel without dependency ordering and downstream tasks read
+  upstream outputs that have not yet been produced (the `tsk_d1ac5a39` fail-mode).
 - **Verify** is a post-integration self-check: it runs against
   `{project_workspace_path}/integration/` (the assembled tree), executed by
   test_engineer in the test phase, NOT by the implementer against
