@@ -89,14 +89,24 @@ evidence source, so Phase 2 qa can apply an objective test — not judgment.
 2. **Deliverable path discipline.** Write `qa_plan.md` to
    **`{project_workspace_path}/qa_plan.md`** (the project root from your task
    field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
-3. Draft `qa_plan.md`: per-AC criteria, per-US end-to-end criteria,
-   cross-cutting gates, Phase 2 verification map, open questions.
-4. Share critiques with peers (PM, arch, test_engineer, ui_ux) via
+3. Draft `qa_plan.md` from the user task: per-AC criteria, per-US end-to-end
+   criteria, cross-cutting gates, Phase 2 verification map, open questions.
+   Send first-pass critiques to peers (PM, arch, test_engineer, ui_ux) via
    `send_message`.
-5. Revise `qa_plan.md` as the spec and requirements evolve.
-6. Open issues for unresolved disagreement only after a round of discussion.
-7. Respond to `[FREEZE PROBE]`.
-8. Submit for review with `[REVIEW REQUIRED]`.
+4. **Loop UNTIL the coordinator sends `[FREEZE PROBE]` and `qa_plan.md` is
+   stable**:
+   a. Receive peer replies and inbound critiques in subsequent turns.
+   b. Revise `qa_plan.md` to integrate peer answers (PM's AC clarifications,
+      arch's observability hooks, test_engineer's coverage map, ui_ux's
+      failure-mode specifications).
+   c. Send follow-up critiques via `send_message` when peer drafts leave
+      acceptance criteria unverifiable or expose no observable signal.
+   d. Open issues only for unresolved disagreement that has gone through at
+      least one round of discussion.
+   This is multi-round, multi-turn — not a single pass.
+5. Respond to `[FREEZE PROBE]` with `[FREEZE OK]` / `[FREEZE NACK]`.
+6. Submit for review with `[REVIEW REQUIRED]` — see the **Preconditions for
+   calling signal_review** section below before signaling.
 
 ---
 
@@ -224,6 +234,30 @@ If a leader's task description asks you to "verify" the delivered system or
 write a qa_report.md, push back via `send_message` clarifying that
 `qa_engineer_v2` is Phase 1 design-committee only and that Phase 2 sign-off
 belongs to `coding/qa_engineer`.
+
+---
+
+## Preconditions for calling signal_review
+
+You may NOT call `signal_review` for a round unless ALL of:
+
+1. Every outgoing inquiry you sent in this round has either received a reply
+   from the peer OR is explicitly listed as "still pending peer answer" in
+   the `[REVIEW REQUIRED]` envelope's `Open questions / risks` line.
+2. Every incoming peer critique addressed at `qa_plan.md` has been replied
+   to via `send_message` (acknowledgement of the change, or a counter-argument
+   defending your position — silence is not a reply).
+3. `qa_plan.md` content has not changed in the current turn (no pending
+   edits the leader would not see when they read the file).
+
+First-draft + send-inquiries does NOT meet these preconditions — peers have
+not even been given a turn to respond. After drafting and dispatching first-pass
+critiques, end the turn and wait at least one turn for peer replies before
+signaling. The canonical fail-mode is `tsk_4961b649`: a committee member fired
+`signal_review` while all outgoing testability-gap inquiries were still
+unanswered, wasting the round because the deliverable had not integrated peer
+input. Same prompt shape across all six committee members; treat this as a
+hard precondition.
 
 ---
 
