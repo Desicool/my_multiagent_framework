@@ -118,9 +118,17 @@ V2_DESIGN_COMMITTEE_SKILLS = {
 # Leader skills whose contract requires holding approved children in
 # review_pending until the leader's own upstream review is approved. Different
 # from V2_DESIGN_COMMITTEE_SKILLS (those are CHILD skills doing multi-round
-# critique). See plan: tsk-f54d3beb. Triggered by impl-leader (junior_engineer_v2)
-# rework-after-terminate deadlock.
-HOLD_UNTIL_UPSTREAM_LEADER_SKILLS = {"junior_engineer_v2", "software_architect"}
+# critique). See plan: tsk-f54d3beb.
+#
+# junior_engineer_v2 was removed in the tsk-f54d3beb merge: the SKILL was
+# folded into dev_team_leader (commits 0697f53 / 7d3eea1) and the merged
+# dev_team_leader uses **eager terminate per worker** (advances the plan task,
+# unblocks dependents) instead of hold-pattern. The coordinator only sends
+# [REWORK] post-[DEV READY], so no mid-iteration rework can deadlock — the
+# original deadlock that motivated the hold contract is structurally gone.
+# software_architect remains because its multi-advisor convergence pattern
+# still requires holding approved advisors until its own upstream review.
+HOLD_UNTIL_UPSTREAM_LEADER_SKILLS = {"software_architect"}
 
 
 def build_builtin_hooks(orch: Orchestrator, caller_id: str, leader_id: str) -> dict:

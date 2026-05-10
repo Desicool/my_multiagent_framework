@@ -252,10 +252,11 @@ def _build_options(
         # with Beidou's primitives or default-on tools we never want surfaced:
         #   - SendMessage: SDK team-mode messaging shadow of mcp__beidou__send_message.
         #   - TodoWrite: competes with mcp__beidou__report_status as a completion
-        #     signal. Per tsk_658f44b6 the impl-leader called TodoWrite to mark
-        #     its tasks complete in lieu of report_status, hanging the run.
-        #     Beidou tracks tasks via bd (cross-session) and report_status
-        #     (in-conversation); TodoWrite has no role.
+        #     signal. Per tsk_658f44b6 the dev_team_leader (formerly impl-leader,
+        #     merged from junior_engineer_v2 in plan tsk-f54d3beb) called
+        #     TodoWrite to mark its tasks complete in lieu of report_status,
+        #     hanging the run. Beidou tracks tasks via bd (cross-session) and
+        #     report_status (in-conversation); TodoWrite has no role.
         # Expand if new shadow-tools surface in events. See bd issue qi0v /
         # commit 3037709 (prompt-level NEVER DOs), commit 81bde03 (SendMessage),
         # and bd issue 8gen / this commit (TodoWrite).
