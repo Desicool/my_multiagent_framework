@@ -142,19 +142,28 @@ def _make_hold_leader_with_pending_child(
     return o, leader, child
 
 
-def test_review_ping_for_hold_until_upstream_leader_uses_hold_wording(tmp_path: Path) -> None:
-    """junior_engineer_v2 leader → ping body tells leader to hold (not terminate_child).
+def test_review_ping_for_software_architect_leader_uses_hold_wording(tmp_path: Path) -> None:
+    """software_architect leader (the sole HOLD_UNTIL_UPSTREAM_LEADER_SKILLS member
+    after the tsk-f54d3beb merge) → ping body tells leader to hold (not
+    terminate_child).
 
-    The child's skill is a regular junior_engineer (NOT a v2 committee member).
-    Gating is on the LEADER skill: junior_engineer_v2 is in
+    Gating is on the LEADER skill: software_architect is in
     HOLD_UNTIL_UPSTREAM_LEADER_SKILLS, so the watchdog must omit the
     "approve via terminate_child" wording and instead instruct the leader to
     only send_message rework, deferring teardown to runtime cascade.
+
+    Pre-merge (commit aa9e90e) this file also covered the junior_engineer_v2
+    leader path. That skill was folded into dev_team_leader (commits 0697f53 /
+    7d3eea1) and dropped from the HOLD set, so its dedicated test was removed.
     """
+    # engineer_advisor IS in V2_DESIGN_COMMITTEE_SKILLS, which would short-circuit
+    # the watchdog into the v2-committee branch. Pick a clearly non-committee
+    # child (qa_engineer) so the leader-skill HOLD branch is the one being
+    # exercised here.
     o, leader, _child = _make_hold_leader_with_pending_child(
         tmp_path,
-        leader_skill="junior_engineer_v2",
-        child_skill="junior_engineer",
+        leader_skill="software_architect",
+        child_skill="qa_engineer",
     )
 
     run(o._watchdog_tick())
@@ -175,30 +184,6 @@ def test_review_ping_for_hold_until_upstream_leader_uses_hold_wording(tmp_path: 
     assert "[REVIEW REQUIRED — STILL PENDING" in body, body
 
 
-def test_review_ping_for_software_architect_leader_uses_hold_wording(tmp_path: Path) -> None:
-    """software_architect leader (also in HOLD_UNTIL_UPSTREAM_LEADER_SKILLS) → hold wording."""
-    o, leader, _child = _make_hold_leader_with_pending_child(
-        tmp_path,
-        leader_skill="software_architect",
-        child_skill="engineer_advisor",  # any non-v2-committee child
-    )
-    # engineer_advisor IS in V2_DESIGN_COMMITTEE_SKILLS, which would short-circuit.
-    # Pick a clearly non-committee child instead.
-    o2, leader2, _c2 = _make_hold_leader_with_pending_child(
-        tmp_path,
-        leader_skill="software_architect",
-        child_skill="qa_engineer",
-    )
-
-    run(o2._watchdog_tick())
-
-    bodies = _drain_inbox(leader2)
-    assert len(bodies) == 1, f"expected 1 ping, got {bodies!r}"
-    body = bodies[0]
-    assert "do NOT call terminate_child" in body, body
-    assert "cascade-terminate" in body, body
-
-
 def test_review_pings_dedup_when_leader_review_pending(tmp_path: Path) -> None:
     """Pass A leader-level dedup: when leader is itself review_pending, its
     children's pings are suppressed entirely. With 8 children all
@@ -214,7 +199,11 @@ def test_review_pings_dedup_when_leader_review_pending(tmp_path: Path) -> None:
     _seed_team(o, _TM_TOP, leader_id=USER_SENTINEL, depth=0)
     _seed_team(o, "tm_child", leader_id="L", depth=1, parent=_TM_TOP)
     # U is implicit (USER_SENTINEL); L lives in _TM_TOP and leads tm_child.
-    leader = _seed_agent(o, "L", _TM_TOP, role="leader", skill="junior_engineer_v2")
+    # Leader skill must be in HOLD_UNTIL_UPSTREAM_LEADER_SKILLS so the parked-leader
+    # dedup path triggers. Post tsk-f54d3beb merge, software_architect is the only
+    # member of that set (junior_engineer_v2 was folded into dev_team_leader and
+    # dropped from the HOLD set — it now uses eager-terminate per worker).
+    leader = _seed_agent(o, "L", _TM_TOP, role="leader", skill="software_architect")
     # L is itself in review_pending (waiting for its own upstream to approve).
     leader.review_pending = True
     leader.review_pending_ts = time.time() - 1000.0
