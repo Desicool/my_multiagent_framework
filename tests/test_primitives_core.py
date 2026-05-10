@@ -317,9 +317,14 @@ class FakeOrchestrator:
         self.statuses.append((caller_id, state, detail))
 
     def was_terminated(self, caller_id: str) -> bool:
-        # Test default: no terminate sentinel consumed. Tests that care flip
-        # this via the ``_terminated`` set they manage directly.
-        return False
+        # Mirror the real Orchestrator: an agent counts as terminated once
+        # its terminate_consumed flag is set on the registry record. Tests
+        # flip ``self.agents[id].terminate_consumed = True`` to drive the
+        # send_message gate (and other terminated-agent checks).
+        rec = self._agents.get(caller_id)
+        if rec is None:
+            return False
+        return rec.terminate_consumed
 
     # --- Completion-review accessors (used by list_pending_reviews) --------
 
@@ -398,6 +403,26 @@ def test_send_message_task_mismatch():
         with pytest.raises(PrimitiveError) as ei:
             await send_message(o, caller_id="A", to="X", content="hi")
         assert ei.value.code == "task_mismatch"
+
+    run(body())
+
+
+def test_send_message_recipient_terminated():
+    """Sending to a terminate_consumed=True agent must raise, not silently
+    drop into an unreachable inbox. See bd:my_simple_agent-khwh."""
+    o = _build()
+
+    async def body():
+        # Mark B as having consumed a terminate signal -- agent record
+        # persists in the registry for accounting, but its inbox is
+        # unreachable.
+        o.agents["B"].terminate_consumed = True
+        with pytest.raises(PrimitiveError) as ei:
+            await send_message(o, caller_id="A", to="B", content="hello?")
+        assert ei.value.code == "recipient_terminated"
+        # Nothing should have been queued or emitted.
+        assert o.inbox_size("B") == 0
+        assert not any(ev[0] == "message_sent" for ev in o.events)
 
     run(body())
 

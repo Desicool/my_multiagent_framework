@@ -3,6 +3,8 @@
   import { events } from '../../stores/events.svelte';
   import { fmtMoney, fmtNum, shortId } from '../../lib/format';
   import { elapsed as elapsedStr } from '../../lib/time';
+  import { downloadTaskJSON } from '../../lib/exportTask';
+  import { toggleShortcutOverlay } from '../../stores/ui.svelte';
 
   let now = $state(Date.now());
   let timer: number | null = null;
@@ -53,4 +55,24 @@
     <dt class="text-slate-500">teams</dt>
     <dd class="text-slate-200 font-mono">{teamsCount}</dd>
   </dl>
+
+  <div class="flex items-center gap-2 mt-3">
+    <button
+      type="button"
+      onclick={() => downloadTaskJSON(events)}
+      disabled={!events.task}
+      class="text-[11px] px-2 py-1 rounded border border-surface-border text-slate-300 hover:border-slate-700 hover:bg-slate-200/[0.04] hover:text-slate-100 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer font-mono"
+      title="Download the current task as JSON"
+    >
+      ↓ Export JSON
+    </button>
+    <button
+      type="button"
+      onclick={toggleShortcutOverlay}
+      class="text-[11px] px-2 py-1 rounded border border-surface-border text-muted hover:border-slate-700 hover:text-slate-200 cursor-pointer font-mono"
+      title="Show keyboard shortcuts"
+    >
+      ?
+    </button>
+  </div>
 </div>

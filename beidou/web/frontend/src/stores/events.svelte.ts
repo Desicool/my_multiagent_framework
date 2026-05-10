@@ -72,6 +72,7 @@ export function resetEvents(): void {
   events.agentsById = {};
   events.teamsById = {};
   events.globalActivity = [];
+  events.timelineEvents = [];
 }
 
 export { events };

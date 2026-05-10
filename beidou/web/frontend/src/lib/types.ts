@@ -342,6 +342,78 @@ export type PendingQuestion = {
   created_at: number;
 };
 
+// ===== Timeline event capture (PR 3) =====
+//
+// The reducer maintains a flat, append-only `timelineEvents` array of every
+// event the /timeline workspace might want to render. The shape stays close to
+// the raw JSONL — only the discriminator (`kind`) and a few derived fields
+// are normalized so the workspace can render without re-parsing.
+
+export type TimelineEventKind =
+  // Lifecycle
+  | 'task_started'
+  | 'task_completed'
+  | 'agent_started'
+  | 'agent_completed'
+  | 'agent_error'
+  | 'agent_exited'
+  | 'team_created'
+  // Plan
+  | 'plan_declared'
+  | 'plan_removed'
+  | 'task_spawned'
+  | 'task_ready'
+  | 'task_done'
+  | 'task_failed'
+  // Primitive call (one of the 13 — drives the section structure on /timeline)
+  | 'primitive_call'
+  // Questions
+  | 'question_asked'
+  | 'question_answered'
+  | 'question_escalated'
+  // Errors
+  | 'contract_violation'
+  // Termination
+  | 'terminate_posted'
+  // Firehose-only events (hidden by default; visible under "Show all events")
+  | 'turn'
+  | 'tool_call'
+  | 'status'
+  | 'send_message'
+  | 'agent_input'
+  | 'completion_marker'
+  | 'liveness_marker';
+
+export type TimelineEvent = {
+  /** Discriminator — drives glyph + category + render path on /timeline. */
+  kind: TimelineEventKind;
+  ts: number;
+  /** The acting agent for this event (caller_id for tool calls, agent_id for lifecycle, etc.). May be empty for system events. */
+  agent_id?: string;
+  /** Plan-task id for plan_* / task_* events; otherwise undefined. */
+  plan_task_id?: string;
+  /** Plan id (uuid) for plan_declared / task_spawned / task_done / task_failed events. */
+  plan_id?: string;
+  /** Spawned-agent id for task_spawned / spawn_agent (primitive_call). */
+  spawned_agent_id?: string;
+  /** Team id for team_created. */
+  team_id?: string;
+  /** Plain primitive name (no mcp prefix) for `primitive_call` events. */
+  tool_name?: string;
+  /** Raw input dict for primitive_call events. */
+  input?: Record<string, unknown>;
+  /** True when the underlying tool_result reported is_error. */
+  is_error?: boolean;
+  /** error_reason / detail strings for failures. */
+  error?: string;
+  /** Free-form one-line summary computed by the reducer for cheap rendering. */
+  summary?: string;
+  /** Originating raw event preserved verbatim — used by the firehose toggle. */
+  raw?: Record<string, unknown>;
+};
+
+// ===== Connection state =====
+
 export type ConnectionStatus =
   | 'connecting'
   | 'replaying'

@@ -114,9 +114,12 @@ declare_plan(tasks=[
   {id: "dev_lead", role: "dev-team-leader", skill: "dev_team_leader",
    task: "You are the Dev Team Leader for coding_v2 Phase 2. Wait for [DEV START] message
      before beginning work. Read {project_workspace_path}/tasks.md and {project_workspace_path}/spec.md.
-     Spawn one junior_engineer per task, then integrator to assemble {project_workspace_path}/integration/.
-     When done, send [DEV READY] envelope via send_message and call signal_review.
-     If you receive [REWORK], redo only the affected implementation.",
+     Parse each task's Runs_before edges, declare ONE plan with one junior_engineer worker per task
+     plus a final integrator entry (depends_on=[all workers]), then dispatch wave-by-wave via
+     list_ready + spawn_agent. Approve each worker via terminate_child (eager — advances plan
+     task and unblocks dependents). When the integrator is approved, send [DEV READY] envelope
+     via send_message and call signal_review. If you receive [REWORK], redo only the affected
+     implementation subset.",
    model: "claude-haiku-4-5-20251001",
    depends_on: ["arch_post_approval"]},
 
@@ -244,16 +247,25 @@ When `qa_lead` sends `[QA VERDICT APPROVED]` via `mcp__beidou__send_message`:
 
 When `dev_lead` forwards an `[INT-CONFLICT]` message (escalated from the integrator):
 
-1. Read the conflict details — typically in `{project_workspace_path}/integration_report.md`.
-2. The conflict type determines the response:
-   - **Path overlap** (two tasks claim the same logical path) OR **Runs_before cycle**: `tasks.md` has a structural partition error. Since `arch_post_approval` has already been terminated, you have two choices:
+1. Read the conflict details — typically in `{project_workspace_path}/integration_report.md` and the message body. The dev_lead message carries an explicit `subtype=` tag.
+2. The `subtype` determines the response:
+   - **`subtype=path_overlap`** (two tasks claim the same logical path) OR **`subtype=cycle`** (`Runs_before` cycle): `tasks.md` has a structural partition error. Since `arch_post_approval` has already been terminated, you have two choices:
      a. Re-spawn `arch_post_approval` to fix `tasks.md`, OR
      b. Call `ask_user` with the conflict details and options: [Re-spawn architect to fix tasks.md, Abort Phase 2, Provide manual fix guidance].
-   - **MISSING_OUTPUT** (a task did not produce a declared file): route `rework:` to `dev_lead` with the specific task-id and missing file path. The dev_lead itself routes this to the specific junior_engineer.
+
+     After tasks.md is corrected, send `[REWORK iteration=<N+1> cycle_id=<new>]` to `dev_lead` so it picks up the new manifest.
+   - **`subtype=missing_output`** (a task did not produce a declared file): tasks.md is structurally sound — only one or more implementations failed. **Do NOT re-spawn the architect.** Increment iteration → `N+1`, generate a fresh `cycle_id`, transition `phase2_state.json -> state="dev_active"`, and send `[REWORK]` to `dev_lead` whose body lists the failed task ids and missing paths from the dev_lead's escalation message:
+
+     ```
+     send_message(to=<dev_lead agent_id>,
+       content="[REWORK] iteration=<N+1> cycle_id=<new_cycle_id>\nMissing outputs (per integrator):\n  - <task-id>: missing <logical-path>\nRedo only the listed tasks; integrator will re-run automatically as the final plan node.")
+     ```
+
+     dev_lead handles this exactly like a QA rejection: `remove_plan` + new `declare_plan` over the failed subset (plus integrator), wave dispatch, integrator re-runs at the end.
 
    Unlisted files under `artifacts/` (build caches, scratch files) do NOT trigger this handler — the integrator silently ignores them under allow-list semantics.
 
-3. After the responsible agent reports done, the integrator must re-run. Route `rework:` to `dev_lead` to re-spawn the integrator.
+3. Wait for dev_lead to ACK the `[REWORK]`, then resume monitoring `dev_active`. The integrator re-runs as the final node of dev_lead's new plan; you will see the next `[DEV READY]` (or another `[INT-CONFLICT]`) on completion.
 
 ## Completion and ACK Protocol
 

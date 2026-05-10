@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Beidou /agents workspace — v0 mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --success: #10b981;
+    --error:   #f43f5e;
+    --pending: #f59e0b;
+    --info:    #0ea5e9;
+    --accent:  #8b5cf6;
+    --muted:   #64748b;
+    --review:  #06b6d4;
+
+    --surface:        #020617;
+    --surface-raised: #0f172a;
+    --surface-2:      #0b1322;
+    --border:         #1e293b;
+    --border-strong:  #334155;
+
+    --text:        #e2e8f0;
+    --text-strong: #f1f5f9;
+    --text-dim:    #94a3b8;
+
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  /* Shell */
+  .shell { display: grid; grid-template-rows: 44px 1fr; grid-template-columns: 240px 1fr; grid-template-areas: "topbar topbar" "spine workspace"; height: 100vh; }
+  .topbar { grid-area:topbar; display:flex; align-items:center; gap:16px; padding:0 16px; background:var(--surface-raised); border-bottom:1px solid var(--border); }
+  .topbar .brand { font-weight:700; letter-spacing:.04em; color:var(--text-strong); font-size:13px; }
+  .topbar .brand .glyph { color:var(--review); margin-right:6px; }
+  .topbar .stat { display:inline-flex; align-items:baseline; gap:6px; color:var(--text-dim); font-size:12px; }
+  .topbar .stat .v { font-family:var(--font-mono); font-variant-numeric:tabular-nums; color:var(--text-strong); }
+  .topbar .sep { width:1px; height:18px; background:var(--border); }
+  .topbar .question-chip { margin-left:auto; display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; background:rgba(245,158,11,.10); color:var(--pending); border:1px solid rgba(245,158,11,.30); font-size:12px; font-weight:500; }
+  .topbar .question-chip .dot { width:6px; height:6px; border-radius:50%; background:var(--pending); box-shadow:0 0 0 3px rgba(245,158,11,.20); }
+
+  .spine { grid-area:spine; background:var(--surface-2); border-right:1px solid var(--border); overflow-y:auto; padding:12px 0; }
+  .spine .group { padding:0 16px; margin-bottom:18px; }
+  .spine .group-label { font-size:10px; font-weight:600; letter-spacing:.10em; text-transform:uppercase; color:var(--muted); padding:6px 0; }
+  .spine .item { display:flex; align-items:center; gap:10px; padding:6px 8px; margin:0 -8px; border-radius:5px; color:var(--text-dim); cursor:pointer; font-size:12.5px; transition:background 80ms; }
+  .spine .item:hover { background:rgba(148,163,184,.06); color:var(--text); }
+  .spine .item.active { background:rgba(6,182,212,.08); color:var(--text-strong); }
+  .spine .item.active::before { content:''; width:3px; height:14px; background:var(--review); border-radius:2px; margin-right:-3px; }
+  .spine .item .glyph { width:14px; text-align:center; color:var(--muted); font-size:11px; }
+  .spine .item.active .glyph { color:var(--review); }
+  .spine .item .task-id { font-family:var(--font-mono); font-size:11.5px; }
+  .spine .item .task-meta { font-size:10.5px; color:var(--muted); margin-left:auto; font-family:var(--font-mono); }
+  .spine .item.disabled { opacity:.4; cursor:not-allowed; }
+
+  /* Workspace 3-pane */
+  .workspace { grid-area:workspace; display:grid; grid-template-columns: 280px 1fr 320px; height: calc(100vh - 44px); overflow: hidden; }
+
+  /* ── Left rail ── */
+  .lrail { border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; background: var(--surface); }
+  .lrail .block { margin-bottom: 22px; }
+  .lrail .block-h {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .task-overview {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 12px 14px;
+  }
+  .task-overview .desc {
+    font-size: 12.5px;
+    color: var(--text);
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+  .task-overview .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 14px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .task-overview .kv .k {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .task-overview .kv .v {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--text-strong);
+    font-weight: 500;
+  }
+
+  /* Activity feed (left rail) */
+  .feed { display: flex; flex-direction: column; gap: 4px; }
+  .feed-row {
+    display: grid;
+    grid-template-columns: 48px 14px 1fr;
+    column-gap: 8px;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 11px;
+  }
+  .feed-row .ts { font-family: var(--font-mono); color: var(--muted); font-size: 10px; }
+  .feed-row .dot { width:6px; height:6px; border-radius: 50%; background: var(--muted); margin-top: 5px; }
+  .feed-row.cat-primitive .dot { background: var(--review); }
+  .feed-row.cat-lifecycle .dot { background: var(--accent); }
+  .feed-row.cat-review .dot { background: var(--review); }
+  .feed-row.cat-question .dot { background: #c4b5fd; }
+  .feed-row.cat-error .dot { background: var(--error); }
+  .feed-row .text { color: var(--text-dim); font-size: 11px; line-height: 1.4; }
+  .feed-row .text b { color: var(--text); font-weight: 500; }
+  .feed-row .text code { font-family: var(--font-mono); color: var(--text); font-size: 10.5px; background: rgba(148,163,184,.08); padding: 0 4px; border-radius: 3px; }
+
+  .more-link {
+    margin-top: 6px;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    display: inline-block;
+  }
+  .more-link:hover { color: var(--text); }
+
+  /* ── Middle (PinnedAgentPanel) ── */
+  .middle {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .agent-header {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ah-avatar {
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    background: rgba(245, 158, 11, 0.18);
+    color: #fcd34d;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .ah-meta { flex: 1; min-width: 0; }
+  .ah-line1 {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ah-name {
+    font-weight: 600;
+    color: var(--text-strong);
+    font-size: 14px;
+    letter-spacing: -0.005em;
+  }
+  .ah-id {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .ah-line2 {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ah-line2 .v { color: var(--text); }
+
+  .state-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+  }
+  .state-pill .dot { width:6px; height:6px; border-radius: 50%; }
+  .state-pill.review {
+    color: var(--review);
+    background: rgba(6,182,212,.10);
+    border: 1px solid rgba(6,182,212,.30);
+  }
+  .state-pill.review .dot { background: var(--review); box-shadow: 0 0 0 3px rgba(6,182,212,.20); }
+  .state-pill.working {
+    color: var(--success);
+    background: rgba(16,185,129,.10);
+    border: 1px solid rgba(16,185,129,.28);
+  }
+  .state-pill.working .dot { background: var(--success); }
+
+  .pin-meta {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .pin-meta .v { color: var(--text); }
+
+  /* Question banner */
+  .qbanner {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.08), rgba(245, 158, 11, 0.02));
+    border-left: 3px solid var(--pending);
+  }
+  .qbanner .qhead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--pending);
+    letter-spacing: 0.04em;
+  }
+  .qbanner .qhead .qid {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+  .qbanner .qhead .chain {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+  .qbanner .ctx {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  .qbanner .subq {
+    margin-bottom: 8px;
+  }
+  .qbanner .subq:last-of-type { margin-bottom: 12px; }
+  .qbanner .subq-head {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .qbanner .subq-chip {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: rgba(245, 158, 11, 0.10);
+    color: var(--pending);
+    border: 1px solid rgba(245, 158, 11, 0.28);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .qbanner .subq-q {
+    color: var(--text);
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+  .qbanner .subq input[type="text"], .qbanner .subq textarea {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    margin-top: 4px;
+    resize: vertical;
+  }
+  .qbanner .subq input[type="text"]:focus, .qbanner .subq textarea:focus {
+    outline: none;
+    border-color: var(--pending);
+  }
+
+  /* Question types: radio / checkbox / other-reveal */
+  .qbanner .opt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .qbanner .opt {
+    display: grid;
+    grid-template-columns: 16px 1fr;
+    column-gap: 9px;
+    padding: 5px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 80ms;
+  }
+  .qbanner .opt:hover { border-color: var(--border-strong); }
+  .qbanner .opt.selected {
+    border-color: var(--pending);
+    background: rgba(245, 158, 11, 0.05);
+  }
+  .qbanner .opt .marker {
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--border-strong);
+    margin-top: 2px;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .qbanner .opt.radio    .marker { border-radius: 50%; }
+  .qbanner .opt.checkbox .marker { border-radius: 3px; }
+  .qbanner .opt.selected .marker { border-color: var(--pending); }
+  .qbanner .opt.radio.selected .marker::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 7px; height: 7px;
+    background: var(--pending);
+    border-radius: 50%;
+  }
+  .qbanner .opt.checkbox.selected .marker::after {
+    content: '✓';
+    position: absolute;
+    top: -3px; left: 0px;
+    color: var(--pending);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .qbanner .opt-label {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+  .qbanner .opt.selected .opt-label { color: var(--text-strong); }
+  .qbanner .opt-desc {
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 2px;
+  }
+
+  /* "Other" option with revealed free-text */
+  .qbanner .opt.other.selected {
+    grid-template-columns: 16px 1fr;
+    grid-template-rows: auto auto;
+  }
+  .qbanner .opt.other.selected .other-input {
+    grid-column: 2;
+    grid-row: 2;
+    margin-top: 6px;
+  }
+  .qbanner .opt.other .other-input { display: none; }
+  .qbanner .opt.other.selected .other-input { display: block; }
+  .qbanner .opt.other .other-input input {
+    width: 100%;
+    background: var(--surface-raised);
+    border: 1px solid var(--pending);
+    border-radius: 4px;
+    padding: 5px 9px;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 11.5px;
+  }
+  .qbanner .opt.other .other-input input:focus { outline: none; }
+
+  /* Type chip (textarea / radio / checkbox) shown next to header */
+  .qbanner .subq-type {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    background: rgba(148, 163, 184, 0.06);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .qbanner .actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .qbanner button {
+    background: var(--pending);
+    color: #fff;
+    border: none;
+    padding: 5px 14px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 11.5px;
+    cursor: pointer;
+    font-family: var(--font-sans);
+  }
+  .qbanner .helper {
+    margin-left: auto;
+    font-size: 10.5px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+  }
+
+  /* Stream */
+  .stream { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Text bubble */
+  .si-text {
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 4px 0;
+  }
+  .si-text strong { color: var(--text-strong); }
+  .si-text .si-inner { padding: 0; }
+  .si-text p + p { margin-top: 8px; }
+
+  /* ── FROM → TO flow strip (prominent endpoint display) ── */
+  .flow-strip {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
+    align-items: center;
+    margin: 6px 12px 4px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+  }
+  .flow-strip .endpoint { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .flow-strip .endpoint.to { align-items: flex-end; }
+  .flow-strip .endpoint .label {
+    font-size: 9.5px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .flow-strip .endpoint .agent-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--text-strong);
+    font-weight: 500;
+  }
+  .flow-strip .endpoint .agent-row .agent-mono {
+    width: 22px; height: 22px; font-size: 10.5px; border-radius: 4px;
+  }
+  .flow-strip .endpoint .role-text {
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    margin-left: 30px;
+    margin-top: -1px;
+  }
+  .flow-strip .endpoint.to .role-text { margin-left: 0; margin-right: 30px; }
+  .flow-strip .arrow-big {
+    font-size: 18px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    line-height: 1;
+  }
+  .flow-strip.outbound  .arrow-big { color: var(--success); }
+  .flow-strip.terminate .arrow-big { color: var(--error); }
+  .flow-strip.spawn     .arrow-big { color: var(--accent); }
+  .flow-strip.user      .arrow-big { color: var(--pending); }
+  .flow-strip .endpoint.user-terminal {
+    align-items: flex-end;
+  }
+  .flow-strip .endpoint.user-terminal .agent-row {
+    color: var(--pending);
+  }
+  .flow-strip .endpoint.user-terminal .agent-row .agent-mono.system {
+    background: rgba(245, 158, 11, 0.18);
+    color: #fcd34d;
+  }
+
+  /* Tool card (delegates to /tools primitive design — same look) */
+  .tool-card {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+  }
+  .tool-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .tool-card.cat-primitive::before { background: var(--review); }
+  .tool-card.cat-coord::before     { background: var(--success); }
+  .tool-card.cat-human::before     { background: var(--accent); opacity: 0.6; }
+  .tool-card .tc-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px 6px;
+  }
+  .tool-card .cat {
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .tool-card.cat-primitive .cat { color: var(--review); }
+  .tool-card.cat-coord     .cat { color: var(--success); }
+  .tool-card.cat-human     .cat { color: var(--accent); }
+  .tool-card .name {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-strong);
+  }
+  .tool-card .meta {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    font-size: 10.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tool-card .meta .dur::before {
+    content: '';
+    display: inline-block;
+    width: 18px;
+    height: 3px;
+    background: var(--success);
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .tool-card .body {
+    padding: 6px 12px 10px;
+    border-top: 1px solid rgba(30, 41, 59, 0.5);
+    display: grid;
+    grid-template-columns: 70px 1fr;
+    column-gap: 12px;
+    row-gap: 4px;
+    font-size: 11.5px;
+  }
+  .tool-card .k {
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+    padding-top: 1px;
+  }
+  .tool-card .v { color: var(--text); }
+  .tool-card .v.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; }
+  .tool-card .badge {
+    display: inline-flex;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-family: var(--font-sans);
+  }
+  .tool-card .badge.alive { color: var(--review); background: rgba(6,182,212,.10); border: 1px solid rgba(6,182,212,.28); }
+  .tool-card .badge.expects-reply { color: var(--success); background: rgba(16,185,129,.10); border: 1px solid rgba(16,185,129,.28); }
+  .tool-card .envelope-tag {
+    display: inline-block;
+    background: rgba(6,182,212,.10);
+    color: var(--review);
+    border: 1px solid rgba(6,182,212,.30);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin-bottom: 5px;
+    font-family: var(--font-sans);
+    text-transform: uppercase;
+  }
+  .tool-card .envelope {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+
+  /* Inbound message bubble (from peer or user) */
+  .si-msg-in {
+    align-self: flex-start;
+    max-width: 85%;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+  .si-msg-in .from {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .si-msg-in.from-user .from { color: var(--success); }
+  .si-msg-in.from-user { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.25); }
+
+  /* Outbound message */
+  .si-msg-out {
+    align-self: flex-end;
+    max-width: 85%;
+    background: rgba(14, 165, 233, 0.06);
+    border: 1px solid rgba(14, 165, 233, 0.25);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+  .si-msg-out .to {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--info);
+    margin-bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Turn divider */
+  .si-turn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 10.5px;
+  }
+  .si-turn::before, .si-turn::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .si-turn .stop {
+    color: var(--info);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  /* Composer */
+  .composer {
+    border-top: 1px solid var(--border);
+    padding: 12px 18px;
+    background: var(--surface-raised);
+  }
+  .composer textarea {
+    width: 100%;
+    min-height: 56px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    resize: vertical;
+  }
+  .composer textarea:focus { outline: none; border-color: var(--review); }
+  .composer .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .composer .send {
+    background: var(--review);
+    color: var(--surface);
+    border: none;
+    padding: 5px 14px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 11.5px;
+    cursor: pointer;
+    margin-left: auto;
+    font-family: var(--font-sans);
+  }
+  .composer .hint {
+    color: var(--muted);
+    font-size: 10.5px;
+    font-family: var(--font-mono);
+  }
+
+  /* ── Right rail (Team Tree) ── */
+  .rrail { border-left: 1px solid var(--border); overflow-y: auto; padding: 14px 14px 16px; background: var(--surface); }
+  .rrail .block-h {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+
+  .tree-node { display: flex; flex-direction: column; }
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.4;
+    user-select: none;
+  }
+  .tree-row:hover { background: rgba(148, 163, 184, 0.05); }
+  .tree-row.active {
+    background: rgba(245, 158, 11, 0.07);
+    color: var(--text-strong);
+  }
+  .tree-row .twi {
+    width: 10px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .tree-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-row .label .role-text { color: var(--text-dim); font-size: 11px; margin-left: 4px; }
+  .tree-row.team .label { font-weight: 500; color: var(--text-strong); }
+  .tree-row.team .label .lid { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); margin-left: 6px; font-weight: 400; }
+
+  .tree-row .agent-mono { width:16px; height:16px; border-radius:3px; display:inline-flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:9px; font-weight:600; flex-shrink:0; }
+  .tree-row .agent-mono.h1 { background:rgba(139,92,246,.20); color:#c4b5fd; }
+  .tree-row .agent-mono.h2 { background:rgba(16,185,129,.18); color:#6ee7b7; }
+  .tree-row .agent-mono.h3 { background:rgba(14,165,233,.20); color:#7dd3fc; }
+  .tree-row .agent-mono.h4 { background:rgba(244,63,94,.16); color:#fda4af; }
+  .tree-row .agent-mono.h5 { background:rgba(245,158,11,.18); color:#fcd34d; }
+  .tree-row .agent-mono.h6 { background:rgba(6,182,212,.20); color:#67e8f9; }
+  .tree-row .agent-mono.h7 { background:rgba(167,139,250,.20); color:#c4b5fd; }
+
+  .tree-row .state {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--muted);
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .tree-row .state.working { background: var(--success); box-shadow: 0 0 0 2px rgba(16,185,129,.15); }
+  .tree-row .state.review { background: var(--review); box-shadow: 0 0 0 2px rgba(6,182,212,.18); }
+  .tree-row .state.idle { background: var(--muted); }
+  .tree-row .state.terminating { background: var(--pending); }
+
+  .tree-children {
+    border-left: 1px dashed var(--border);
+    margin-left: 13px;
+    padding-left: 10px;
+  }
+
+  /* Mockup banner */
+  .mockup-banner { position:fixed; bottom:12px; right:16px; padding:6px 12px; background:rgba(2,6,23,.85); backdrop-filter:blur(6px); border:1px solid var(--border); border-radius:5px; font-size:10.5px; font-family:var(--font-mono); color:var(--text-dim); letter-spacing:.04em; }
+  .mockup-banner b { color:var(--review); margin-right:8px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TopBar -->
+  <div class="topbar">
+    <div class="brand"><span class="glyph">◆</span>BEIDOU</div>
+    <div class="sep"></div>
+    <div class="stat"><span class="v mono">tsk_95394dcf</span></div>
+    <div class="sep"></div>
+    <div class="stat">elapsed <span class="v mono">14:25:37</span></div>
+    <div class="stat">agents <span class="v mono">7</span></div>
+    <div class="stat">cost <span class="v mono">$0.42</span></div>
+    <div class="question-chip"><span class="dot"></span>1 question</div>
+  </div>
+
+  <!-- Spine -->
+  <div class="spine">
+    <div class="group">
+      <div class="group-label">Tasks</div>
+      <div class="item"><span class="glyph">●</span><span class="task-id">tsk_95394dcf</span><span class="task-meta">7 ag</span></div>
+      <div class="item"><span class="glyph">○</span><span class="task-id">tsk_1dce3af9</span><span class="task-meta">3 ag</span></div>
+      <div class="item"><span class="glyph">○</span><span class="task-id">tsk_4b79e88e</span><span class="task-meta">2 ag</span></div>
+    </div>
+    <div class="group">
+      <div class="group-label">Workspace</div>
+      <div class="item active"><span class="glyph">▤</span>Agents</div>
+      <div class="item"><span class="glyph">≡</span>Timeline</div>
+      <div class="item"><span class="glyph">▦</span>Tools</div>
+      <div class="item disabled"><span class="glyph">○</span>Stats · P1</div>
+      <div class="item disabled"><span class="glyph">○</span>Overview · P1</div>
+      <div class="item disabled"><span class="glyph">○</span>Q&amp;A · P1</div>
+    </div>
+  </div>
+
+  <!-- 3-pane workspace -->
+  <div class="workspace">
+
+    <!-- ── Left rail ── -->
+    <div class="lrail">
+      <div class="block">
+        <div class="block-h">Task</div>
+        <div class="task-overview">
+          <div class="desc">我想要一个网页的计算器，未来可以扩展成一个综合应用的一个组件</div>
+          <div class="stats">
+            <div class="kv"><div class="k">elapsed</div><div class="v">14:25:37</div></div>
+            <div class="kv"><div class="k">cost</div><div class="v">$0.421</div></div>
+            <div class="kv"><div class="k">in_tok</div><div class="v">128.4k</div></div>
+            <div class="kv"><div class="k">turns</div><div class="v">157</div></div>
+            <div class="kv"><div class="k">agents</div><div class="v">7 / 7</div></div>
+            <div class="kv"><div class="k">model</div><div class="v">sonnet-4-6</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-h">Activity</div>
+        <div class="feed">
+          <div class="feed-row cat-primitive">
+            <span class="ts">14:24</span><span class="dot"></span>
+            <span class="text"><b>signal_review</b> by <code>ag_e17b3483</code> [REVIEW REQUIRED]</span>
+          </div>
+          <div class="feed-row cat-question">
+            <span class="ts">14:22</span><span class="dot"></span>
+            <span class="text"><b>question_escalated</b> → user</span>
+          </div>
+          <div class="feed-row cat-question">
+            <span class="ts">14:22</span><span class="dot"></span>
+            <span class="text"><b>question_asked</b> by <code>product-manager</code></span>
+          </div>
+          <div class="feed-row cat-primitive">
+            <span class="ts">14:22</span><span class="dot"></span>
+            <span class="text"><b>ask_user</b> · 3 sub-q · qid <code>q_d6b22f66</code></span>
+          </div>
+          <div class="feed-row cat-lifecycle">
+            <span class="ts">14:21</span><span class="dot"></span>
+            <span class="text"><b>team_created</b> <code>tm_886aa0bb</code> · depth 2</span>
+          </div>
+          <div class="feed-row cat-lifecycle">
+            <span class="ts">14:21</span><span class="dot"></span>
+            <span class="text"><b>agent_started</b> <code>ag_9b0c451d</code> product-manager</span>
+          </div>
+          <div class="feed-row cat-primitive">
+            <span class="ts">14:21</span><span class="dot"></span>
+            <span class="text"><b>spawn_agent</b> · phase1 → ag_9b0c451d</span>
+          </div>
+          <div class="feed-row cat-primitive">
+            <span class="ts">14:21</span><span class="dot"></span>
+            <span class="text"><b>declare_plan</b> · 2 tasks (phase1 → phase2)</span>
+          </div>
+          <div class="feed-row cat-lifecycle">
+            <span class="ts">14:21</span><span class="dot"></span>
+            <span class="text"><b>task_started</b> · orchestrator_v2</span>
+          </div>
+        </div>
+        <span class="more-link">▾ view all in /timeline</span>
+      </div>
+    </div>
+
+    <!-- ── Middle (Pinned agent) ── -->
+    <div class="middle">
+
+      <!-- Header -->
+      <div class="agent-header">
+        <div class="ah-avatar">9b</div>
+        <div class="ah-meta">
+          <div class="ah-line1">
+            <span class="ah-name">product-manager-dd07</span>
+            <span class="ah-id">ag_9b0c451d</span>
+            <span class="state-pill review"><span class="dot"></span>review_pending</span>
+          </div>
+          <div class="ah-line2">
+            <span>role <span class="v">product-manager</span></span>
+            <span>skill <span class="v">product_manager_v2</span></span>
+            <span>team <span class="v">tm_886aa0bb</span></span>
+            <span>depth <span class="v">2</span></span>
+          </div>
+        </div>
+        <div class="pin-meta">
+          <span>turns <span class="v">80</span></span>
+          <span>tools <span class="v">66</span></span>
+          <span>in <span class="v">68.2k</span></span>
+          <span>cost <span class="v">$0.205</span></span>
+        </div>
+      </div>
+
+      <!-- Question banner (pinned because routes through this agent's chain) -->
+      <div class="qbanner">
+        <div class="qhead">
+          <span>⚠ awaiting user answer</span>
+          <span class="chain">ag_9b0c451d → ag_e21b59b0 → ag_14378f95 → user</span>
+          <span class="qid">qid q_1f97dc37</span>
+        </div>
+        <div class="ctx">Round 2 — 绑定性确认。基于您 Round 1 的回答，需要确认几个关键产品选择：功能范围、输入方式、历史记录、未来集成方向。</div>
+
+        <!-- (1) RADIO · single-select with options -->
+        <div class="subq">
+          <div class="subq-head">
+            <span class="subq-chip">用户场景</span>
+            <span class="subq-type">RADIO</span>
+            <span class="subq-q">您主要在什么场景下使用这个计算器？</span>
+          </div>
+          <div class="opt-list">
+            <div class="opt radio">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">个人日常使用</div>
+                <div class="opt-desc">利息、工资、税务等日常计算</div>
+              </div>
+            </div>
+            <div class="opt radio selected">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">嵌入工具集合页（推荐）</div>
+                <div class="opt-desc">作为 react component 或 iframe 接入更大的工具网页</div>
+              </div>
+            </div>
+            <div class="opt radio">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">团队/办公场景</div>
+                <div class="opt-desc">共享、有协作的团队计算需求</div>
+              </div>
+            </div>
+            <div class="opt radio other">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">Other ▾ <span style="color:var(--muted); font-weight:400; font-size:10.5px;">(reveals free-text when selected)</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- (2) CHECKBOX · multi-select -->
+        <div class="subq">
+          <div class="subq-head">
+            <span class="subq-chip">功能范围</span>
+            <span class="subq-type">CHECKBOX</span>
+            <span class="subq-q">Phase 1 应该包含哪些功能？(可多选)</span>
+          </div>
+          <div class="opt-list">
+            <div class="opt checkbox selected">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">基础四则运算</div>
+                <div class="opt-desc">加减乘除 (+, −, ×, ÷)、小数、正负号切换、等于、清除 (C/CE)</div>
+              </div>
+            </div>
+            <div class="opt checkbox selected">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">百分比运算</div>
+                <div class="opt-desc">% 按钮，支持如 200+10%=220 的实用百分比计算</div>
+              </div>
+            </div>
+            <div class="opt checkbox">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">记忆功能</div>
+                <div class="opt-desc">M+, M-, MR, MC 存储/调用数值</div>
+              </div>
+            </div>
+            <div class="opt checkbox">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">简单财务函数</div>
+                <div class="opt-desc">如利率计算、分期计算等——请描述您需要哪些</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- (3) RADIO with "Other" SELECTED → free-text revealed -->
+        <div class="subq">
+          <div class="subq-head">
+            <span class="subq-chip">历史记录</span>
+            <span class="subq-type">RADIO + OTHER</span>
+            <span class="subq-q">计算历史是否需要在 Phase 1 支持？</span>
+          </div>
+          <div class="opt-list">
+            <div class="opt radio">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">Phase 1 就要</div>
+                <div class="opt-desc">显示最近的计算记录，可点击复用</div>
+              </div>
+            </div>
+            <div class="opt radio">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">Phase 2 再加</div>
+                <div class="opt-desc">Phase 1 只做当前计算，不保存历史</div>
+              </div>
+            </div>
+            <div class="opt radio">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">不需要历史</div>
+                <div class="opt-desc">用完即走，不需要历史记录功能</div>
+              </div>
+            </div>
+            <div class="opt radio other selected">
+              <div class="marker"></div>
+              <div>
+                <div class="opt-label">Other (free-text)</div>
+                <div class="other-input">
+                  <input type="text" value="想要 cloud-synced 的历史，可以跨设备查看，最多保留 50 条" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- (4) TEXTAREA · free-text only (options.length === 0) -->
+        <div class="subq">
+          <div class="subq-head">
+            <span class="subq-chip">未来方向</span>
+            <span class="subq-type">TEXTAREA</span>
+            <span class="subq-q">关于「未来扩展成综合应用的一个组件」——您设想的综合应用大致是什么方向的？</span>
+          </div>
+          <textarea placeholder="自由文本回答…">是工具类的聚合网页（汇率、贷款、单位换算等都在一起），计算器是其中一个 module；预计用 react，可能后期会做成桌面端 PWA。</textarea>
+        </div>
+
+        <div class="actions">
+          <button>Submit answers</button>
+          <span class="helper">Cmd/Ctrl+Enter to submit · 4 / 4 answered</span>
+        </div>
+      </div>
+
+      <!-- Stream -->
+      <div class="stream">
+
+        <!-- Inbound from user -->
+        <div class="si-msg-in from-user">
+          <div class="from">⌬ from user · 14:21:09</div>
+          我想要一个网页的计算器，未来可以扩展成一个综合应用的一个组件
+        </div>
+
+        <!-- Inbound task assignment from leader -->
+        <div class="si-msg-in">
+          <div class="from">↘ from ag_e21b59b0 · 14:21:25 · TASK ASSIGNMENT</div>
+          plan_task_id: <strong>pm</strong> · artifacts_path: <strong>/tmp/calc/artifacts/pm</strong><br/><br/>
+          Design committee Phase 1. Deliverable: <strong>/tmp/calc/requirements.md</strong> — FR/NFR, user stories, Given/When/Then ACs.
+        </div>
+
+        <div class="si-turn">
+          <span>turn 47 · in 12,488 · out 0 · cache_read 18,200</span><span class="stop">end_turn</span>
+        </div>
+
+        <!-- Assistant text -->
+        <div class="si-text">
+          <div class="si-inner">
+            这位用户，任务说想要一个网页计算器，未来可扩展为综合应用的一个组件。需求比较精炼，在动手写用户故事之前，我想先了解一些背景信息。<br/><br/>
+            <strong>Round 1 — 开放探索</strong>：先问问用户的基本情况和期望。
+          </div>
+        </div>
+
+        <!-- Tool card: ask_user — prominent caller / chain → user -->
+        <div class="tool-card cat-human">
+          <div class="tc-head">
+            <span class="cat">Human</span>
+            <span class="name">ask_user</span>
+            <span class="meta"><span>14:22:24</span><span class="dur">3 sub-q</span></span>
+          </div>
+          <div class="flow-strip user">
+            <div class="endpoint from">
+              <div class="label">Asker</div>
+              <div class="agent-row"><span class="agent-mono h2">9b</span>ag_9b0c451d</div>
+              <div class="role-text">product-manager</div>
+            </div>
+            <div class="arrow-big">⟶</div>
+            <div class="endpoint to user-terminal">
+              <div class="label">Routes to (terminal)</div>
+              <div class="agent-row"><span class="agent-mono system">⌬</span>user</div>
+              <div class="role-text">via leader chain · 4 hops</div>
+            </div>
+          </div>
+          <div class="body">
+            <div class="k">qid</div><div class="v mono">q_d6b22f66</div>
+            <div class="k">questions</div><div class="v">3 sub-questions · 用户场景 · 运算类型 · 未来方向</div>
+          </div>
+        </div>
+
+        <!-- Outbound message to architect -->
+        <div class="si-msg-out">
+          <div class="to">↗ to ag_c0f0adbf · architect</div>
+          [pm] Architect — quick alignment: PM is treating this as a personal-use calculator for daily finance ops. Are the existing component-boundary decisions (Web Component / Shadow DOM / vanilla TS) still our recommendation given the simpler scope, or should we reconsider going React-only?
+        </div>
+
+        <!-- Tool card: send_message — with prominent FROM/TO flow strip -->
+        <div class="tool-card cat-coord">
+          <div class="tc-head">
+            <span class="cat">Coordination</span>
+            <span class="name">send_message</span>
+            <span class="badge expects-reply">expects reply ↩</span>
+            <span class="meta"><span>14:24:18</span><span class="dur">8ms</span></span>
+          </div>
+          <div class="flow-strip outbound">
+            <div class="endpoint from">
+              <div class="label">From</div>
+              <div class="agent-row"><span class="agent-mono h2">9b</span>ag_9b0c451d</div>
+              <div class="role-text">product-manager · pinned</div>
+            </div>
+            <div class="arrow-big">⟶</div>
+            <div class="endpoint to">
+              <div class="label">To</div>
+              <div class="agent-row"><span class="agent-mono h3">c0</span>ag_c0f0adbf</div>
+              <div class="role-text">software-architect</div>
+            </div>
+          </div>
+          <div class="body">
+            <div class="k">message_id</div><div class="v mono">b2c6b81a-2dac-4f3f-ad22-a3a52f3dd31a</div>
+            <div class="k">content</div><div class="v" style="font-size:11.5px;">[pm] Architect — quick alignment: PM is treating this as a personal-use calculator for daily finance ops. Are the existing component-boundary decisions still our recommendation?</div>
+          </div>
+        </div>
+
+        <div class="si-turn">
+          <span>turn 48 · in 13,210 · out 0 · cache_read 22,840</span><span class="stop">end_turn</span>
+        </div>
+
+        <!-- More assistant text -->
+        <div class="si-text">
+          <div class="si-inner">
+            感谢用户提供的信息！现在我有了关键背景：个人使用的日常计算器（利息、工资、税务），基础四则运算 + 简单财务运算，未来以 React 组件或 iframe 方式接入工具聚合页。<br/><br/>
+            让我先回复各位同伴，再进行 <strong>Round 2 — 绑定性确认</strong>。
+          </div>
+        </div>
+
+        <!-- signal_review tool card (the headline win, embedded in stream) -->
+        <div class="tool-card cat-primitive">
+          <div class="tc-head">
+            <span class="cat">Review</span>
+            <span class="name">signal_review</span>
+            <span class="badge alive">stays alive</span>
+            <span class="meta"><span>14:25:31</span><span class="dur">142ms</span></span>
+          </div>
+          <div class="body">
+            <div class="k">envelope</div>
+            <div class="v">
+              <span class="envelope-tag">[REVIEW REQUIRED]</span>
+              <div class="envelope">role=product_manager_v2     agent=ag_9b0c451d
+iteration=1
+Deliverables:
+  - /tmp/calc/requirements.md — 11 user stories, 12 FR clusters,
+    10 NFRs, 32 Given/When/Then ACs
+Open questions / risks: Decimal precision edge cases for financial
+  formulas; Percent semantics in chained expressions documented but
+  not exhaustively AC'd.
+Leader action required: hold for convergence (remain alive)</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Composer -->
+      <div class="composer">
+        <textarea placeholder="Send a message to product-manager-dd07…"></textarea>
+        <div class="row">
+          <span class="hint">message will be delivered to <code>ag_9b0c451d</code> · counts toward inbox cap (1000)</span>
+          <button class="send">Send ↩</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Right rail (Team Tree) ── -->
+    <div class="rrail">
+      <div class="block-h">Team Tree</div>
+
+      <div class="tree-node">
+        <div class="tree-row team">
+          <span class="twi">▾</span>
+          <span class="agent-mono h1">14</span>
+          <span class="label">root <span class="role-text">· orchestrator</span><span class="lid">ag_14378f95</span></span>
+          <span class="state working" title="working"></span>
+        </div>
+        <div class="tree-children">
+          <div class="tree-row team">
+            <span class="twi">▾</span>
+            <span class="label">tm_8756c268 <span class="lid">depth 1</span></span>
+          </div>
+          <div class="tree-children">
+            <div class="tree-row">
+              <span class="twi">·</span>
+              <span class="agent-mono h5">e2</span>
+              <span class="label">ag_e21b59b0 <span class="role-text">· design-coordinator</span></span>
+              <span class="state working"></span>
+            </div>
+            <div class="tree-row team">
+              <span class="twi">▾</span>
+              <span class="label">tm_886aa0bb <span class="lid">design-committee</span></span>
+            </div>
+            <div class="tree-children">
+              <div class="tree-row active">
+                <span class="twi">·</span>
+                <span class="agent-mono h2">9b</span>
+                <span class="label">ag_9b0c451d <span class="role-text">· pm</span></span>
+                <span class="state review" title="review_pending"></span>
+              </div>
+              <div class="tree-row">
+                <span class="twi">·</span>
+                <span class="agent-mono h3">c0</span>
+                <span class="label">ag_c0f0adbf <span class="role-text">· architect</span></span>
+                <span class="state working"></span>
+              </div>
+              <div class="tree-row">
+                <span class="twi">·</span>
+                <span class="agent-mono h4">14</span>
+                <span class="label">ag_14b77022 <span class="role-text">· ui-ux</span></span>
+                <span class="state working"></span>
+              </div>
+              <div class="tree-row">
+                <span class="twi">·</span>
+                <span class="agent-mono h6">e1</span>
+                <span class="label">ag_e17b3483 <span class="role-text">· qa</span></span>
+                <span class="state review"></span>
+              </div>
+              <div class="tree-row">
+                <span class="twi">·</span>
+                <span class="agent-mono h7">8c</span>
+                <span class="label">ag_8c836c61 <span class="role-text">· test</span></span>
+                <span class="state working"></span>
+              </div>
+              <div class="tree-row">
+                <span class="twi">·</span>
+                <span class="agent-mono h7">44</span>
+                <span class="label">ag_4453b5f2 <span class="role-text">· eng-advisor</span></span>
+                <span class="state idle"></span>
+              </div>
+            </div>
+            <div class="tree-row team">
+              <span class="twi">▸</span>
+              <span class="label">tm_084c8145 <span class="lid">arch-team</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px; padding: 10px 8px; background: var(--surface-raised); border: 1px dashed var(--border); border-radius: 5px; font-size: 10.5px; color: var(--muted); font-family: var(--font-mono); line-height: 1.55;">
+        ● working &nbsp; ● review_pending &nbsp; ● terminating &nbsp; ● idle<br/>
+        click any row to pin in middle pane
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mockup-banner"><b>PR 0 · v0</b>/agents workspace · refined 3-pane (preserved)</div>
+
+</body>
+</html>

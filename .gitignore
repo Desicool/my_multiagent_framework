@@ -9,6 +9,9 @@ __pycache__/
 *.egg-info/
 .beidou/
 
+# Beidou agent skill cache (auto-extracted during `beidou run`)
+.claude/skills/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

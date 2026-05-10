@@ -31,7 +31,7 @@ import json
 from beidou import db as _db
 from beidou import plans as _plans
 from beidou.agent import loop as _agent_loop
-from beidou.agent.hooks import V2_DESIGN_COMMITTEE_SKILLS
+from beidou.agent.hooks import HOLD_UNTIL_UPSTREAM_LEADER_SKILLS, V2_DESIGN_COMMITTEE_SKILLS
 from beidou.engine.graph import USER_SENTINEL, TeamRecord, _slug_role
 from beidou.engine.inbox import INBOX_CAP, Message
 from beidou.engine.lifecycle import (
@@ -1326,6 +1326,22 @@ class Orchestrator:
                 continue
             if rec.terminate_consumed:
                 continue
+            # bd issue 2uwj / plan tsk-f54d3beb: leader-level dedup. If this
+            # child's leader is itself in review_pending waiting for ITS
+            # upstream, the leader cannot act on the child. Without this, N
+            # children under the same parked leader each independently
+            # escalate to the user (3 pings × N children → N user gateway
+            # questions).
+            if rec.team_id is not None:
+                _leader_id_dedup = self.leader_of(rec.team_id)
+                if _leader_id_dedup != USER_SENTINEL:
+                    _leader_rec_dedup = self._agents.get(_leader_id_dedup)
+                    if (
+                        _leader_rec_dedup is not None
+                        and _leader_rec_dedup.review_pending
+                        and not _leader_rec_dedup.terminate_consumed
+                    ):
+                        continue
             if rec.review_pending_ts is None:
                 continue
             delta = now - rec.review_pending_ts
@@ -1345,6 +1361,14 @@ class Orchestrator:
             is_v2_committee = (
                 getattr(rec, "skill_name", None) in V2_DESIGN_COMMITTEE_SKILLS
             )
+            # bd issue 2uwj / plan tsk-f54d3beb: gate by LEADER skill (not
+            # child skill) for hold-until-upstream contracts. v1 orchestrator
+            # also spawns junior_engineer but is the root agent, so its
+            # immediate-terminate workflow is correct — gating by child skill
+            # would mis-fire there.
+            leader_rec = self._agents.get(leader)
+            leader_skill = getattr(leader_rec, "skill_name", None) if leader_rec else None
+            is_hold_until_upstream = leader_skill in HOLD_UNTIL_UPSTREAM_LEADER_SKILLS
             if is_v2_committee:
                 action_line = (
                     f" Send rework via mcp__beidou__send_message(to=\"{child_id}\","
@@ -1352,6 +1376,13 @@ class Orchestrator:
                     f" to keep them alive while peers converge."
                     f" Do NOT call terminate_child — committee members survive until"
                     f" the User Approve branch."
+                )
+            elif is_hold_until_upstream:
+                action_line = (
+                    f" Send rework via mcp__beidou__send_message(to=\"{child_id}\","
+                    f" content=\"rework: ...\") — do NOT call terminate_child until your own"
+                    f" [REVIEW REQUIRED] is approved by your leader. The runtime will cascade-terminate"
+                    f" this child when you are torn down."
                 )
             else:
                 action_line = (
@@ -1415,6 +1446,13 @@ class Orchestrator:
                             f" design-committee member {child_id} ({rec.skill_name}) after 3 pings."
                             f" Continue waiting for freeze convergence, force a rework with custom"
                             f" feedback, or abort the design-committee phase?"
+                        )
+                    elif is_hold_until_upstream:
+                        question_text = (
+                            f"Leader {leader} ({leader_skill}) is holding child {child_id}"
+                            f" ({rec.skill_name}) in review_pending while waiting for its own upstream"
+                            f" approval, but has not progressed in 3 pings."
+                            f" Continue waiting, force a rework via the leader, or abort the parent task?"
                         )
                     else:
                         question_text = (

@@ -235,6 +235,21 @@ async def send_message(
             to=to,
         )
 
+    # Recipient was terminated (terminate_consumed=True). The agent record
+    # persists for accounting, but its inbox is unreachable -- silently
+    # delivering would create a dead-letter trap. Surface the failure so the
+    # sender's leader can make a recovery call. See bd:my_simple_agent-khwh /
+    # tsk_f54d3beb post-mortem.
+    if orch.was_terminated(to):
+        raise PrimitiveError(
+            "recipient_terminated",
+            f"{to} has already been terminated. send_message cannot revive it. "
+            f"If you killed this child prematurely, escalate to your leader via "
+            f"signal_review(detail=...) — do NOT spawn a replacement yourself. "
+            f"Spec: docs/tool-surface.md#send_message.",
+            to=to,
+        )
+
     # Same-task check. send_message is unrestricted on topology (cross-team
     # ok) but strictly scoped to the same task.
     if orch.agent_task(caller_id) != orch.agent_task(to):

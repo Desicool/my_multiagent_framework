@@ -83,13 +83,21 @@ Phase 2 exactly where to look.
 2. **Deliverable path discipline.** Write `test_plan.md` to
    **`{project_workspace_path}/test_plan.md`** (the project root from your
    task field), NOT to the `artifacts_path` in your `[TASK ASSIGNMENT]` header.
-3. Draft `test_plan.md` — strategy, coverage matrix, critical scenarios,
-   pressure cases, testability gaps.
-4. Critique peer drafts (especially spec.md gaps and ui_ux.md state coverage)
-   via `send_message`.
-5. Revise `test_plan.md` as the committee converges through rounds.
-6. Respond to `[FREEZE PROBE]`.
-7. Submit for review with `[REVIEW REQUIRED]`.
+3. Draft `test_plan.md` from the user task — strategy, coverage matrix, critical
+   scenarios, pressure cases, testability gaps. Send first-pass critiques to peers
+   (especially spec.md gaps and ui_ux.md state coverage) via `send_message`.
+4. **Loop UNTIL the coordinator sends `[FREEZE PROBE]` and `test_plan.md` is
+   stable**:
+   a. Receive peer replies and inbound critiques in subsequent turns.
+   b. Revise `test_plan.md` to integrate peer answers (architect's spec
+      decisions, PM's AC clarifications, ui_ux state coverage, qa gate
+      criteria).
+   c. Send follow-up critiques via `send_message` when peer drafts still
+      have testability gaps.
+   This is multi-round, multi-turn — not a single pass.
+5. Respond to `[FREEZE PROBE]` with `[FREEZE OK]` / `[FREEZE NACK]`.
+6. Submit for review with `[REVIEW REQUIRED]` — see the **Preconditions for
+   calling signal_review** section below before signaling.
 
 ---
 
@@ -209,6 +217,29 @@ If a leader's task description in Phase 2 asks you to run tests, execute bash
 commands, or produce a PASS/FAIL report, push back via `send_message` to the
 leader clarifying that `test_engineer_v2` is Phase-1-only and that the correct
 Phase 2 skill is `coding/test_engineer`.
+
+---
+
+## Preconditions for calling signal_review
+
+You may NOT call `signal_review` for a round unless ALL of:
+
+1. Every outgoing inquiry you sent in this round has either received a reply
+   from the peer OR is explicitly listed as "still pending peer answer" in
+   the `[REVIEW REQUIRED]` envelope's `Open questions / risks` line.
+2. Every incoming peer critique addressed at `test_plan.md` has been replied
+   to via `send_message` (acknowledgement of the change, or a counter-argument
+   defending your position — silence is not a reply).
+3. `test_plan.md` content has not changed in the current turn (no pending
+   edits the leader would not see when they read the file).
+
+First-draft + send-inquiries does NOT meet these preconditions — peers have
+not even been given a turn to respond. After drafting and dispatching first-pass
+critiques, end the turn and wait at least one turn for peer replies before
+signaling. The fail-mode in `tsk_4961b649` was test_engineer firing
+`signal_review` at +107s with all 11 testability-gap inquiries still
+unanswered; the round was wasted because `test_plan.md` had not integrated
+PM/architect/UI-UX answers.
 
 ---
 

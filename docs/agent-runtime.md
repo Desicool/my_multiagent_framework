@@ -416,6 +416,11 @@ the following constraints:
    arrives. You do not need to call any waiting primitive.
 2. **When you have no pending work**, end your turn. The runtime will deliver
    the next task as the next user-role turn.
+3. **Do not busy-poll diagnostic primitives as a wait mechanism.** A named
+   `[EVENT-DRIVEN WAIT]` sub-section makes (1) and (2) operational by
+   forbidding tight loops over `list_pending_reviews`, `list_peers`,
+   `list_ready`, etc. Those primitives remain available as one-shot
+   diagnostics; the wake signal is the inbox, not a poll.
 
 Skill authors MUST NOT override these clauses. They can add role-specific
 content but may not weaken the lifecycle contract.

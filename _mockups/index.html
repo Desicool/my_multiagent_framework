@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Beidou web redesign mockups · index</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --review:  #06b6d4;
+    --surface:        #020617;
+    --surface-raised: #0f172a;
+    --border:         #1e293b;
+    --border-strong:  #334155;
+    --text:        #e2e8f0;
+    --text-strong: #f1f5f9;
+    --text-dim:    #94a3b8;
+    --muted:       #64748b;
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.55;
+    padding: 60px 48px;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 {
+    font-size: 22px;
+    color: var(--text-strong);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin-bottom: 4px;
+  }
+  h1 .glyph { color: var(--review); margin-right: 8px; }
+  .lede { color: var(--text-dim); font-size: 13px; max-width: 720px; margin-bottom: 36px; }
+  .lede code { font-family: var(--font-mono); color: var(--text); font-size: 12px; background: var(--surface-raised); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    max-width: 1100px;
+  }
+  .card {
+    display: block;
+    text-decoration: none;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 22px 22px 20px;
+    transition: all 120ms;
+    color: inherit;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--border-strong);
+    transition: background 120ms;
+  }
+  .card:hover { border-color: var(--border-strong); }
+  .card:hover::before { background: var(--review); }
+
+  .card .num {
+    font-family: var(--font-mono);
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .card .title {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-strong);
+    margin-bottom: 10px;
+  }
+  .card .title .density {
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    margin-left: 8px;
+    padding: 1px 6px;
+    background: rgba(148, 163, 184, 0.08);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+  .card .desc {
+    color: var(--text-dim);
+    font-size: 12.5px;
+    line-height: 1.55;
+    margin-bottom: 12px;
+  }
+  .card .pain {
+    font-size: 11.5px;
+    color: var(--text);
+    padding-top: 12px;
+    border-top: 1px dashed var(--border);
+  }
+  .card .pain .label {
+    font-size: 9.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin-right: 8px;
+  }
+
+  footer {
+    margin-top: 48px;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+    max-width: 720px;
+  }
+  footer a { color: var(--review); text-decoration: none; }
+</style>
+</head>
+<body>
+  <h1><span class="glyph">◆</span>BEIDOU · web redesign mockups</h1>
+  <div class="lede">
+    <strong style="color:var(--text-strong);">PR 0 — visual sign-off.</strong> Static HTML mockups for all four MVP workspaces of the Beidou web redesign.
+    Real fixture data from <code>tsk_95394dcf</code> (43-minute, 17-agent calculator-design run). No build step, no JS framework — open each file directly to evaluate the visual language before committing PR 1.
+  </div>
+
+  <div class="grid">
+    <a class="card" href="agents-workspace-v0.html">
+      <div class="num">01 · MVP</div>
+      <div class="title">/agents <span class="density">Linear · comfortable</span></div>
+      <div class="desc">Refined 3-pane (preserved). Pinned-agent stream + question banner + composer. Team tree right rail. Tool cards delegate to the same primitive components built in /tools.</div>
+      <div class="pain"><span class="label">Solves</span> nothing it didn't already — but polishes typography, mono-tabular, signal_review state pill</div>
+    </a>
+
+    <a class="card" href="timeline-workspace-v0.html">
+      <div class="num">02 · MVP</div>
+      <div class="title">/timeline <span class="density">Linear · hybrid</span></div>
+      <div class="desc">Milestone view of framework-level events — primitive calls, lifecycle reaches, plan transitions, Q&amp;A flow, errors. ~13 event types by default. "Show all" toggle off by default.</div>
+      <div class="pain"><span class="label">Solves</span> "no event timeline / firehose view"</div>
+    </a>
+
+    <a class="card" href="tools-workspace-v0.html">
+      <div class="num">03 · MVP · headline</div>
+      <div class="title">/tools <span class="density">hybrid</span></div>
+      <div class="desc">12 purpose-built primitive cards. signal_review (cyan, "stays alive") visually distinct from report_status (deprecated, strikethrough, muted). Plan, Lifecycle, Review, Coordination, Human categories.</div>
+      <div class="pain"><span class="label">Solves</span> "primitives + tool results illegible" · the headline win</div>
+    </a>
+
+  </div>
+
+  <div style="max-width:1100px; margin-top:24px; padding:14px 16px; border:1px dashed var(--border); border-radius:6px; color:var(--text-dim); font-size:12.5px;">
+    <strong style="color:var(--text);">Deferred to P1:</strong>
+    <code style="font-family:var(--font-mono); color:var(--text);">/stats</code>
+    — needs an honest data audit before shipping (some hero KPI sub-fields would require event-stream reduction beyond the existing snapshot). Will re-scope post-MVP feedback.
+  </div>
+
+  <footer>
+    Plan: <code>~/.claude/plans/web-docs-primitive-tool-dazzling-shell.md</code><br/>
+    Anti-AI-slop checklist: top-line accent (no left-border), no emoji, no purple gradients, no SVG-drawn imagery, tabular-nums everywhere, signal_review distinct from report_status — the headline win.<br/>
+    Tokens preserved verbatim from <code>tailwind.config.ts</code>: success / error / pending / info / accent / muted / surface · extended with <code>review</code> cyan (#06b6d4).
+  </footer>
+</body>
+</html>

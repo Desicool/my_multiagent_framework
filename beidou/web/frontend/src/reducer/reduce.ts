@@ -1,15 +1,17 @@
-import type { BeidouEvent, AgentState, TeamState, StreamItem, ToolStreamItem } from '../lib/types';
+import type { BeidouEvent, AgentState, TeamState, StreamItem, ToolStreamItem, TimelineEvent } from '../lib/types';
 import {
   type ReducerState,
   type GlobalActivityItem,
   STREAM_CAP,
   GLOBAL_ACTIVITY_CAP,
+  TIMELINE_CAP,
   createAgentStub,
 } from './state';
 import {
   makeText, makeToolPending, makeMessageIn, makeMessageOut, makeTurnDivider,
 } from './streamItem';
 import { displayToolName } from '../lib/format';
+import { bareToolName, isPrimitive } from '../lib/primitives';
 
 /** Lazy-create or fetch the agent slot. Always returns a non-null AgentState. */
 function ensureAgent(state: ReducerState, agent_id: string): AgentState {
@@ -53,7 +55,244 @@ function pushGlobalActivity(state: ReducerState, item: GlobalActivityItem): void
   }
 }
 
+function pushTimeline(state: ReducerState, ev: TimelineEvent): void {
+  state.timelineEvents.push(ev);
+  if (state.timelineEvents.length > TIMELINE_CAP) {
+    state.timelineEvents.splice(0, state.timelineEvents.length - TIMELINE_CAP);
+  }
+}
+
+/** Build a TimelineEvent from a raw event dict — used for forward-compat events
+ *  (`task_done`, `task_spawned`, `plan_declared`, etc.) that aren't part of
+ *  the typed BeidouEvent union but still flow through `applyEvent`. */
+function timelineFromRaw(raw: Record<string, unknown>, kind: TimelineEvent['kind']): TimelineEvent {
+  const r = raw;
+  return {
+    kind,
+    ts: (r.ts as number) ?? 0,
+    agent_id: (r.agent_id as string) || (r.caller_id as string) || undefined,
+    plan_task_id: (r.task_id as string) || undefined,
+    plan_id: (r.plan_id as string) || undefined,
+    spawned_agent_id: (r.spawned_agent_id as string) || undefined,
+    team_id: (r.team_id as string) || undefined,
+    raw: { ...r },
+  };
+}
+
+/** Capture milestone-eligible events into `state.timelineEvents`. Runs before
+ *  the main switch so the firehose toggle can still see them even if they
+ *  aren't part of the typed BeidouEvent union (task_done, plan_declared, …). */
+function captureTimeline(state: ReducerState, ev: BeidouEvent): void {
+  const raw = ev as unknown as Record<string, unknown>;
+  const type = (raw.type ?? raw.event) as string | undefined;
+  if (!type) return;
+
+  switch (type) {
+    case 'task_started': {
+      const skill = raw.skill as string | undefined;
+      const desc = (raw.task as string | undefined)?.slice(0, 200);
+      pushTimeline(state, {
+        kind: 'task_started', ts: raw.ts as number,
+        plan_task_id: raw.task_id as string,
+        summary: skill ? `skill ${skill}` : '',
+        raw, ...(desc ? {} : {}),
+      });
+      // Surface the task description in the summary; we keep raw for full text.
+      const evt = state.timelineEvents[state.timelineEvents.length - 1];
+      if (evt && desc) evt.summary = `skill ${skill ?? '?'} · ${desc}`;
+      return;
+    }
+    case 'task_completed': {
+      pushTimeline(state, { kind: 'task_completed', ts: raw.ts as number, plan_task_id: raw.task_id as string, raw });
+      return;
+    }
+    case 'agent_started': {
+      pushTimeline(state, {
+        kind: 'agent_started', ts: raw.ts as number,
+        agent_id: raw.agent_id as string,
+        team_id: raw.team_id as string | undefined,
+        summary: `role ${raw.role ?? '?'} · skill ${raw.skill ?? '?'}`,
+        raw,
+      });
+      return;
+    }
+    case 'agent_completed': {
+      pushTimeline(state, {
+        kind: 'agent_completed', ts: raw.ts as number,
+        agent_id: raw.agent_id as string,
+        summary: (raw.reason as string | undefined) ?? '',
+        raw,
+      });
+      return;
+    }
+    case 'agent_error': {
+      pushTimeline(state, {
+        kind: 'agent_error', ts: raw.ts as number,
+        agent_id: raw.agent_id as string,
+        is_error: true,
+        error: (raw.error as string | undefined) ?? '',
+        raw,
+      });
+      return;
+    }
+    case 'agent_exited': {
+      pushTimeline(state, { kind: 'agent_exited', ts: raw.ts as number, agent_id: raw.agent_id as string, summary: (raw.reason as string | undefined) ?? '', raw });
+      return;
+    }
+    case 'team_created': {
+      pushTimeline(state, {
+        kind: 'team_created', ts: raw.ts as number,
+        agent_id: raw.leader_agent_id as string,
+        team_id: raw.team_id as string,
+        summary: `team ${(raw.name as string | undefined) ?? (raw.team_id as string).slice(0, 6)} · leader ${raw.leader_agent_id ?? '?'}`,
+        raw,
+      });
+      return;
+    }
+    case 'plan_declared': {
+      pushTimeline(state, {
+        kind: 'plan_declared', ts: raw.ts as number,
+        agent_id: raw.agent_id as string,
+        plan_id: raw.plan_id as string,
+        summary: `${raw.task_count ?? '?'} tasks declared`,
+        raw,
+      });
+      return;
+    }
+    case 'plan_removed': {
+      pushTimeline(state, { kind: 'plan_removed', ts: raw.ts as number, agent_id: raw.agent_id as string, plan_id: raw.plan_id as string, raw });
+      return;
+    }
+    case 'task_spawned': {
+      pushTimeline(state, {
+        kind: 'task_spawned', ts: raw.ts as number,
+        agent_id: raw.agent_id as string,
+        plan_task_id: raw.task_id as string,
+        plan_id: raw.plan_id as string,
+        spawned_agent_id: raw.spawned_agent_id as string,
+        team_id: raw.team_id as string | undefined,
+        raw,
+      });
+      return;
+    }
+    case 'task_ready': {
+      pushTimeline(state, { kind: 'task_ready', ts: raw.ts as number, plan_task_id: raw.task_id as string, plan_id: raw.plan_id as string, raw });
+      return;
+    }
+    case 'task_done': {
+      pushTimeline(state, { kind: 'task_done', ts: raw.ts as number, plan_task_id: raw.task_id as string, plan_id: raw.plan_id as string, summary: 'plan task done', raw });
+      return;
+    }
+    case 'task_failed': {
+      pushTimeline(state, { kind: 'task_failed', ts: raw.ts as number, plan_task_id: raw.task_id as string, plan_id: raw.plan_id as string, is_error: true, summary: (raw.reason as string | undefined) ?? 'plan task failed', raw });
+      return;
+    }
+    case 'tool_called': {
+      const name = raw.name as string;
+      if (isPrimitive(name)) {
+        pushTimeline(state, {
+          kind: 'primitive_call', ts: raw.ts as number,
+          agent_id: raw.caller_id as string,
+          tool_name: bareToolName(name),
+          input: raw.input as Record<string, unknown> | undefined,
+          raw,
+        });
+      } else {
+        // Captured for the firehose toggle only.
+        pushTimeline(state, {
+          kind: 'tool_call', ts: raw.ts as number,
+          agent_id: raw.caller_id as string,
+          tool_name: bareToolName(name),
+          input: raw.input as Record<string, unknown> | undefined,
+          raw,
+        });
+      }
+      return;
+    }
+    case 'question_asked': {
+      pushTimeline(state, {
+        kind: 'question_asked', ts: raw.ts as number,
+        agent_id: raw.asker as string,
+        summary: (raw.holder ? `held by ${raw.holder}` : ''),
+        raw,
+      });
+      return;
+    }
+    case 'question_answered': {
+      pushTimeline(state, {
+        kind: 'question_answered', ts: raw.ts as number,
+        agent_id: raw.asker as string,
+        summary: `chain ${raw.chain_len ?? '?'}`,
+        raw,
+      });
+      return;
+    }
+    case 'question_escalated': {
+      pushTimeline(state, {
+        kind: 'question_escalated', ts: raw.ts as number,
+        agent_id: (raw.by as string) ?? (raw.agent_id as string),
+        summary: raw.new_holder == null ? '→ user' : `→ ${raw.new_holder}`,
+        raw,
+      });
+      return;
+    }
+    case 'contract_violation': {
+      pushTimeline(state, {
+        kind: 'contract_violation', ts: raw.ts as number,
+        agent_id: (raw.agent_id as string) ?? (raw.caller_id as string),
+        is_error: true,
+        error: raw.reason as string | undefined,
+        summary: (raw.reason as string | undefined) ?? '',
+        raw,
+      });
+      return;
+    }
+    case 'terminate_posted': {
+      pushTimeline(state, {
+        kind: 'terminate_posted', ts: raw.ts as number,
+        agent_id: raw.caller_id as string,
+        spawned_agent_id: raw.agent_id as string,
+        raw,
+      });
+      return;
+    }
+    // Firehose-only capture (hidden until "Show all events" toggles).
+    case 'turn.usage': {
+      pushTimeline(state, { kind: 'turn', ts: raw.ts as number, agent_id: raw.caller_id as string, raw });
+      return;
+    }
+    case 'status': {
+      pushTimeline(state, { kind: 'status', ts: raw.ts as number, agent_id: raw.agent_id as string, summary: (raw.state as string) ?? '', raw });
+      return;
+    }
+    case 'send_message': {
+      pushTimeline(state, { kind: 'send_message', ts: raw.ts as number, agent_id: raw.caller_id as string, raw });
+      return;
+    }
+    case 'agent_input': {
+      pushTimeline(state, { kind: 'agent_input', ts: raw.ts as number, agent_id: raw.caller_id as string, raw });
+      return;
+    }
+    case 'completion.reported':
+    case 'completion.rework':
+    case 'completion.approved':
+    case 'completion.reping': {
+      pushTimeline(state, { kind: 'completion_marker', ts: raw.ts as number, agent_id: raw.agent_id as string, summary: type, raw });
+      return;
+    }
+    case 'liveness_check':
+    case 'liveness.nudge':
+    case 'liveness.escalated_to_user': {
+      pushTimeline(state, { kind: 'liveness_marker', ts: raw.ts as number, agent_id: raw.agent_id as string, summary: type, raw });
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 export function applyEvent(state: ReducerState, ev: BeidouEvent): void {
+  captureTimeline(state, ev);
   switch ((ev as { type: string }).type) {
     case 'agent_started': {
       const e = ev as Extract<BeidouEvent, { type: 'agent_started' }>;
